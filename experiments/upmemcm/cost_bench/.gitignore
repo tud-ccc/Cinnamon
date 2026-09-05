@@ -1,0 +1,17 @@
+# dodo.py-driven pipeline output (compiled/, run/, aggregated/, plots/,
+# pool_measured/, _split/ all nest under data/<prim>/ now).
+data/
+
+# Older, pre-dodo.py generated output some directories on disk may still
+# have lying around at the top level (aggregated/, plots*/, pool_measured/,
+# runs/) -- keep ignoring those too rather than starting to track them.
+ir
+output
+bin
+runs
+aggregated
+plots*
+pool_measured
+
+.doit.db*
+__pycache__/

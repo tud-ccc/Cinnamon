@@ -1,0 +1,23 @@
+# TVMScript dumps of ATiM's schedules. They are .py but not Python modules --
+# `I` and `T` are TVMScript's, undefined here -- and they are provenance: E1's
+# transcriptions must be traceable to the artifact that was measured, so they
+# are copied verbatim and reformatting them defeats the point.
+exclude: '^experiments/evaluation/points/traces/'
+
+repos:
+  - repo: ssh://git@github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.0
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+  - repo: ssh://git@github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+    -   id: check-yaml
+    -   id: end-of-file-fixer
+    -   id: trailing-whitespace
+  - repo: ssh://git@github.com/pre-commit/mirrors-clang-format
+    rev: v22.1.8
+    hooks:
+    -   id: clang-format

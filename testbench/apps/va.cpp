@@ -2,17 +2,19 @@
 #include <cstdint>
 
 extern "C" {
-void va_8(int32_t *, int32_t *);
-void va_16(int32_t *, int32_t *);
+void va_8(int32_t *, int32_t *, int32_t *);
+void va_16(int32_t *, int32_t *, int32_t *);
 }
 
 #define BENCH_VA(ty, M, N, fun_name)                                           \
   do {                                                                         \
     ty *A = init_matrix<ty, M, N>();                                           \
     ty *B = init_matrix<ty, M, N>();                                           \
-    DO_BENCH(REPS, WARMUP, fun_name(A, B));                                    \
+    ty *OUT = init_matrix<ty, M, N>();                                         \
+    DO_BENCH(REPS, WARMUP, fun_name(A, B, OUT));                               \
     free(A);                                                                   \
     free(B);                                                                   \
+    free(OUT);                                                                 \
   } while (false)
 
 int main(void) {

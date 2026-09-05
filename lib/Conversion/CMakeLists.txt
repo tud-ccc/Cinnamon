@@ -1,5 +1,6 @@
 add_mlir_library(CinmCommonPatterns
     CommonPatterns.cpp
+    CnmBufferLevel.cpp
 
     LINK_COMPONENTS
     Core
@@ -25,9 +26,11 @@ endif()
 add_subdirectory(CnmToUPMEM)
 add_subdirectory(UPMEMToLLVM)
 add_subdirectory(CinmToCnm)
+add_subdirectory(LinalgToCnm)
 add_subdirectory(CinmToCim)
 add_subdirectory(CimToMemristor)
 add_subdirectory(MemristorToFunc)
 add_subdirectory(LinalgToCinm)
+add_subdirectory(CinmToLinalg)
 add_subdirectory(CimToAlpine)
 add_subdirectory(AlpineToFunc)

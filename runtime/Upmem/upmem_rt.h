@@ -1,5 +1,6 @@
 
 
+#include "timers.h"
 #include <dpu.h>
 #include <dpu_types.h>
 #include <stddef.h>
@@ -16,23 +17,132 @@
 /// @param num_elements         Total number of elements in tensor
 /// @param num_elements_per_tasklet Total number of elements for one tasklet
 /// @param copy_bytes           Total number of bytes to copy into each DPU
-/// @param offset_in_dpu_bytes  Offset in the DPU memory at which to start
-/// copying
+/// @param buffer_id            Constant string of the buffer ID
 /// @param base_offset          Function mapping the index of a DPU to an offset
 /// in the input tensor.
-size_t upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *host_buffer,
-                           size_t element_size, size_t num_elements,
-                           size_t num_elements_per_tasklet, size_t copy_bytes,
-                           size_t offset_in_dpu_bytes,
-                           size_t (*base_offset)(size_t));
+/// @param tag                  Optional user-supplied label (from the
+/// originating op's `upmem.timing_tag` attribute) recorded alongside the
+/// transfer's stats, or NULL if the op carried no tag. Ignored unless built
+/// with -DUPMEM_RT_STATS.
+void upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *host_buffer,
+                         size_t element_size, size_t num_elements,
+                         size_t num_elements_per_tasklet, size_t copy_bytes,
+                         const char *buffer_id, size_t (*base_offset)(size_t),
+                         const char *tag);
 
 void upmemrt_dpu_gather(struct dpu_set_t *dpu_set, void *host_buffer,
                         size_t element_size, size_t num_elements,
                         size_t num_elements_per_tasklet, size_t copy_bytes,
-                        size_t offset_in_dpu_bytes,
-                        size_t (*base_offset)(size_t));
+                        const char *buffer_id, size_t (*base_offset)(size_t),
+                        const char *tag);
 
-struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_ranks, int32_t num_dpus,
-                                    const char *dpu_binary_path);
+/// Transfer several blocks per DPU using the UPMEM SDK's scatter/gather
+/// transfer API (dpu_push_sg_xfer), so that a DPU's blocks may come from
+/// locations in `host_buffer` that are not contiguous with one another. Each
+/// individual block must still be contiguous in `host_buffer`.
+///
+/// For each DPU `x` and each block `b` in `[0, num_blocks)`, copies
+/// `block_num_elements` elements between `host_buffer` -- starting at byte
+/// offset `base_offset(x, b)` -- and the `b`-th block of the DPU's MRAM
+/// buffer (i.e. at MRAM byte offset `b * block_num_elements * element_size`).
+/// `upmemrt_dpu_scatter_blocks` copies host to DPU, `upmemrt_dpu_gather_blocks`
+/// the other way round.
+///
+/// Blocks are units of transfer, not tasklets: a single tasklet's data may
+/// well arrive as several of them.
+///
+/// @param dpu_set              Pointer to DPU structure
+/// @param host_buffer          Host-side tensor
+/// @param element_size         Size of a tensor element in bytes
+/// @param num_blocks           Number of blocks transferred per DPU
+/// @param block_num_elements   Number of elements in one block
+/// @param buffer_id            Constant string of the buffer ID
+/// @param base_offset          Function mapping (dpu_index, block_index) to
+/// the starting byte offset of that block in the host buffer.
+/// @param tag                  Optional user-supplied label (from the
+/// originating op's `upmem.timing_tag` attribute) recorded alongside the
+/// transfer's stats, or NULL if the op carried no tag. Ignored unless built
+/// with -DUPMEM_RT_STATS.
+void upmemrt_dpu_scatter_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
+                                size_t element_size, size_t num_blocks,
+                                size_t block_num_elements,
+                                const char *buffer_id,
+                                size_t (*base_offset)(size_t, size_t),
+                                const char *tag);
+
+void upmemrt_dpu_gather_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
+                               size_t element_size, size_t num_blocks,
+                               size_t block_num_elements, const char *buffer_id,
+                               size_t (*base_offset)(size_t, size_t),
+                               const char *tag);
+
+/// Broadcast a buffer to the MRAM of every DPU in the set, identically.
+///
+/// @param dpu_set     Pointer to DPU structure
+/// @param host_buffer Buffer to broadcast; the `copy_bytes` bytes starting
+/// here are copied into every DPU's MRAM buffer, unchanged.
+/// @param copy_bytes  Number of bytes to copy into each DPU
+/// @param buffer_id   Constant string of the buffer ID
+/// @param tag         Optional user-supplied label (from the originating op's
+/// `upmem.timing_tag` attribute) recorded alongside the transfer's stats, or
+/// NULL if the op carried no tag. Ignored unless built with -DUPMEM_RT_STATS.
+void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
+                           size_t copy_bytes, const char *buffer_id,
+                           const char *tag);
+
+/// Allocates and loads a DPU set.
+///
+/// @param num_dpus             Number of DPUs to allocate. Which ranks they
+/// land on is the SDK's business and cannot be requested.
+/// @param max_blocks_per_dpu   Largest number of blocks any
+/// upmemrt_dpu_scatter_blocks/gather_blocks call against this DPU set will
+/// use, or 0 if none will. Sets the UPMEM SDK's sgXferMaxBlocksPerDpu option
+/// (and enables scatter/gather transfers) only when actually needed, so
+/// programs that never use the scatter transfer API don't pay for its
+/// (larger) memory footprint.
+///
+/// Allocation does NOT load a program; pair with upmemrt_dpu_load. The two
+/// are separate calls (mirroring upmem.alloc_dpus / upmem.load_program)
+/// because a set is acquired once per residency lifetime while the program
+/// on it can change per launch -- and because their times are recorded in
+/// different categories (alloc is harness overhead, load amortizes only
+/// when it happens once per workload lifetime).
+struct dpu_set_t *upmemrt_dpu_alloc(int32_t num_dpus,
+                                    size_t max_blocks_per_dpu);
+
+/// Like upmemrt_dpu_alloc, plus cross-inference residency: when the
+/// UPMEM_RT_CACHE=1 environment variable is set, the allocated set is
+/// cached in *slot (one compiler-emitted global per allocation site) and
+/// survives upmemrt_dpu_free, so later calls from the same site get the
+/// same set back -- with its loaded program and its static transfers still
+/// resident. When an allocation cannot be satisfied, least-recently-used
+/// cached sets are really freed until it fits, so sets whose sizes cannot
+/// coexist evict each other (paying realloc + reload + rescatter per
+/// switch) while a partition that fits stays resident forever. Without the
+/// environment variable this is exactly upmemrt_dpu_alloc and the slot is
+/// ignored, so cached-call binaries behave identically to old ones.
+///
+/// Residency of a static transfer (a "static:"-tagged scatter/broadcast)
+/// is tracked per (set, site tag) with the host pointer and size checked:
+/// a site re-scattering a different payload -- another group member's
+/// weights over the same MRAM symbol -- runs and re-records rather than
+/// being skipped, so the cache never claims residency the memory does not
+/// have. A program (re)load drops the set's transfer records.
+///
+/// Single-threaded, like the bench harness that drives it.
+struct dpu_set_t *upmemrt_dpu_alloc_cached(void **slot, int32_t num_dpus,
+                                           size_t max_blocks_per_dpu);
+
+/// Whether UPMEM_RT_CACHE residency is on (see upmemrt_dpu_alloc_cached).
+/// The static-repack skip in memref_rt.cpp keys off the same flag: under
+/// residency a repack of static data into its staging buffer is idempotent
+/// and skipped once performed, the host-side mirror of the resident-scatter
+/// skip.
+int upmemrt_cache_enabled(void);
+
+/// Load the DPU program at @p dpu_binary_path onto every DPU of @p dpu_set
+/// (the SDK's dpu_load), replacing whatever ran there before. Recorded under
+/// the "load" timer category.
+void upmemrt_dpu_load(struct dpu_set_t *dpu_set, const char *dpu_binary_path);
 
 void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set);

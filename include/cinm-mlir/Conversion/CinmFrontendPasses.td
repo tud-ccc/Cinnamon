@@ -13,7 +13,7 @@ include "mlir/Pass/PassBase.td"
 def ConvertTorchToCinm : Pass<"convert-torch-to-cinm", operation="func::FuncOp"> {
     let summary = "Convert torch dialect to cinm dialect";
     let constructor = "mlir::cinm_frontend::createConvertTorchToCinmPass()";
-    let dependentDialects = ["torch::Torch::TorchDialect", "torch::TorchConversion::TorchConversionDialect", 
+    let dependentDialects = ["torch::Torch::TorchDialect", "torch::TorchConversion::TorchConversionDialect",
         "cinm::CinmDialect", "func::FuncDialect", "tensor::TensorDialect"];
 }
 

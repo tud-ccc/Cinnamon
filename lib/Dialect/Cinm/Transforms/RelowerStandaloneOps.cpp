@@ -31,9 +31,9 @@ static Value buildEmptyLike(IRRewriter &rewriter, Location loc,
   SmallVector<Value> dynDims;
   for (int64_t i = 0, e = type.getRank(); i < e; ++i)
     if (type.isDynamicDim(i))
-      dynDims.push_back(rewriter.create<tensor::DimOp>(loc, exemplar, i));
-  return rewriter.create<tensor::EmptyOp>(loc, type.getShape(),
-                                          type.getElementType(), dynDims);
+      dynDims.push_back(tensor::DimOp::create(rewriter, loc, exemplar, i));
+  return tensor::EmptyOp::create(rewriter, loc, type.getShape(),
+                                 type.getElementType(), dynDims);
 }
 
 static FailureOr<Value> buildBinaryElementwise(
@@ -53,17 +53,18 @@ static FailureOr<Value> buildBinaryElementwise(
   auto iteratorTypesAttr = rewriter.getArrayAttr(iterTypeAttrs);
 
   bool combineFailed = false;
-  auto generic = rewriter.create<linalg::GenericOp>(
-      loc, TypeRange{resultType}, ValueRange{lhs, rhs}, ValueRange{init},
-      indexingMaps, iteratorTypesAttr, StringAttr(), StringAttr(),
+  auto generic = linalg::GenericOp::create(
+      rewriter, loc, TypeRange{resultType}, ValueRange{lhs, rhs},
+      ValueRange{init}, indexingMaps, iteratorTypesAttr, StringAttr(),
+      StringAttr(),
       [&](OpBuilder &nestedBuilder, Location nestedLoc, ValueRange args) {
         FailureOr<Value> combined = emitCombine(args[0], args[1]);
         if (failed(combined)) {
           combineFailed = true;
-          nestedBuilder.create<linalg::YieldOp>(nestedLoc, args[2]);
+          linalg::YieldOp::create(nestedBuilder, nestedLoc, args[2]);
           return;
         }
-        nestedBuilder.create<linalg::YieldOp>(nestedLoc, *combined);
+        linalg::YieldOp::create(nestedBuilder, nestedLoc, *combined);
       },
       ArrayRef<NamedAttribute>{});
 
@@ -78,9 +79,9 @@ static FailureOr<Value> lowerAddLikeOp(IRRewriter &rewriter,
   Type elemTy = resultType.getElementType();
   auto combine = [&](Value a, Value b) -> FailureOr<Value> {
     if (isa<FloatType>(elemTy))
-      return rewriter.create<arith::AddFOp>(op.getLoc(), a, b).getResult();
+      return arith::AddFOp::create(rewriter, op.getLoc(), a, b).getResult();
     if (isa<IntegerType>(elemTy))
-      return rewriter.create<arith::AddIOp>(op.getLoc(), a, b).getResult();
+      return arith::AddIOp::create(rewriter, op.getLoc(), a, b).getResult();
     return failure();
   };
   return buildBinaryElementwise(rewriter, op.getLoc(), op.getLhs(), op.getRhs(),
@@ -93,9 +94,9 @@ static FailureOr<Value> lowerSubLikeOp(IRRewriter &rewriter,
   Type elemTy = resultType.getElementType();
   auto combine = [&](Value a, Value b) -> FailureOr<Value> {
     if (isa<FloatType>(elemTy))
-      return rewriter.create<arith::SubFOp>(op.getLoc(), a, b).getResult();
+      return arith::SubFOp::create(rewriter, op.getLoc(), a, b).getResult();
     if (isa<IntegerType>(elemTy))
-      return rewriter.create<arith::SubIOp>(op.getLoc(), a, b).getResult();
+      return arith::SubIOp::create(rewriter, op.getLoc(), a, b).getResult();
     return failure();
   };
   return buildBinaryElementwise(rewriter, op.getLoc(), op.getLhs(), op.getRhs(),
@@ -125,7 +126,7 @@ struct CinmRelowerPass
 
     func.walk([&](Operation *op) {
       if (auto elementwiseOp = dyn_cast<cinm::ElementwiseOp>(op)) {
-        if (!elementwiseOp->getParentOfType<cinm::ComputeOp>()) {
+        if (!elementwiseOp->getParentOfType<cinm::ComputeBlockOp>()) {
           if (elementwiseOp.getKind() == cinm::ElementwiseKind::Add) {
             adds.push_back(elementwiseOp);
           } else if (elementwiseOp.getKind() == cinm::ElementwiseKind::Sub) {

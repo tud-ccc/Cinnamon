@@ -1,0 +1,74 @@
+[
+  {
+    "fn_name": "va_256MB",
+    "trace": "points/traces/va_67108864_1_1.reproduced.tir.py",
+    "candidates": [
+      {
+        "label": "r0",
+        "params": {
+          "dpus": 2048,
+          "tasklets": 4,
+          "elementwise.D0.mram": 8192,
+          "elementwise.D0.wram": 256
+        },
+        "expected": {
+          "D": [
+            2048
+          ],
+          "T": [
+            4
+          ]
+        },
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fn_name": "va_4MB",
+    "trace": "points/traces/va_1048576_1_1.reproduced.tir.py",
+    "candidates": [
+      {
+        "label": "r0",
+        "params": {
+          "dpus": 2048,
+          "tasklets": 4,
+          "elementwise.D0.mram": 128,
+          "elementwise.D0.wram": 128
+        },
+        "expected": {
+          "D": [
+            2048
+          ],
+          "T": [
+            4
+          ]
+        },
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fn_name": "va_64MB",
+    "trace": "points/traces/va_16777216_1_1.reproduced.tir.py",
+    "candidates": [
+      {
+        "label": "r0",
+        "params": {
+          "dpus": 2048,
+          "tasklets": 4,
+          "elementwise.D0.mram": 2048,
+          "elementwise.D0.wram": 32
+        },
+        "expected": {
+          "D": [
+            2048
+          ],
+          "T": [
+            4
+          ]
+        },
+        "notes": ""
+      }
+    ]
+  }
+]

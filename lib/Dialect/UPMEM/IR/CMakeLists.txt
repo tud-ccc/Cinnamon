@@ -2,8 +2,10 @@ add_mlir_dialect_library(UPMEMIR
         UPMEMBase.cpp
         UPMEMOps.cpp
         UPMEMTypes.cpp
+        UPMEMAttributes.cpp
+        UPMEMOccupancy.cpp
         InferIntRangeInterfaceImpls.cpp
-        
+
     DEPENDS
         UPMEMIncGen
         UPMEMConversionPassIncGen
@@ -19,4 +21,5 @@ add_mlir_dialect_library(UPMEMIR
         MLIRInferIntRangeInterface
         MLIRMemRefDialect
         MLIRSupport
+        CinmIR
 )

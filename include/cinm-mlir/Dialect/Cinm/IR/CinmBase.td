@@ -20,14 +20,37 @@ def Cinm_Dialect : Dialect {
         TODO
     }];
 
-    let usePropertiesForAttributes = 0;
     let useDefaultAttributePrinterParser = 0;
 //    let useDefaultTypePrinterParser = 1;
     let hasOperationAttrVerify = 1;
 
 
     code extraClassDeclaration = [{
-    constexpr static StringRef NOTILE_NAME = "cinm.notile";
+    void printAttribute(Attribute attr, DialectAsmPrinter &printer) const override;
+    Attribute parseAttribute(DialectAsmParser &parser, Type type) const override;
+
+    /// A debug metadata tag that can be attached by any pass,
+    /// must be interpreted or ignored by the specific backend.
+    constexpr static StringRef DEBUG_TAG_NAME = "cinm.debug_tag";
+    /// Used by the --cinm-tiling pass.
+    constexpr static StringRef TILING_FACTORS_NAME = "cinm.tile_sizes";
+
+    constexpr static StringRef AVAILABLE_PLATFORMS_NAME = "cinm.available_platforms";
+
+    /// A UnitAttr argument attribute marking a function parameter whose data
+    /// is identical on every invocation (model weights baked at deployment,
+    /// typically). Pinning such data on an accelerator amortizes its transfer
+    /// over the serving lifetime; see isStaticValue (CinmUtils.h) for the
+    /// full staticness derivation.
+    constexpr static StringRef STATIC_ATTR_NAME = "cinm.static";
+
+    /// What the graph-level solve decided about a compute block, as a
+    /// dictionary of `graph` (the solved component's name), `class` (its
+    /// program-identity class), `member` (its position in that class) and,
+    /// unless the class stayed on the host, `group` (the device set it
+    /// landed on). Pure provenance -- nothing reads it back -- but it is
+    /// what lets the solve's CSV dumps be read against the IR they describe.
+    constexpr static StringRef GRAPH_ALLOC_NAME = "cinm.graph_alloc";
     private:
         void registerOps();
         void registerTypes();
@@ -44,7 +67,7 @@ class Cinm_Base_Op<string mnemonic, list<Trait> traits = []>
 class Cinm_Op<string mnemonic, list<Trait> traits = []>
         : Cinm_Base_Op<mnemonic, !listconcat(traits, [
             // we want an ancestor not a parent
-            // HasParent<"ComputeOp">
+            // HasParent<"ComputeBlockOp">
         ])>;
 // Template for types.
 class Cinm_Type<string name, list<Trait> traits = []>

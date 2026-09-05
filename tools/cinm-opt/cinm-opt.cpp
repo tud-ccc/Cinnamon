@@ -34,8 +34,8 @@
 #include "torch-mlir/RefBackend/Passes.h"
 #endif
 
-#include <mlir/IR/DialectRegistry.h>
 #include <mlir/Dialect/Bufferization/Transforms/Passes.h>
+#include <mlir/IR/DialectRegistry.h>
 #include <mlir/InitAllExtensions.h>
 
 #include "mlir/IR/MLIRContext.h"
@@ -72,12 +72,13 @@ int main(int argc, char *argv[]) {
 #ifdef CINM_TORCH_MLIR_ENABLED
   registerCinmFrontendConversionPasses();
 #endif
-  registerAlpineConversionPasses();
+  alpine::registerAlpineConversionPasses();
   registerCinmConversionPasses();
   registerCimConversionPasses();
   registerCnmConversionPasses();
   registerMemristorConversionPasses();
   cinm::registerCinmBufferizableOpInterfaces(registry);
+  cinm::registerCinmTilingExternalModels(registry);
   cim::registerCimTransformsPasses();
   cnm::registerCnmBufferizationExternalModels(registry);
   cnm::registerCnmTransformsPasses();
@@ -88,7 +89,7 @@ int main(int argc, char *argv[]) {
   alpine::registerAlpineConversionPasses();
   upmem::registerConvertUpmemToLLvmInterface(registry);
 
-  registerUPMEMTransformsPasses();
+  upmem::registerUPMEMTransformsPasses();
   registerUPMEMConversionPasses();
 
   bufferization::registerBufferizationPasses();

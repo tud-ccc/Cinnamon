@@ -25,9 +25,102 @@ def ConvertCnmToGPUPass : Pass<"convert-cnm-to-gpu"> {
 }
 #endif
 
+def ConvertLinalgToCnmPass : Pass<"convert-linalg-to-cnm"> {
+    let summary = "Distribute a linalg op onto a cnm workgroup";
+    let description = [{
+      Rewrites a `linalg` op with pure tensor semantics into
+      `cnm.workgroup` / `cnm.declare_buffer` / `cnm.scatter` / `cnm.launch` /
+      `cnm.gather`, driven entirely by a `cnm.tile_sizes` attribute giving
+      one block size per iteration dimension.
+
+      Unlike `--convert-cinm-to-cnm`, this pass takes no decisions: the
+      distribution is a mechanical consequence of the block sizes and the
+      op's own indexing maps. The op must be inside a region that carries an
+      accelerator (`cinm.compute_block`), and the product of the tile counts
+      `dimSize / blockSize` must equal the number of workgroup leaves.
+
+      A block size smaller than the extent of a *reduction* dimension spreads
+      that reduction across the workgroup: each leaf computes a partial
+      result from the reduction identity, and a merge is left on the host.
+      See docs/CnmMemoryLevelsDesign.md §G4.
+
+      The one thing the block sizes cannot state is which tile dimension
+      varies fastest across the leaves, which decides what the leaves sharing
+      a hardware node share rather than replicate. That defaults to the rule
+      of §G3 and is otherwise given by `workgroup-dim-order` or
+      `workgroup-dim-order-index` — or, per op, by the `cnm.workgroup_dim_order`
+      / `cnm.workgroup_dim_order_index` attributes, which take precedence over
+      both options.
+    }];
+    let constructor = "mlir::cnm::createConvertLinalgToCnmPass()";
+    let dependentDialects = [
+        "mlir::cnm::CnmDialect",
+        "mlir::arith::ArithDialect",
+        "mlir::linalg::LinalgDialect",
+        "mlir::tensor::TensorDialect"
+    ];
+    let options = [
+      Option<"bufferLevel", "cnm-buffer-level", "std::string", [{""}],
+             "Name of the memory level to allocate cnm.buffers in, resolved "
+             "against the accelerator's platform (e.g. `mram` or `wram` for "
+             "UPMEM). The level becomes the buffer type's level and the memory "
+             "space of the launch body's memrefs. Empty means unlevelled "
+             "buffers, which is what the backend conversion assumes when it "
+             "picks the staging itself.">,
+      Option<"allowFloatReassociation", "allow-float-reassociation", "bool",
+             "false",
+             "Permit splitting a floating-point reduction across the "
+             "workgroup. Doing so reassociates the sum and changes the "
+             "result, so it is off by default rather than something the "
+             "search does silently.">,
+      ListOption<"perDimAttrs", "per-dim-attrs", "std::string",
+             "Names of discardable attributes holding one i64 per iteration "
+             "dimension of the op (e.g. `upmem.leaf_tile_sizes`). Splitting a "
+             "reduction rewrites the op and adds a dimension, so these are "
+             "carried onto the new op with a 1 inserted for it. Without this "
+             "a later pass would silently read a stale or missing list.">,
+      Option<"leafTileAttr", "leaf-tile-attr", "std::string", [{""}],
+             "Name of a per-iteration-dimension attribute giving the tile the "
+             "launch body will later stage into its leaf memory. When set, "
+             "every dimension whose block size is a proper multiple of its "
+             "leaf tile is split in two -- an outer chunk dimension and an "
+             "inner tile dimension -- and each operand's buffer is laid out "
+             "with all its chunk dimensions outermost. That makes the slice a "
+             "leaf stages for one chunk a single contiguous run, which is the "
+             "only thing a DMA can move; laid out in operand order it is "
+             "generally strided. The attribute is rewritten onto the split "
+             "space (1 per chunk dimension) so the staging pass tiles the new "
+             "dimensions correctly. Empty disables the split.">,
+      ListOption<"workgroupDimOrder", "workgroup-dim-order", "int64_t",
+             "Which iteration dimension occupies which workgroup axis, "
+             "outermost (slowest-varying across leaves) first. A permutation "
+             "of all the op's iteration dimensions *after* any reduction "
+             "split, which prepends one. Empty means the default rule: "
+             "parallel dimensions outer, reduction dimensions inner, op order "
+             "within each group. Cannot be combined with "
+             "`workgroup-dim-order-index`.">,
+      Option<"workgroupDimOrderIndex", "workgroup-dim-order-index", "int64_t",
+             "-1",
+             "The same choice as `workgroup-dim-order`, stated as an integer "
+             "a search can enumerate: the index-th order in lexicographic "
+             "order, counting only the dimensions actually spread over the "
+             "workgroup (a dimension tiled once takes no workgroup axis, so "
+             "permuting it would only produce duplicates). Index 0 is the "
+             "default rule; the op reports how many orders it has if this is "
+             "out of range. Negative means unset.">
+    ];
+}
+
 def ConvertCnmToUPMEMPass : Pass<"convert-cnm-to-upmem"> {
     let summary = "";
     let constructor = "mlir::cnm::createConvertCnmToUPMEMPass()";
+    let options = [
+      Option<"kernelModuleName", "kernel-module-name", "std::string",
+             [{"dpu_kernels"}],
+             "Name of the submodule to create DPU kernels in">,
+      Option<"cinm1Codegen", "cinm1-codegen", "bool", "false",
+             "Whether to match CINM 1 code generation (no barriers, tasklets don't share buffers)">
+    ];
     let dependentDialects = [
         "mlir::affine::AffineDialect",
         "mlir::arith::ArithDialect",

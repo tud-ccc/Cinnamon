@@ -1,0 +1,1 @@
+Offline ATIM points are collected by performing autotuning as described in the atim readme, then `python atim_eval.py --pretuned` and another run without pretuned, then running build-interchange.py there

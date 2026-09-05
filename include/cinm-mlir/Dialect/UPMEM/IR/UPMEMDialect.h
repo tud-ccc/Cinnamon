@@ -4,5 +4,3 @@
 #pragma once
 
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
-
-

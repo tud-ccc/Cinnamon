@@ -25,8 +25,30 @@ add_lit_testsuite(${PROJECT_NAME}
     DEPENDS
         ${TEST_DEPENDS}
 )
+
 add_lit_testsuites(cinmMLIR
     ${CMAKE_CURRENT_SOURCE_DIR}
     DEPENDS
     ${TEST_DEPENDS}
 )
+
+enable_testing()
+
+find_package(GTest REQUIRED)
+include(GoogleTest)
+
+add_custom_target(check-unit-tests
+    COMMAND ${CMAKE_CTEST_COMMAND}
+            --output-on-failure
+            -C $<CONFIG>
+)
+
+function(add_unittest test_dirname)
+  add_executable(${test_dirname} ${ARGN})
+  target_link_libraries(${test_dirname} PRIVATE GTest::gtest_main)
+  add_dependencies(check-unit-tests ${test_dirname})
+  gtest_discover_tests(${test_dirname})
+endfunction()
+
+
+add_subdirectory(Unit)

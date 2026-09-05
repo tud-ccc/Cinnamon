@@ -23,7 +23,7 @@ using namespace mlir;
 namespace mlir::cim {
 #define GEN_PASS_DEF_CIMCLEANUPUNSUPPORTEDPASS
 #include "cinm-mlir/Dialect/Cim/Transforms/Passes.h.inc"
-}
+} // namespace mlir::cim
 
 namespace {
 
@@ -56,9 +56,8 @@ struct LowerCimAddBarrierCopyToLinalgAdd : OpRewritePattern<memref::CopyOp> {
 
     Location loc = copy.getLoc();
     rewriter.setInsertionPoint(copy);
-    (void)rewriter.create<linalg::AddOp>(
-        loc, ValueRange{lhs, rhs},
-        ValueRange{copy.getTarget()});
+    (void)linalg::AddOp::create(rewriter, loc, ValueRange{lhs, rhs},
+                                ValueRange{copy.getTarget()});
 
     rewriter.eraseOp(copy);
     if (bar->use_empty())
@@ -145,7 +144,7 @@ struct CimCleanupUnsupported
   }
 };
 
-}
+} // namespace
 
 std::unique_ptr<mlir::Pass> createCimCleanupUnsupportedPass() {
   return std::make_unique<CimCleanupUnsupported>();

@@ -1,10 +1,12 @@
 #pragma once
 
 #include "cinm-mlir/Dialect/Alpine/IR/AlpineTypes.h"
-#include "mlir/IR/OpDefinition.h"
-#include "mlir/IR/OpImplementation.h"
-#include "mlir/IR/Region.h"
-#include "mlir/Interfaces/InferTypeOpInterface.h"
+
+#include <mlir/Bytecode/BytecodeOpInterface.h>
+#include <mlir/IR/OpDefinition.h>
+#include <mlir/IR/OpImplementation.h>
+#include <mlir/IR/Region.h>
+#include <mlir/Interfaces/InferTypeOpInterface.h>
 
 namespace mlir::alpine {
 std::string generateLibraryCallName(Operation *op);

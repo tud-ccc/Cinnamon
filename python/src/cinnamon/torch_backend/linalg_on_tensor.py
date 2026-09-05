@@ -6,7 +6,6 @@ from ._utility.signature_extractor import SignatureExtractor
 
 
 class LinalgOnTensorBackend:
-
     PIPELINE = (
         CommonPipelines.LOWER_TORCH_TO_LINALG_CHECKED_PIPELINE
         + CommonPipelines.LOWER_LINALG_TO_LLVM_PIPELINE

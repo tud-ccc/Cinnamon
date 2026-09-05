@@ -5,6 +5,9 @@
 
 namespace mlir::cinm {
 
+#define GEN_PASS_DECL_CONVERTLINALGTOCINM
+#include "cinm-mlir/Conversion/CinmPasses.h.inc"
+
 void registerLinalgToCinmPipeline();
 std::unique_ptr<Pass> createConvertLinalgToCinmPass();
 

@@ -40,7 +40,7 @@ static Value toMemrefLike(ConversionPatternRewriter &rewriter, Location loc,
     return v;
   auto t = cast<RankedTensorType>(ty);
   auto memTy = MemRefType::get(t.getShape(), t.getElementType());
-  return rewriter.create<bufferization::ToBufferOp>(loc, memTy, v);
+  return bufferization::ToBufferOp::create(rewriter, loc, memTy, v);
 }
 
 /// Replace any direct `cim.barrier` users of `cimRes` with `replacementTensor`,
@@ -52,7 +52,7 @@ static void rewriteImmediateBarriers(Value cimRes, Value replacementTensor,
   for (Operation *user : cimRes.getUsers()) {
     if (auto bar = dyn_cast<cim::BarrierOp>(user)) {
       rewriter.setInsertionPoint(bar);
-      rewriter.create<memristor::BarrierOp>(bar.getLoc(), tileId);
+      memristor::BarrierOp::create(rewriter, bar.getLoc(), tileId);
       bar.getResult().replaceAllUsesWith(replacementTensor);
       toErase.push_back(bar);
     }
@@ -83,21 +83,20 @@ struct ConvertCimGemvToMemristor : OpConversionPattern<cim::GemvOp> {
 
     // Allocate result tensor and create memref views.
     auto outTensorTy = RankedTensorType::get({rows}, elemTy);
-    Value outTensor = rewriter
-                          .create<bufferization::AllocTensorOp>(
-                              loc, outTensorTy, ValueRange{})
+    Value outTensor = bufferization::AllocTensorOp ::create(
+                          rewriter, loc, outTensorTy, ValueRange{})
                           .getResult();
     auto outMemTy = MemRefType::get({rows}, elemTy);
     Value Y =
-        rewriter.create<bufferization::ToBufferOp>(loc, outMemTy, outTensor);
+        bufferization::ToBufferOp::create(rewriter, loc, outMemTy, outTensor);
 
     Value W = toMemrefLike(rewriter, loc, matVal);
     Value X = toMemrefLike(rewriter, loc, vecVal);
     Value tileId = op.getOperand(0);
 
     // Program weights then run GEMV (vector input).
-    rewriter.create<memristor::WriteToCrossbarOp>(loc, tileId, W);
-    rewriter.create<memristor::GevmOp>(loc, tileId, X, Y);
+    memristor::WriteToCrossbarOp::create(rewriter, loc, tileId, W);
+    memristor::GevmOp::create(rewriter, loc, tileId, X, Y);
 
     // Rewrite any immediate barriers and erase the CIM op.
     rewriteImmediateBarriers(op.getResult(), outTensor, tileId, rewriter);
@@ -128,20 +127,19 @@ struct ConvertCimGemmToMemristor : OpConversionPattern<cim::GemmOp> {
 
     // Allocate result tensor (MxN) and create memref views.
     auto outTensorTy = RankedTensorType::get({M, N}, elemTy);
-    Value outTensor = rewriter
-                          .create<bufferization::AllocTensorOp>(
-                              loc, outTensorTy, ValueRange{})
+    Value outTensor = bufferization::AllocTensorOp::create(
+                          rewriter, loc, outTensorTy, ValueRange{})
                           .getResult();
     auto outMemTy = MemRefType::get({M, N}, elemTy);
     Value C =
-        rewriter.create<bufferization::ToBufferOp>(loc, outMemTy, outTensor);
+        bufferization::ToBufferOp::create(rewriter, loc, outMemTy, outTensor);
 
     Value Am = toMemrefLike(rewriter, loc, A);
     Value Bm = toMemrefLike(rewriter, loc, B);
     Value tileId = op.getOperand(0);
 
-    rewriter.create<memristor::WriteToCrossbarOp>(loc, tileId, Bm);
-    rewriter.create<memristor::GemmOp>(loc, tileId, Am, C);
+    memristor::WriteToCrossbarOp::create(rewriter, loc, tileId, Bm);
+    memristor::GemmOp::create(rewriter, loc, tileId, Am, C);
 
     rewriteImmediateBarriers(op.getResult(), outTensor, tileId, rewriter);
     rewriter.eraseOp(op);
@@ -161,8 +159,8 @@ struct ConvertCimAcquireToMemristor
     for (Operation *user : llvm::make_early_inc_range(deviceId.getUsers())) {
       if (!isa<cim::AcquireCrossbarOp>(user))
         continue;
-      auto c = rewriter.create<arith::ConstantOp>(
-          user->getLoc(), rewriter.getI32Type(),
+      auto c = arith::ConstantOp::create(
+          rewriter, user->getLoc(), rewriter.getI32Type(),
           rewriter.getI32IntegerAttr(nextTile++));
       user->getResult(0).replaceAllUsesWith(c.getResult());
       rewriter.eraseOp(user);

@@ -1,0 +1,151 @@
+[
+  {
+    "fn_name": "mmtv_256MB",
+    "trace": "points/traces/mmtv_256_512_512.reproduced.tir.py",
+    "candidates": [
+      {
+        "label": "r0",
+        "params": {
+          "dpus": 2048,
+          "tasklets": 4,
+          "batch_gemv.B.mram": 1,
+          "batch_gemv.B.wram": 1,
+          "batch_gemv.M.mram": 16,
+          "batch_gemv.M.wram": 4,
+          "batch_gemv.K.mram": 512,
+          "batch_gemv.K.wram": 2,
+          "batch_gemv.order[0]": 1,
+          "batch_gemv.order[1]": 2,
+          "batch_gemv.order[2]": 3
+        },
+        "expected": {
+          "D": [
+            2048
+          ],
+          "T": [
+            4
+          ]
+        },
+        "notes": "batch_gemv=B>M>K is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
+      }
+    ]
+  },
+  {
+    "fn_name": "mmtv_4MB",
+    "trace": "points/traces/mmtv_32_64_512.reproduced.tir.py",
+    "candidates": [
+      {
+        "label": "r1",
+        "params": {
+          "dpus": 512,
+          "tasklets": 16,
+          "batch_gemv.B.mram": 1,
+          "batch_gemv.B.wram": 1,
+          "batch_gemv.M.mram": 2,
+          "batch_gemv.M.wram": 2,
+          "batch_gemv.K.mram": 64,
+          "batch_gemv.K.wram": 64,
+          "batch_gemv.order[0]": 1,
+          "batch_gemv.order[1]": 3,
+          "batch_gemv.order[2]": 2
+        },
+        "expected": {
+          "D": [
+            512
+          ],
+          "T": [
+            16
+          ]
+        },
+        "notes": "batch_gemv=B>K>M is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
+      },
+      {
+        "label": "r4",
+        "params": {
+          "dpus": 512,
+          "tasklets": 16,
+          "batch_gemv.B.mram": 1,
+          "batch_gemv.B.wram": 1,
+          "batch_gemv.M.mram": 2,
+          "batch_gemv.M.wram": 2,
+          "batch_gemv.K.mram": 64,
+          "batch_gemv.K.wram": 64,
+          "batch_gemv.order[0]": 2,
+          "batch_gemv.order[1]": 3,
+          "batch_gemv.order[2]": 1
+        },
+        "expected": {
+          "D": [
+            512
+          ],
+          "T": [
+            16
+          ]
+        },
+        "notes": "batch_gemv=K>B>M is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
+      }
+    ]
+  },
+  {
+    "fn_name": "mmtv_512MB",
+    "trace": "points/traces/mmtv_512_512_512.reproduced.tir.py",
+    "candidates": [
+      {
+        "label": "r0",
+        "params": {
+          "dpus": 2048,
+          "tasklets": 16,
+          "batch_gemv.B.mram": 1,
+          "batch_gemv.B.wram": 1,
+          "batch_gemv.M.mram": 8,
+          "batch_gemv.M.wram": 8,
+          "batch_gemv.K.mram": 512,
+          "batch_gemv.K.wram": 32,
+          "batch_gemv.order[0]": 1,
+          "batch_gemv.order[1]": 2,
+          "batch_gemv.order[2]": 3
+        },
+        "expected": {
+          "D": [
+            2048
+          ],
+          "T": [
+            16
+          ]
+        },
+        "notes": "batch_gemv=B>M>K is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
+      }
+    ]
+  },
+  {
+    "fn_name": "mmtv_64MB",
+    "trace": "points/traces/mmtv_128_256_512.reproduced.tir.py",
+    "candidates": [
+      {
+        "label": "r0",
+        "params": {
+          "dpus": 2048,
+          "tasklets": 8,
+          "batch_gemv.B.mram": 1,
+          "batch_gemv.B.wram": 1,
+          "batch_gemv.M.mram": 2,
+          "batch_gemv.M.wram": 2,
+          "batch_gemv.K.mram": 512,
+          "batch_gemv.K.wram": 64,
+          "batch_gemv.order[0]": 1,
+          "batch_gemv.order[1]": 2,
+          "batch_gemv.order[2]": 3
+        },
+        "expected": {
+          "D": [
+            2048
+          ],
+          "T": [
+            8
+          ]
+        },
+        "notes": "batch_gemv=B>M>K is one reading of ATiM's blockIdx axes; their DPU linearization is not stated in the TIR"
+      }
+    ]
+  }
+]

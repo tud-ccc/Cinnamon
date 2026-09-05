@@ -18,14 +18,10 @@ typedef struct {
   int64_t strides[2];
 } MemRef2DF32;
 
-extern void alpine_example(MemRef1DF32 *input,
-                           MemRef2DF32 *weights,
+extern void alpine_example(MemRef1DF32 *input, MemRef2DF32 *weights,
                            MemRef1DF32 *output);
 
-enum {
-  kInputDim = 32,
-  kTileDim = 256
-};
+enum { kInputDim = 32, kTileDim = 256 };
 
 static inline void sys_write(int fd, const char *buf, unsigned long len) {
   register long x0 asm("x0") = fd;

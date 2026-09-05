@@ -1,6 +1,6 @@
 name: Build and test cinnamon
 run-name: 'Build and Test: ${{ github.event.head_commit.message }}'
-on: 
+on:
   workflow_dispatch:
   push:
   pull_request:
@@ -15,90 +15,81 @@ jobs:
       LDFLAGS: -fuse-ld=mold
       CMAKE_GENERATOR: Ninja
 
-    steps: 
+    steps:
+      # The build scripts check out the submodules they need, shallowly and
+      # only when they are actually going to build them.
       - name: Check out repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
+        with:
+          submodules: false
 
       - name: Install build dependencies
         run:
           sudo apt-get install clang ninja-build mold libvulkan-dev python3.12-dev ccache
 
-      - name: Restore runtime cache
-        id: runtimes-cache-restore
-        uses: actions/cache/restore@v3
+      # Dependency builds are keyed on the revision this repo pins them to, so
+      # a cache entry is reused until the submodule actually moves.
+      - name: Resolve pinned dependency revisions
+        id: revs
+        run: |
+          echo "llvm=$(git ls-tree --object-only HEAD third-party/llvm)" >> "$GITHUB_OUTPUT"
+          echo "torch-mlir=$(git ls-tree --object-only HEAD third-party/torch-mlir)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore venv cache
+        id: venv-cache-restore
+        uses: actions/cache/restore@v4
         with:
-          path: |
-            .venv
-            third-party/upmem
-          key: cinnamon-runtimes-${{ runner.os }}
+          path: .venv
+          key: cinnamon-venv-${{ runner.os }}-${{ hashFiles('experiments/requirements.txt') }}
 
       - name: Restore llvm cache
         id: llvm-cache-restore
-        uses: actions/cache/restore@v3
+        uses: actions/cache/restore@v4
         with:
           path: third-party/llvm
-          key: cinnamon-llvm-${{ runner.os }}
+          key: cinnamon-llvm-${{ runner.os }}-${{ steps.revs.outputs.llvm }}
 
       - name: Restore torch-mlir cache
         id: torch-mlir-cache-restore
-        uses: actions/cache/restore@v3
+        uses: actions/cache/restore@v4
         with:
           path: third-party/torch-mlir
-          key: cinnamon-torch-mlir-${{ runner.os }}
-      
-      - name: Checkout LLVM if needed
-        run: .github/workflows/checkout-llvm.sh -verbose
+          key: cinnamon-torch-mlir-${{ runner.os }}-${{ steps.revs.outputs.torch-mlir }}
 
       - name: Setup venv
         run: .github/workflows/setup-venv.sh -reconfigure -verbose
 
+      - name: Save venv cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: .venv
+          key: ${{ steps.venv-cache-restore.outputs.cache-primary-key }}
+
       - name: Build LLVM
-        run: |
-          source .venv/bin/activate
-          export LLVM_CMAKE_OPTIONS='-DLLVM_CCACHE_BUILD=OFF'
-          .github/workflows/build-llvm.sh -reconfigure -verbose
+        run: LLVM_CMAKE_OPTIONS='-DLLVM_CCACHE_BUILD=OFF' .github/workflows/build-llvm.sh -verbose
 
       - name: Save llvm cache
-        uses: actions/cache/save@v3
+        uses: actions/cache/save@v4
         if: always()
         with:
           path: third-party/llvm
           key: ${{ steps.llvm-cache-restore.outputs.cache-primary-key }}
 
       - name: Build Torch-MLIR
-        run: |
-          source .venv/bin/activate
-          .github/workflows/build-torch.sh -reconfigure -verbose
+        run: .github/workflows/build-torch.sh -verbose
 
       - name: Save torch-mlir cache
-        uses: actions/cache/save@v3
+        uses: actions/cache/save@v4
         if: always()
         with:
           path: third-party/torch-mlir
           key: ${{ steps.torch-mlir-cache-restore.outputs.cache-primary-key }}
 
-      # Cannot checkout Upmem SDK anymore. We don't build this in CI anymore.
-      # - name: Checkout upmem
-      #   run: |
-      #     source .venv/bin/activate
-      #     .github/workflows/build-upmem.sh -reconfigure -verbose
+      # The UPMEM SDK is no longer publicly downloadable, so the UPMEM runtime
+      # library is not built here.
+      - name: Build Cinnamon
+        run: .github/workflows/build-cinnamon.sh -reconfigure -verbose -no-upmem
 
-      - name: Build CINM
-        run: |
-          source .venv/bin/activate
-          export CINNAMON_CMAKE_OPTIONS='-DCMAKE_GENERATOR=Ninja'
-          .github/workflows/build-cinnamon.sh -reconfigure -verbose -no-upmem
-
-      - name: Test CINM
-        run: |
-          source .venv/bin/activate
-          ninja -Cbuild check-cinm-mlir
-
-      - name: Save runtime cache
-        uses: actions/cache/save@v3
-        if: always()
-        with:
-          path: |
-            .venv
-            third-party/upmem
-          key: ${{ steps.runtimes-cache-restore.outputs.cache-primary-key }}
+      - name: Test Cinnamon
+        run: ninja -Cbuild check-cinm-mlir

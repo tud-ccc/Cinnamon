@@ -30,7 +30,8 @@ struct GemmToLoopedGemv final : OpRewritePattern<cinm::GemmOp> {
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    cinm::ComputeOp parentCompute = op->getParentOfType<cinm::ComputeOp>();
+    cinm::ComputeBlockOp parentCompute =
+        op->getParentOfType<cinm::ComputeBlockOp>();
 
     auto aTy = dyn_cast<RankedTensorType>(op.getLhs().getType());
     auto bTy = dyn_cast<RankedTensorType>(op.getRhs().getType());
@@ -211,7 +212,7 @@ struct BatchGemmToLoopedGemv final : OpRewritePattern<cinm::BatchGemmOp> {
     if (elemTy != bTy.getElementType() || elemTy != yTy.getElementType())
       return rewriter.notifyMatchFailure(op, "element types must match");
 
-    auto parentCompute = op->getParentOfType<cinm::ComputeOp>();
+    auto parentCompute = op->getParentOfType<cinm::ComputeBlockOp>();
 
     Value bias = op.getBias();
     RankedTensorType biasTy;
@@ -250,7 +251,7 @@ struct BatchGemmToLoopedGemv final : OpRewritePattern<cinm::BatchGemmOp> {
       SmallVector<ReassociationIndices, 1> expandY{{0, 1, 2}};
       auto yExpandedTy = RankedTensorType::get({1, M, 1}, elemTy);
       SmallVector<int64_t, 3> staticSizesY{1, M, 1};
-      auto yVecTy = RankedTensorType::get({M}, elemTy);
+      // auto yVecTy = RankedTensorType::get({M}, elemTy);
 
       SmallVector<int64_t, 3> staticSizesBias{1, M, 1};
       auto biasColTy = RankedTensorType::get({1, M, 1}, elemTy);
@@ -326,7 +327,7 @@ struct BatchGemmToLoopedGemv final : OpRewritePattern<cinm::BatchGemmOp> {
       SmallVector<ReassociationIndices, 1> expandScalar{{0, 1, 2}};
       auto yExpandedTy = RankedTensorType::get({1, 1, 1}, elemTy);
       SmallVector<int64_t, 3> staticSizesY{1, 1, 1};
-      auto yScalarTy = RankedTensorType::get({1}, elemTy);
+      // auto yScalarTy = RankedTensorType::get({1}, elemTy);
 
       finals = createNestedAffineForLoops(
           rewriter, loc, ArrayRef<int64_t>{B, M, N}, ArrayRef<int64_t>{1, 1, 1},
@@ -424,9 +425,10 @@ struct BatchGemvToLoopedGemv final : OpRewritePattern<cinm::BatchGemvOp> {
       return rewriter.notifyMatchFailure(op,
                                          "expected ranked tensors (3D,2D,2D)");
 
-    auto parentCompute = op->getParentOfType<cinm::ComputeOp>();
+    auto parentCompute = op->getParentOfType<cinm::ComputeBlockOp>();
     if (!parentCompute)
-      return rewriter.notifyMatchFailure(op, "requires enclosing cinm.compute");
+      return rewriter.notifyMatchFailure(
+          op, "requires enclosing cinm.compute_block");
 
     const int64_t B = aTy.getDimSize(0);
     const int64_t M = aTy.getDimSize(1);

@@ -69,8 +69,7 @@ static LogicalResult verifyFutureMatchesMemRef(Operation *op, MemRefType memTy,
     if (!dimsEqualOrDynamic(memDim, futDim))
       return op->emitOpError()
              << "expects dimension " << idx << " of " << futureName << " ("
-             << futDim << ") to match " << memName << " (" << memDim
-             << ")";
+             << futDim << ") to match " << memName << " (" << memDim << ")";
   }
 
   return success();
@@ -164,8 +163,8 @@ static LogicalResult verifyFutureMatchesMemRef(Operation *op, MemRefType memTy,
   if (!futureElemTy || futureElemTy.getWidth() != 8)
     return emitOpError("expects future element type to be i8");
 
-  if (failed(verifyFutureMatchesMemRef(*this, srcTy, futureTy, "src",
-                                       "result")))
+  if (failed(
+          verifyFutureMatchesMemRef(*this, srcTy, futureTy, "src", "result")))
     return failure();
 
   return success();
@@ -187,8 +186,8 @@ static LogicalResult verifyFutureMatchesMemRef(Operation *op, MemRefType memTy,
   if (!isa<FloatType>(futureTy.getElementType()))
     return emitOpError("expects future element type to be floating point");
 
-  if (failed(verifyFutureMatchesMemRef(*this, srcTy, futureTy, "src",
-                                       "result")))
+  if (failed(
+          verifyFutureMatchesMemRef(*this, srcTy, futureTy, "src", "result")))
     return failure();
 
   return success();

@@ -29,33 +29,36 @@ struct SoftmaxToCinmPattern : OpConversionPattern<linalg::SoftmaxOp> {
   matchAndRewrite(linalg::SoftmaxOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     const auto loc = op.getLoc();
-    const auto input = op.getInput();
-    const ShapedType inputType = input.getType();
-    auto computeOp =
-        rewriter.replaceOpWithNewOp<ComputeOp>(op, op.getResultTypes());
+    const ShapedType inputType = op.getInput().getType();
+    bool isFloat = inputType.getElementType().isFloat();
 
-    rewriter.setInsertionPointToEnd(&computeOp.getBody().emplaceBlock());
-    const Value max = rewriter.create<ReduceOp>(loc, inputType.getElementType(),
-                                                ReduceMethod::MAX, input, 0);
-    const Value t =
-        rewriter
-            .create<cinm::ElementwiseOp>(loc, ElementwiseKind::Sub, input, max)
-            .getResult();
-    const Value init = rewriter.create<tensor::EmptyOp>(
-        loc, inputType.getShape(), inputType.getElementType());
+    auto compute = rewriter.replaceOpWithNewOp<ComputeBlockOp>(
+        op, adaptor.getOperands(), op.getResultTypes());
+    Value innerInput = compute.getBodyArguments()[0];
+
+    rewriter.setInsertionPointToEnd(&compute.getBody().emplaceBlock());
+    const Value max = cinm::ReduceOp::create(
+                          rewriter, loc, inputType.getElementType(),
+                          isFloat ? ReduceMethod::MAXNUMF : ReduceMethod::MAXSI,
+                          innerInput, 0)
+                          .getResult();
+    const Value t = cinm::ElementwiseOp::create(
+                        rewriter, loc, ElementwiseKind::Sub, innerInput, max)
+                        .getResult();
     const SmallVector<Type, 1> types{RankedTensorType::get(
         inputType.getShape(), inputType.getElementType())};
 
     const Value e =
-        rewriter
-            .create<linalg::ExpOp>(loc, types, ValueRange{t}, ValueRange{init})
-            .getResult(0);
-    const Value s = rewriter.create<ReduceOp>(loc, inputType.getElementType(),
-                                              ReduceMethod::ADD, e, 0);
-    const Value result =
-        rewriter.create<cinm::ElementwiseOp>(loc, ElementwiseKind::Div, e, s)
+        cinm::ElementwiseOp::create(rewriter, loc, ElementwiseKind::Exp, t)
             .getResult();
-    rewriter.create<YieldOp>(loc, ValueRange{result});
+    const Value s =
+        cinm::ReduceOp::create(rewriter, loc, inputType.getElementType(),
+                               ReduceMethod::ADD, e, 0)
+            .getResult();
+    const Value result =
+        cinm::ElementwiseOp::create(rewriter, loc, ElementwiseKind::Div, e, s)
+            .getResult();
+    YieldOp::create(rewriter, loc, ValueRange{result});
     return success();
   }
 };

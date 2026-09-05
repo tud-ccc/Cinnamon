@@ -8,6 +8,7 @@
 #define UPMEM_ATTRIBUTES
 
 include "cinm-mlir/Dialect/UPMEM/IR/UPMEMBase.td"
+include "cinm-mlir/Dialect/Cinm/IR/CinmPlatformAttrInterface.td"
 
 // def UPMEM_AddressSpaceGlobal : I32EnumAttrCase<"Global", 1, "global">;
 // def UPMEM_AddressSpaceWorkgroup : I32EnumAttrCase<"Workgroup", 2, "workgroup">;
@@ -22,22 +23,31 @@ include "cinm-mlir/Dialect/UPMEM/IR/UPMEMBase.td"
 // def UPMEM_AddressSpaceAttr :
 //   UPMEM_I32EnumAttr<"address_space", UPMEM_AddressSpaceEnum>;
 
-
-def UPMEM_MemcpyOpMRAMToWRAM: I32EnumAttrCase<"MRAMToWRAM", 0, "mram_to_wram">;
-def UPMEM_MemcpyOpWRAMToMRAM: I32EnumAttrCase<"WRAMToMRAM", 1, "wram_to_mram">;
-
-def MemcpyDir : I32EnumAttr<"MemcpyDirOp",
-  "copy operation between wram and mram", [
-    UPMEM_MemcpyOpMRAMToWRAM,
-    UPMEM_MemcpyOpWRAMToMRAM
-  ]> {
-  let genSpecializedAttr = 0;
+def DpuMemSpace : I64EnumAttr<
+    "DpuMemSpace", "",
+    [
+      I64EnumAttrCase<"MRAM", 0, "mram">,
+      I64EnumAttrCase<"WRAM", 1, "wram">
+    ]> {
   let cppNamespace = "::mlir::upmem";
+  let genSpecializedAttr = 0;
 }
 
-def MemcpyDirAttr : EnumAttr<UPMEM_Dialect, MemcpyDir,
-                                  "memcpy_dir">;
+def UPMEM_DpuMemSpaceAttr : EnumAttr<UPMEM_Dialect, DpuMemSpace, "",
+    [CinmLevelAttrInterface]> {
+  let assemblyFormat = ?;
+  let hasCustomAssemblyFormat = 1;
 
+  let extraClassDeclaration = [{
+    // The stringified enum cases are exactly the names `upmemLevels()` gives
+    // the corresponding CinmLevelDefAttrs, so a memory space round-trips to
+    // its level descriptor through UpmemPlatformAttr::getLevel.
+    llvm::StringRef getLevelName() const {
+      return stringifyDpuMemSpace(getValue());
+    }
+  }];
+}
 
+include "UPMEMTileFirstAttributes.td"
 
 #endif

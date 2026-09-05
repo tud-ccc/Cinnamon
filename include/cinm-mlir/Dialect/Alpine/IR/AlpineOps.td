@@ -212,7 +212,7 @@ def Alpine_MVMOp : Alpine_Op<"mvm"> {
 
 
 //------------------------------------------------------------------------------
-// alpine.quantize  (f32 -> i8)  
+// alpine.quantize  (f32 -> i8)
 //------------------------------------------------------------------------------
 def Alpine_QuantizeOp : Alpine_Op<"quantize"> {
   let summary = "Quantize memref (f32 -> i8), per-tensor scale & zero";

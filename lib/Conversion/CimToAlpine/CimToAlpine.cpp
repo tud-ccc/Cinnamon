@@ -16,7 +16,7 @@ using namespace mlir;
 namespace mlir::cim {
 #define GEN_PASS_DEF_CONVERTCIMTOALPINEPASS
 #include "cinm-mlir/Conversion/CimPasses.h.inc"
-}
+} // namespace mlir::cim
 
 namespace {
 
@@ -40,9 +40,8 @@ static void preAllocateTiles(Operation *root, XbarToTileMap &map) {
       attrs.emplace_back(b.getStringAttr("height"), h);
     if (auto w = acq->getAttr("width"))
       attrs.emplace_back(b.getStringAttr("width"), w);
-    Value tile = b.create<alpine::AllocTileOp>(
-        acq.getLoc(),  b.getI32Type(),  ValueRange{},
-         attrs);
+    Value tile = alpine::AllocTileOp::create(b, acq.getLoc(), b.getI32Type(),
+                                             ValueRange{}, attrs);
     map.try_emplace(xb, tile);
   });
 }
@@ -88,27 +87,28 @@ struct LowerCimQuantizeToAlpine : OpRewritePattern<memref::CopyOp> {
     if (auto altSrcTy = dyn_cast<MemRefType>(copy.getSource().getType())) {
       if (altSrcTy.getRank() == srcTy.getRank() && altSrcTy != srcTy &&
           memref::CastOp::areCastCompatible(srcTy, altSrcTy)) {
-        srcForOp = rewriter.create<memref::CastOp>(loc, altSrcTy, srcForOp);
+        srcForOp = memref::CastOp::create(rewriter, loc, altSrcTy, srcForOp);
         srcTy = altSrcTy;
       }
     }
 
     Value dstForOp = dst;
     if (srcTy.getRank() == dstMR.getRank()) {
-      SmallVector<int64_t> shape(srcTy.getShape().begin(), srcTy.getShape().end());
+      SmallVector<int64_t> shape(srcTy.getShape().begin(),
+                                 srcTy.getShape().end());
       auto expectedDstTy =
           MemRefType::get(shape, dstMR.getElementType(), dstMR.getLayout(),
                           dstMR.getMemorySpace());
       if (expectedDstTy != dstMR &&
           memref::CastOp::areCastCompatible(dstMR, expectedDstTy)) {
-        dstForOp = rewriter.create<memref::CastOp>(loc, expectedDstTy, dst);
+        dstForOp = memref::CastOp::create(rewriter, loc, expectedDstTy, dst);
       }
     }
 
     rewriter.setInsertionPoint(copy);
-    rewriter.create<alpine::QuantizeOp>(
-        loc, srcForOp, dstForOp, q.getScaleAttr(),
-        rewriter.getI32IntegerAttr((int32_t)z64));
+    alpine::QuantizeOp::create(rewriter, loc, srcForOp, dstForOp,
+                               q.getScaleAttr(),
+                               rewriter.getI32IntegerAttr((int32_t)z64));
 
     rewriter.eraseOp(copy);
     if (bar->use_empty())
@@ -161,27 +161,28 @@ struct LowerCimDequantizeToAlpine : OpRewritePattern<memref::CopyOp> {
     if (auto altSrcTy = dyn_cast<MemRefType>(copy.getSource().getType())) {
       if (altSrcTy.getRank() == srcTy.getRank() && altSrcTy != srcTy &&
           memref::CastOp::areCastCompatible(srcTy, altSrcTy)) {
-        srcForOp = rewriter.create<memref::CastOp>(loc, altSrcTy, srcForOp);
+        srcForOp = memref::CastOp::create(rewriter, loc, altSrcTy, srcForOp);
         srcTy = altSrcTy;
       }
     }
 
     Value dstForOp = dst;
     if (srcTy.getRank() == dstMR.getRank()) {
-      SmallVector<int64_t> shape(srcTy.getShape().begin(), srcTy.getShape().end());
+      SmallVector<int64_t> shape(srcTy.getShape().begin(),
+                                 srcTy.getShape().end());
       auto expectedDstTy =
           MemRefType::get(shape, dstMR.getElementType(), dstMR.getLayout(),
                           dstMR.getMemorySpace());
       if (expectedDstTy != dstMR &&
           memref::CastOp::areCastCompatible(dstMR, expectedDstTy)) {
-        dstForOp = rewriter.create<memref::CastOp>(loc, expectedDstTy, dst);
+        dstForOp = memref::CastOp::create(rewriter, loc, expectedDstTy, dst);
       }
     }
 
     rewriter.setInsertionPoint(copy);
-    rewriter.create<alpine::DequantizeOp>(
-        loc, srcForOp, dstForOp, dq.getScaleAttr(),
-        rewriter.getI32IntegerAttr((int32_t)z64));
+    alpine::DequantizeOp::create(rewriter, loc, srcForOp, dstForOp,
+                                 dq.getScaleAttr(),
+                                 rewriter.getI32IntegerAttr((int32_t)z64));
 
     rewriter.eraseOp(copy);
     if (bar->use_empty())
@@ -235,18 +236,15 @@ struct LowerCimGemvChainToAlpine : OpRewritePattern<memref::CopyOp> {
 
     rewriter.setInsertionPoint(copy);
 
-    rewriter.create<alpine::WriteWeightsOp>(loc, tile, mat);
+    alpine::WriteWeightsOp::create(rewriter, loc, tile, mat);
 
-    rewriter.create<alpine::EnqueueVecOp>(loc, tile, vec);
+    alpine::EnqueueVecOp::create(rewriter, loc, tile, vec);
 
-    (void)rewriter.create<alpine::ProcessOp>(
-        loc,
-        tile,
-        StringAttr(),
-        rewriter.getBoolAttr(false),
-        rewriter.getI64IntegerAttr(1));
+    (void)alpine::ProcessOp::create(rewriter, loc, tile, StringAttr(),
+                                    rewriter.getBoolAttr(false),
+                                    rewriter.getI64IntegerAttr(1));
 
-    rewriter.create<alpine::DequeueVecOp>(loc, tile, dst);
+    alpine::DequeueVecOp::create(rewriter, loc, tile, dst);
 
     rewriter.eraseOp(copy);
 
@@ -293,18 +291,19 @@ struct LowerCimReluToAlpine : OpRewritePattern<memref::CopyOp> {
     Value dst = copy.getTarget();
     Value dstForOp = dst;
     if (inMR.getRank() == dstMR.getRank()) {
-      SmallVector<int64_t> shape(inMR.getShape().begin(), inMR.getShape().end());
-      auto expectedDstTy = MemRefType::get(shape, dstMR.getElementType(),
-                                           inMR.getLayout(),
-                                           dstMR.getMemorySpace());
+      SmallVector<int64_t> shape(inMR.getShape().begin(),
+                                 inMR.getShape().end());
+      auto expectedDstTy =
+          MemRefType::get(shape, dstMR.getElementType(), inMR.getLayout(),
+                          dstMR.getMemorySpace());
       if (expectedDstTy != dstMR &&
           memref::CastOp::areCastCompatible(dstMR, expectedDstTy))
-        dstForOp = rewriter.create<memref::CastOp>(copy.getLoc(), expectedDstTy,
-                                                   dst);
+        dstForOp =
+            memref::CastOp::create(rewriter, copy.getLoc(), expectedDstTy, dst);
     }
 
     rewriter.setInsertionPoint(copy);
-    rewriter.create<alpine::ReluOp>(copy.getLoc(), srcForOp, dstForOp);
+    alpine::ReluOp::create(rewriter, copy.getLoc(), srcForOp, dstForOp);
 
     rewriter.eraseOp(copy);
     if (bar->use_empty())
@@ -315,7 +314,7 @@ struct LowerCimReluToAlpine : OpRewritePattern<memref::CopyOp> {
   }
 };
 
-}
+} // namespace
 
 struct ConvertCimToAlpine
     : public mlir::cim::impl::ConvertCimToAlpinePassBase<ConvertCimToAlpine> {
@@ -354,4 +353,4 @@ std::unique_ptr<Pass> createConvertCimToAlpinePass() {
   return std::make_unique<ConvertCimToAlpine>();
 }
 void registerCimToAlpinePipeline() {}
-}
+} // namespace mlir::cim

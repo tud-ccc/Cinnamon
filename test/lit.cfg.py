@@ -22,7 +22,7 @@ config.name = "cinm-mlir"
 config.test_format = lit.formats.ShTest(not llvm_config.use_lit_shell)
 
 # suffixes: A list of file extensions to treat as test files.
-config.suffixes = [".mlir"] + ([".py"] if has_cinnamon_module else [])
+config.suffixes = [".mlir", ".test"] + ([".py"] if has_cinnamon_module else [])
 
 # test_source_root: The root path where tests are located.
 config.test_source_root = os.path.dirname(__file__)
@@ -51,6 +51,6 @@ tool_dirs = [
     config.llvm_tools_dir,
     os.path.dirname(config.python_executable),
 ]
-tools = ["cinm-opt", "python"]
+tools = ["cinm-opt", "cinm-constraint-tests", "python"]
 
 llvm_config.add_tool_substitutions(tools, tool_dirs)

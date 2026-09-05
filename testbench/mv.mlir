@@ -1,8 +1,13 @@
+#upmem = #upmem.platform<type = v1A, dpus = 4096, tasklets = 1>
+#upmem_4_128_1 = #upmem.array<512x1, #upmem>
+#upmem_8_128_1 = #upmem.array<1024x1, #upmem>
+#upmem_16_128_1 = #upmem.array<2048x1, #upmem>
+
 module {
 
     // func.func @mv_dimm4_nopt(%A: tensor<128x65536xi32>, %B: tensor<65536xi32>) -> tensor<128xi32> {
 
-    //     %r0 = cinm.compute attributes { workgroupShape=array<i64: 4, 128, 1> } -> tensor<128xi32> {
+    //     %r0 = cinm.compute -> tensor<128xi32> attributes { workgroupShape=array<i64: 4, 128, 1> } {
     //         %r = cinm.op.gemv %A, %B: (tensor<128x65536xi32>, tensor<65536xi32>) -> tensor<128xi32>
     //         cinm.yield %r : tensor<128xi32>
     //     }
@@ -11,8 +16,8 @@ module {
 
     func.func @mv_dimm4_opt(%A: tensor<4096x2048xi32>, %B: tensor<2048xi32>) -> tensor<4096xi32> {
 
-        %r0 = cinm.compute attributes { workgroupShape=array<i64: 4, 128, 1> } -> tensor<4096xi32> {
-            %r = cinm.op.gemv %A, %B: (tensor<4096x2048xi32>, tensor<2048xi32>) -> tensor<4096xi32>
+        %r0 = cinm.compute on accelerator #upmem_4_128_1 -> tensor<4096xi32> {
+            %r = cinm.op.gemv %A, %B: tensor<4096x2048xi32>, tensor<2048xi32> -> tensor<4096xi32>
             cinm.yield %r : tensor<4096xi32>
         }
         return %r0 : tensor<4096xi32>
@@ -20,8 +25,8 @@ module {
 
     func.func @mv_dimm8_nopt(%A: tensor<16384x512xi32>, %B: tensor<512xi32>) -> tensor<16384xi32> {
 
-        %r0 = cinm.compute attributes { workgroupShape=array<i64: 8, 128, 1> } -> tensor<16384xi32> {
-            %r = cinm.op.gemv %A, %B: (tensor<16384x512xi32>, tensor<512xi32>) -> tensor<16384xi32>
+        %r0 = cinm.compute on accelerator #upmem_8_128_1 -> tensor<16384xi32> {
+            %r = cinm.op.gemv %A, %B: tensor<16384x512xi32>, tensor<512xi32> -> tensor<16384xi32>
             cinm.yield %r : tensor<16384xi32>
         }
         return %r0 : tensor<16384xi32>
@@ -29,8 +34,8 @@ module {
 
     // func.func @mv_dimm8_opt(%A: tensor<256x16384xi32>, %B: tensor<16384xi32>) -> tensor<256xi32> {
 
-    //     %r0 = cinm.compute attributes { workgroupShape=array<i64: 8, 128, 1> } -> tensor<256xi32> {
-    //         %r = cinm.op.gemv %A, %B: (tensor<256x16384xi32>, tensor<16384xi32>) -> tensor<256xi32>
+    //     %r0 = cinm.compute -> tensor<256xi32> attributes { workgroupShape=array<i64: 8, 128, 1> } {
+    //         %r = cinm.op.gemv %A, %B: tensor<256x16384xi32>, tensor<16384xi32> -> tensor<256xi32>
     //         cinm.yield %r : tensor<256xi32>
     //     }
     //     return %r0 : tensor<256xi32>
@@ -38,8 +43,8 @@ module {
 
     // func.func @mv_dimm16_nopt(%A: tensor<512x4096xi32>, %B: tensor<4096xi32>) -> tensor<512xi32> {
 
-    //     %r0 = cinm.compute attributes { workgroupShape=array<i64: 16, 128, 1> } -> tensor<512xi32> {
-    //         %r = cinm.op.gemv %A, %B: (tensor<512x4096xi32>, tensor<4096xi32>) -> tensor<512xi32>
+    //     %r0 = cinm.compute -> tensor<512xi32> attributes { workgroupShape=array<i64: 16, 128, 1> } {
+    //         %r = cinm.op.gemv %A, %B: tensor<512x4096xi32>, tensor<4096xi32> -> tensor<512xi32>
     //         cinm.yield %r : tensor<512xi32>
     //     }
     //     return %r0 : tensor<512xi32>
@@ -47,8 +52,8 @@ module {
 
     func.func @mv_dimm16_opt(%A: tensor<16384x128xi32>, %B: tensor<128xi32>) -> tensor<16384xi32> {
 
-        %r0 = cinm.compute attributes { workgroupShape=array<i64: 16, 128, 1> } -> tensor<16384xi32> {
-            %r = cinm.op.gemv %A, %B: (tensor<16384x128xi32>, tensor<128xi32>) -> tensor<16384xi32>
+        %r0 = cinm.compute on accelerator #upmem_16_128_1 -> tensor<16384xi32> {
+            %r = cinm.op.gemv %A, %B: tensor<16384x128xi32>, tensor<128xi32> -> tensor<16384xi32>
             cinm.yield %r : tensor<16384xi32>
         }
         return %r0 : tensor<16384xi32>

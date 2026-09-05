@@ -1,35 +1,59 @@
 #include "cinm-mlir/Conversion/CnmToUPMEM/CnmToUPMEM.h"
 #include "cinm-mlir/Conversion/CommonPatterns.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmWorkgroupTypeInterface.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
+#include "cinm-mlir/Dialect/Cnm/IR/CnmScatterMap.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.h"
 
+#include <cinm-mlir/Dialect/UPMEM/Transforms/Utils.h>
+#include <cinm-mlir/Utils/CinmUtils.h>
+#include <cstdint>
+#include <llvm/ADT/MapVector.h>
+#include <llvm/ADT/STLExtras.h>
+#include <llvm/ADT/SmallVector.h>
 #include <llvm/Support/Casting.h>
+#include <llvm/Support/LogicalResult.h>
 #include <mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
+#include <mlir/Dialect/SCF/IR/SCF.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
 #include <mlir/Dialect/Utils/IndexingUtils.h>
 #include <mlir/IR/AffineExpr.h>
 #include <mlir/IR/AffineMap.h>
+#include <mlir/IR/Attributes.h>
+#include <mlir/IR/Builders.h>
+#include <mlir/IR/BuiltinAttributeInterfaces.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/BuiltinTypeInterfaces.h>
 #include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/Diagnostics.h>
+#include <mlir/IR/IRMapping.h>
+#include <mlir/IR/Location.h>
+#include <mlir/IR/MLIRContext.h>
+#include <mlir/IR/PatternMatch.h>
+#include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/ValueRange.h>
 #include <mlir/Support/LLVM.h>
 #include <mlir/Transforms/DialectConversion.h>
 
+namespace mlir::cnm {
+
 #define GEN_PASS_DEF_CONVERTCNMTOUPMEMPASS
 #include "cinm-mlir/Conversion/CnmPasses.h.inc"
 
-namespace mlir::cnm {
 namespace {
+
+struct Opts {
+  bool cinm1codegen = false;
+  bool useMramNoInit = true;
+};
 
 template <typename T> T reduceMul(ArrayRef<T> arr) {
   T result{1};
@@ -46,347 +70,716 @@ MemRefType convertTensorToMemref(ShapedType ty) {
   return MemRefType::get(ty.getShape(), ty.getElementType());
 }
 
-inline static constexpr size_t alignTo(size_t v, size_t alignment) {
-  return v % alignment == 0 ? v : v + alignment - v % alignment;
+// A CNM map addresses (dpu, tasklet) and, when a leaf receives more than
+// one block, the buffer dimensions that index those blocks. An UPMEM map
+// addresses whatever the chosen transfer form iterates -- (dpu), or
+// (dpu, block) -- and always has one result per host dimension, giving
+// the start of a transfer. `substitutions` says what to put in place of each
+// CNM dimension, and `numDims` how many the result has.
+static AffineMap rewriteMapForUpmem(AffineMap map, cnm::BufferType bufTy,
+                                    ArrayRef<AffineExpr> substitutions,
+                                    unsigned numDims) {
+  assert(map.getNumDims() == substitutions.size());
+  auto cst0 = getAffineConstantExpr(0, map.getContext());
+  SmallVector<AffineExpr> exprs;
+  for (AffineExpr e : map.getResults())
+    exprs.push_back(e.replaceDims(substitutions));
+  // The host dimensions the CNM map leaves implicit are the block's own shape,
+  // so the transfer starts at their origin.
+  for (int64_t i = 0, e = cnm::getNumImplicitHostDims(map, bufTy); i < e; ++i)
+    exprs.push_back(cst0);
+  return AffineMap::get(numDims, 0, std::move(exprs), map.getContext());
 }
 
-static const StringRef BUFFER_OFFSET_ATTR = "upmem.bufferOffset";
-struct ConvertCnmWorkgroupToUPMEM
-    : public OpConversionPattern<cnm::WorkgroupOp> {
-  using OpConversionPattern<cnm::WorkgroupOp>::OpConversionPattern;
+// The (dpu, block) form, whose block dimension the UPMEM SDK's scatter
+// transfer API evaluates once per block. A leaf's blocks vary fastest, so
+// block index `b` is tasklet `b / blocksPerLeaf` at buffer position
+// `b % blocksPerLeaf` inflated over the retained buffer dimensions.
+static AffineMap keepTaskletDimAffineMapCnmToUpmem(AffineMap map,
+                                                   cnm::BufferType bufTy) {
+  MLIRContext *ctx = map.getContext();
+  int64_t blocksPerLeaf = cnm::getScatterBlocksPerLeaf(map, bufTy);
+  AffineExpr block = getAffineDimExpr(1, ctx);
 
-  LogicalResult
-  matchAndRewrite(cnm::WorkgroupOp op, OpAdaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    if (op.getType().getShape().size() != 3)
-      return op->emitOpError(
-          "cannot be converted to UPMEM dialect. "
-          "UPMEM translation requires workgroup with 3 dimensions.");
-    rewriter.replaceOpWithNewOp<upmem::AllocDPUsOp>(
-        op, getTypeConverter()->convertType(op.getType()));
+  SmallVector<AffineExpr> substitutions{getAffineDimExpr(0, ctx),
+                                        block.floorDiv(blocksPerLeaf)};
+  ArrayRef<int64_t> retained =
+      bufTy.getShape().take_front(cnm::getNumRetainedBufferDims(map, bufTy));
+  if (!retained.empty()) {
+    SmallVector<AffineExpr> coords;
+    structureIndex(block % blocksPerLeaf, retained, coords);
+    llvm::append_range(substitutions, coords);
+  }
+  return rewriteMapForUpmem(map, bufTy, substitutions, 2);
+}
 
-    SmallVector<cnm::AllocOp> allocs;
-    for (auto use : op.getResult().getUsers()) {
-      if (cnm::AllocOp alloc = llvm::dyn_cast_or_null<cnm::AllocOp>(use)) {
-        allocs.push_back(alloc);
+// How many blocks of the CNM map's implicit shape reach one DPU. A leaf may
+// take several, and a DPU has `numTasklets` leaves -- unless the MRAM buffer
+// is shared across them (isMramBroadcastOverThreads), in which case one
+// leaf's worth is all that is stored.
+static int64_t blocksPerDpu(AffineMap map, cnm::BufferType bufferTy,
+                            size_t numTasklets, bool sharedAcrossTasklets) {
+  int64_t perLeaf = cnm::getScatterBlocksPerLeaf(map, bufferTy);
+  return sharedAcrossTasklets ? perLeaf
+                              : static_cast<int64_t>(numTasklets) * perLeaf;
+}
+
+// What a transfer's timing rows are labelled with: whether the data it moves
+// is the same on every inference, and which op moved it.
+//
+// Both are decided here. This is the last point at which the host value's
+// definition is in the IR to be asked -- after the conversion there is a bare
+// pointer and a length -- and an id per op is what lets the analysis tell one
+// transfer's rows from another's, and one execution from a loop's worth of
+// them. A static transfer amortizes over the serving lifetime only if it
+// happens once per inference, which is a question about the rows, not the IR.
+static void labelTransfer(Operation *op, Value hostValue, unsigned id) {
+  std::string tag = (cinm::isStaticValue(hostValue) ? "static:" : "dyn:") +
+                    std::to_string(id);
+  op->setAttr(upmem::UPMEMDialect::TIMING_TAG_NAME,
+              StringAttr::get(op->getContext(), tag));
+}
+
+static LogicalResult
+convertCnmGatherToUpmem(RewriterBase &rewriter, cnm::GatherOp op,
+                        TypedValue<upmem::DeviceHierarchyType> hierarchy,
+                        StringAttr refToBuffer, unsigned id) {
+
+  rewriter.setInsertionPoint(op);
+  Value outputBuf = op.getOutputBuf();
+  bool isBufferized = isa<BaseMemRefType>(op.getOutputBuf().getType());
+  if (!isBufferized) {
+    outputBuf = memref::AllocOp::create(
+        rewriter, op->getLoc(),
+        convertTensorToMemref(op.getOutputBuf().getType()));
+  }
+
+  const size_t numTasklets = hierarchy.getType().getNumTaskletsPerDpu();
+  const cnm::BufferType bufferTy = op.getBuffer().getType();
+  // A DMA moves whole blocks, and the canonical map carries none, so derive
+  // the widest one it allows. Anything the host layout leaves non-contiguous
+  // stays a separate block.
+  const AffineMap map =
+      cnm::deflateScatterMap(op.getGatherMap(), bufferTy, op.getHostType());
+  const int64_t perLeaf = cnm::getScatterBlocksPerLeaf(map, bufferTy);
+
+  // A gathered buffer always has a per-tasklet dimension: results the
+  // tasklets could not tell apart would race.
+  auto gather = upmem::GatherBlocksOp::create(
+      rewriter, op->getLoc(), outputBuf, refToBuffer,
+      op.getTransferCountInItems() / perLeaf,
+      keepTaskletDimAffineMapCnmToUpmem(map, bufferTy), hierarchy,
+      blocksPerDpu(map, bufferTy, numTasklets,
+                   /*sharedAcrossTasklets=*/false));
+  labelTransfer(gather, op.getHostValue(), id);
+
+  if (!isBufferized) {
+    Value outputAsTensor = createOrFoldUnrealizedConversionCast(
+        op->getLoc(), rewriter, op.getOutput().getType(), outputBuf);
+
+    rewriter.replaceAllUsesWith(op.getOutput(), outputAsTensor);
+  }
+  rewriter.eraseOp(op);
+  return success();
+}
+
+static LogicalResult
+convertCnmScatterToUpmem(RewriterBase &rewriter, cnm::ScatterOp op,
+                         bool sharedAcrossTasklets,
+                         TypedValue<upmem::DeviceHierarchyType> hierarchy,
+                         StringAttr refToBuffer, unsigned id) {
+
+  rewriter.setInsertionPoint(op);
+  const Value tensor = op.getInput();
+  const ShapedType inputTy = op.getInput().getType();
+  const MemRefType hostBufferTy = convertTensorToMemref(inputTy);
+
+  const Value inputAsMemref = createOrFoldUnrealizedConversionCast(
+      op.getLoc(), rewriter, hostBufferTy, tensor);
+
+  const size_t numTasklets = hierarchy.getType().getNumTaskletsPerDpu();
+  const cnm::BufferType bufferTy = op.getBuffer().getType();
+  // What the map leaves implicit is one contiguous run; a leaf may receive
+  // several of them. The canonical map leaves nothing implicit, so derive the
+  // widest block the map and the host layout allow.
+  const AffineMap map =
+      cnm::deflateScatterMap(op.getScatterMap(), bufferTy, inputTy);
+  const int64_t perLeaf = cnm::getScatterBlocksPerLeaf(map, bufferTy);
+
+  auto scatter = upmem::ScatterBlocksOp::create(
+      rewriter, op->getLoc(), inputAsMemref, refToBuffer,
+      op.getTransferCountInItems() / perLeaf,
+      keepTaskletDimAffineMapCnmToUpmem(map, bufferTy), hierarchy,
+      blocksPerDpu(map, bufferTy, numTasklets, sharedAcrossTasklets));
+  // The host value, not the cast of it: a cast is not one of the definitions
+  // the staticness derivation walks through.
+  labelTransfer(scatter, op.getHostValue(), id);
+
+  rewriter.eraseOp(op);
+  return success();
+}
+
+// static MemRefType withMemrefMemspace(MemRefType fromTy, Attribute memspace) {
+//   return MemRefType::get(fromTy.getShape(), fromTy.getElementType(),
+//                          fromTy.getLayout(), memspace);
+// }
+
+// Whether `wramBuffer` is a single copy shared by every tasklet (as opposed
+// to a private per-tasklet WRAM buffer). MRAM sharing (see
+// isMramBroadcastOverThreads) and WRAM sharing are independent decisions:
+// under cinm1-codegen, WRAM is never shared, but MRAM can still be a single
+// copy that every tasklet loads from into its own private WRAM buffer.
+static bool isWramShared(TypedValue<MemRefType> wramBuffer) {
+  return isa_and_nonnull<upmem::StaticAllocOp>(wramBuffer.getDefiningOp());
+}
+
+// The slice of `mramBuf` belonging to the calling tasklet, shaped like
+// `tileTy`. When the MRAM buffer carries a leading tasklet dimension (i.e. it
+// is not broadcast over threads, see isMramBroadcastOverThreads) that is a
+// subview indexed by the tasklet id; otherwise every tasklet sees the whole
+// buffer and there is nothing to slice.
+static Value getTaskletSlice(RewriterBase &rewriter, Location loc,
+                             upmem::StaticAllocOp mramBuf, MemRefType tileTy) {
+  auto mramBufTy = mramBuf.getBuffer().getType();
+  if (mramBufTy.getRank() != tileTy.getRank() + 1)
+    return mramBuf.getBuffer();
+
+  auto taskletId = upmem::TaskletDimOp::create(rewriter, loc);
+
+  SmallVector<OpFoldResult, 4> offsets(mramBufTy.getRank(),
+                                       rewriter.getIndexAttr(0));
+  offsets[0] = taskletId.getResult();
+
+  SmallVector<OpFoldResult, 4> sizes;
+  sizes.push_back(rewriter.getIndexAttr(1));
+  for (auto size : tileTy.getShape())
+    sizes.push_back(rewriter.getIndexAttr(size));
+
+  llvm::SmallVector<OpFoldResult, 4> strides(mramBufTy.getRank(),
+                                             rewriter.getIndexAttr(1));
+
+  auto [baseStrides, baseOffset] = mramBufTy.getStridesAndOffset();
+
+  // this is the type of the tile. We cannot let it be inferred as it may be
+  // rank-reduced.
+  MemRefType viewType = MemRefType::get(
+      tileTy.getShape(), tileTy.getElementType(),
+      rewriter.getAttr<StridedLayoutAttr>(
+          ShapedType::kDynamic, ArrayRef<long>(baseStrides).drop_front()),
+      mramBufTy.getMemorySpace());
+
+  return memref::SubViewOp::create(rewriter, loc, viewType, mramBuf.getBuffer(),
+                                   offsets, sizes, strides);
+}
+
+/// The DMA granule of `memspace`'s level, in bits, as the platform declares
+/// it. Falls back to the 8 bytes every UPMEM level uses when the platform
+/// says nothing, which is the value the C emitter enforces anyway.
+static int64_t dmaGranuleBits(cnm::CnmAcceleratorAttrInterface accelerator,
+                              Attribute memspace) {
+  if (auto platform = accelerator.getPlatform())
+    if (cinm::CinmLevelDefAttr level = platform.getLevelOfMemspace(memspace))
+      return level.getAlignment() * 8;
+  return 64;
+}
+
+static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
+                           upmem::StaticAllocOp mramBuf,
+                           TypedValue<MemRefType> wramBuffer) {
+
+  auto mramBufTy = mramBuf.getBuffer().getType();
+  auto wramBufTy = wramBuffer.getType();
+  // The MRAM buffer has an extra leading tasklet dimension whenever it isn't
+  // itself broadcast over threads (see isMramBroadcastOverThreads).
+  bool mramHasTaskletDim = mramBufTy.getRank() == wramBufTy.getRank() + 1;
+  Value mramBufToScatter;
+
+  Operation *insertionPointReset = nullptr;
+  if (mramHasTaskletDim) {
+    mramBufToScatter = getTaskletSlice(rewriter, loc, mramBuf, wramBufTy);
+  } else if (isWramShared(wramBuffer)) {
+    auto taskletId = upmem::TaskletDimOp::create(rewriter, loc);
+    // MRAM buffer corresponds exactly to WRAM buffer, and WRAM is shared:
+    // this is a full broadcast (every tasklet reads the same WRAM copy).
+    mramBufToScatter = mramBuf.getBuffer();
+
+    // In that case we need to make only thread 0 call
+    // for the transfer
+    auto cst0 = arith::ConstantOp::create(
+        rewriter, loc, rewriter.getZeroAttr(taskletId.getResult().getType()));
+    auto isTaskletZero = arith::CmpIOp::create(
+        rewriter, loc, arith::CmpIPredicate::eq, taskletId, cst0);
+    auto scfIf = scf::IfOp::create(rewriter, loc, isTaskletZero, false);
+    // Create a barrier so that all threads wait for the transfer to finish.
+    // This is only ok if the transfer is from MRAM to WRAM, then threads are
+    // waiting for their inputs to be loaded into WRAM.
+    auto barrier = upmem::BarrierOp::create(rewriter, loc);
+    // If we are transferring back to MRAM, then the barrier needs to be instead
+    // _before_ the transfer, that way we make sure all threads are done before
+    // writing back.
+    if (!toWram) {
+      barrier->remove();
+      rewriter.setInsertionPoint(scfIf);
+      rewriter.insert(barrier);
+    }
+
+    // Position the rewriter so that the transfer is written inside the
+    // conditional block
+    rewriter.setInsertionPointToStart(&scfIf.getThenRegion().front());
+    insertionPointReset = scfIf;
+  } else {
+    // MRAM is broadcast (single shared copy) but WRAM is private per-tasklet
+    // (cinm1-codegen): every tasklet independently loads its own copy from
+    // the same MRAM location into its own private WRAM buffer. No subview,
+    // no restriction to a single tasklet, no barrier needed.
+    assert(toWram && "a broadcast MRAM buffer should never be an output "
+                     "(outputs always have a gather, disqualifying MRAM "
+                     "broadcast -- see isMramBroadcastOverThreads)");
+    mramBufToScatter = mramBuf.getBuffer();
+  }
+
+  if (toWram)
+    upmem::LocalTransferOp::create(rewriter, loc, mramBufToScatter, wramBuffer);
+  else
+    upmem::LocalTransferOp::create(rewriter, loc, wramBuffer, mramBufToScatter);
+
+  if (insertionPointReset)
+    rewriter.setInsertionPointAfter(insertionPointReset);
+}
+
+// Whether every scatter into `alloc` addresses the buffer without using the
+// thread dimension of the affine map (and there is no gather reading it
+// back, which would require distinguishable per-tasklet results). This is
+// purely a property of the CNM scatter maps, independent of whether WRAM
+// ends up shared or private for this buffer: even when WRAM is private per
+// tasklet (cinm1-codegen), a single shared MRAM copy is enough, since every
+// tasklet can load the same MRAM location into its own private WRAM buffer.
+static bool isMramBroadcastOverThreads(cnm::DeclareBufferOp alloc) {
+  for (auto user : alloc->getUsers()) {
+    if (llvm::isa<cnm::GatherOp>(user))
+      return false;
+    if (auto scatter = llvm::dyn_cast_or_null<cnm::ScatterOp>(user)) {
+      auto map = scatter.getScatterMap();
+      // The map addresses (dpu, tasklet) and may go on to address the
+      // buffer dimensions a leaf receives one block each of; only the tasklet
+      // dimension matters here.
+      if (map.getNumDims() < 2)
+        return false;
+      auto unusedDims = getUnusedDimsBitVector({map});
+      if (!unusedDims[1]) {
+        // threads dim is used so all threads see the same buffer
+        return false;
       }
     }
-
-    int64_t dpuMemOffset = 0;
-    const size_t numTasklets = op.getType().getShape()[2];
-    // getUsers returns users in reverse order so we have to reverse again to
-    // calculate the offset in the correct order
-    for (auto alloc : llvm::reverse(allocs)) {
-      alloc->setAttr(BUFFER_OFFSET_ATTR,
-                     rewriter.getI64IntegerAttr(dpuMemOffset));
-      const size_t memoryPerTasklet =
-          alloc.getResult().getType().getSizeInBytes();
-      dpuMemOffset += memoryPerTasklet * numTasklets;
-
-      // buffer offsets must be 8 byte aligned
-      dpuMemOffset = alignTo(dpuMemOffset, 8);
-    }
-
-    return success();
   }
-};
 
-struct ConvertCnmFreeWorkgroup
-    : public OpConversionPattern<cnm::FreeWorkgroupOp> {
-  using OpConversionPattern<cnm::FreeWorkgroupOp>::OpConversionPattern;
+  return true;
+}
 
-  LogicalResult
-  matchAndRewrite(cnm::FreeWorkgroupOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<upmem::FreeDPUsOp>(op, adaptor.getWorkgroup());
-    return success();
+// Give the ops a launch body uses to stage its own buffers their UPMEM
+// equivalents. Runs over the whole DPU program after the body has been cloned
+// in, because the staging sits inside the body's loop nests and cloning copies
+// regions wholesale.
+static LogicalResult lowerBodyStagingOps(RewriterBase &rewriter,
+                                         upmem::DpuProgramOp dpuProgram,
+                                         Attribute wramMemspace) {
+  SmallVector<Operation *> toRewrite;
+  dpuProgram->walk([&](Operation *op) {
+    if (isa<cnm::LocalTransferOp, memref::AllocOp, memref::DeallocOp>(op))
+      toRewrite.push_back(op);
+  });
+
+  for (Operation *op : toRewrite) {
+    rewriter.setInsertionPoint(op);
+
+    if (auto transfer = dyn_cast<cnm::LocalTransferOp>(op)) {
+      rewriter.replaceOpWithNewOp<upmem::LocalTransferOp>(
+          transfer, transfer.getSource(), transfer.getTarget());
+      continue;
+    }
+
+    if (auto alloc = dyn_cast<memref::AllocOp>(op)) {
+      auto type = alloc.getType();
+      if (type.getMemorySpace() != wramMemspace)
+        return alloc->emitOpError("cannot be lowered to UPMEM: only WRAM "
+                                  "allocations are supported inside a launch "
+                                  "body");
+      // WRAM scratch is a per-tasklet allocation carved out of the WRAM
+      // partition, which is what upmem.pwram_alloc denotes.
+      rewriter.replaceOpWithNewOp<memref::AllocaOp>(alloc, type);
+      continue;
+    }
+
+    // The WRAM partition is reclaimed when the kernel returns, so a matching
+    // deallocation has nothing to do.
+    auto dealloc = cast<memref::DeallocOp>(op);
+    if (cast<MemRefType>(dealloc.getMemref().getType()).getMemorySpace() ==
+        wramMemspace)
+      rewriter.eraseOp(dealloc);
   }
-};
+  return success();
+}
 
-struct ConvertCnmScatterToUPMEM : public OpConversionPattern<cnm::ScatterOp> {
-  using OpConversionPattern<cnm::ScatterOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(cnm::ScatterOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    const Value tensor = adaptor.getInput();
-    const ShapedType inputTy = op.getInput().getType();
-
-    const Value inputAsMemref = createOrFoldUnrealizedConversionCast(
-        op.getLoc(), rewriter, convertTensorToMemref(inputTy), tensor);
-
-    const size_t numTasklets = op.getWg().getType().getShape()[2];
-    const int64_t transferCount = op.getTransferCountInItems() * numTasklets;
-    const int64_t dpuMemOffset =
-        llvm::cast<cnm::AllocOp>(op.getBuffer().getDefiningOp())
-            ->getAttrOfType<IntegerAttr>(BUFFER_OFFSET_ATTR)
-            .getInt();
-
-    rewriter.create<upmem::ScatterOp>(op->getLoc(), inputAsMemref, dpuMemOffset,
-                                      transferCount, op.getScatterMap(),
-                                      adaptor.getWg());
-
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-struct ConvertCnmGatherToUPMEM : public OpConversionPattern<cnm::GatherOp> {
-  using OpConversionPattern<cnm::GatherOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(cnm::GatherOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-
-    Value outputBuf = adaptor.getOutputBuf();
-    bool isBufferized = isa<BaseMemRefType>(op.getOutputBuf().getType());
-    if (!isBufferized) {
-      outputBuf = rewriter.create<memref::AllocOp>(
-          op->getLoc(), convertTensorToMemref(op.getOutputBuf().getType()));
-    }
-
-    const size_t numTasklets = op.getWg().getType().getShape()[2];
-    const int64_t transferCount = op.getTransferCountInItems() * numTasklets;
-    const int64_t dpuMemOffset =
-        llvm::cast<cnm::AllocOp>(op.getBuffer().getDefiningOp())
-            ->getAttrOfType<IntegerAttr>(BUFFER_OFFSET_ATTR)
-            .getInt();
-
-    rewriter.create<upmem::GatherOp>(op->getLoc(), outputBuf, dpuMemOffset,
-                                     transferCount, op.getGatherMap(),
-                                     adaptor.getWg());
-
-    if (!isBufferized) {
-      Value outputAsTensor = createOrFoldUnrealizedConversionCast(
-          op->getLoc(), rewriter, op.getOutput().getType(), outputBuf);
-
-      rewriter.replaceAllUsesWith(op.getOutput(), outputAsTensor);
-    }
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
-struct ConvertCnmLaunchToUPMEM : public OpConversionPattern<cnm::LaunchOp> {
-  using OpConversionPattern<cnm::LaunchOp>::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(cnm::LaunchOp op, OpAdaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    const Value wg = rewriter.getRemappedValue(op.getWg());
-    const ArrayRef<int64_t> wgShape = op.getWg().getType().getShape();
-
-    const size_t availableWRAM = 32 * 1024;
-    size_t requiredWRAM = 0;
-    for (Value buffer : op.getParams()) {
-      const BufferType bufferType = cast<BufferType>(buffer.getType());
-      const size_t elementSize =
-          bufferType.getElementType().getIntOrFloatBitWidth() / 8;
-      requiredWRAM += reduceMul(bufferType.getShape()) * elementSize;
-    }
-
-    if (requiredWRAM > availableWRAM) {
-      emitError(op.getLoc(), "required wram (" + std::to_string(requiredWRAM) +
-                                 " bytes) exceeds available wram (" +
-                                 std::to_string(availableWRAM) + " bytes)");
-      return failure();
-    }
-
-    const Value rankCount =
-        rewriter.create<arith::ConstantIndexOp>(op.getLoc(), wgShape[0]);
-    const Value dpuCount =
-        rewriter.create<arith::ConstantIndexOp>(op.getLoc(), wgShape[1]);
-    const Value taskletCount =
-        rewriter.create<arith::ConstantIndexOp>(op.getLoc(), wgShape[2]);
-    const size_t chunksPerTasklet = wgShape.size() == 4 ? wgShape.back() : 1;
-
-    // build launch op body
-    upmem::LaunchOp launchOp = rewriter.create<upmem::LaunchOp>(
-        op.getLoc(), wg, rankCount, dpuCount, taskletCount);
-    rewriter.setInsertionPointToStart(&launchOp.getBody().front());
-
-    // calculate address of all buffer slices for the current tasklet & allocate
-    // wram to store the chunk data
-    struct BufferSliceInfo {
-      Value chunkSize;
-      Value mramCopySize;
-      Value mramAddr;   // address in mram for current tasklet
-      Value wramMemref; // memref allocated on wram to store the current chunk
-    };
-
-    Value dpuHeapAddr = rewriter.create<upmem::BaseMRAMAddrOp>(op.getLoc());
-    Value taskletId = rewriter.create<upmem::TaskletIDOp>(op.getLoc());
-    llvm::DenseMap<Value, BufferSliceInfo> bufferSlices;
-    size_t i = 0;
-    for (Value buffer : op.getParams()) {
-      if (!dyn_cast<BufferType>(buffer.getType())) {
+/// The workgroup forwarded into `launch`'s enclosing region, if any: a block
+/// argument of an ancestor block whose type implements
+/// cinm::WorkgroupTypeInterface and whose shape matches `wgShape`. This is
+/// the forwarding contract of the group-residency design: a whole-program
+/// schedule
+/// allocates a group's device set once, outside the compute blocks, and
+/// passes the handle in as an ordinary operand; a lowering that would
+/// otherwise allocate must use it instead.
+///
+/// Returns a null Value when nothing suitable is in scope (the per-block
+/// schedule -- allocate locally), and failure on a contract violation:
+/// several matching arguments of one block. Across nesting levels the
+/// INNERMOST match wins -- the closest scope that was handed a workgroup is
+/// the one that means it for this launch. The walk never crosses an
+/// IsolatedFromAbove boundary: a value from outside such a region (the
+/// host function of a trial module, say) is not usable inside it, however
+/// well its shape matches.
+static FailureOr<Value> findForwardedWorkgroup(cnm::LaunchOp launch,
+                                               ArrayRef<int64_t> wgShape) {
+  for (Block *block = launch->getBlock(); block;) {
+    SmallVector<BlockArgument> matches;
+    for (BlockArgument arg : block->getArguments()) {
+      auto wgTy = dyn_cast<cinm::WorkgroupTypeInterface>(arg.getType());
+      if (!wgTy || !isa<upmem::DeviceHierarchyType>(arg.getType()))
         continue;
+      if (llvm::SmallVector<int64_t>(wgShape) != wgTy.getWorkgroupShape())
+        continue;
+      matches.push_back(arg);
+    }
+    if (matches.size() > 1)
+      return launch->emitOpError(
+          "several workgroup-typed block arguments of matching shape are in "
+          "scope; cannot decide which one this launch runs on");
+    if (matches.size() == 1)
+      return Value(matches.front());
+
+    Operation *parent = block->getParentOp();
+    if (!parent || parent->hasTrait<OpTrait::IsIsolatedFromAbove>())
+      break;
+    block = parent->getBlock();
+  }
+  return Value();
+}
+
+static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
+                                             RewriterBase &rewriter, Opts opts,
+                                             SymbolTable rootModule,
+                                             ModuleOp dpuKernelModule,
+                                             unsigned &nextTransferId) {
+
+  rewriter.clearInsertionPoint();
+
+  auto wg = launch.getWg().getType().getShape();
+  if (wg.size() != 2)
+    return launch.emitOpError(
+        "Should have a (dpus, tasklets) working group with 2 entries");
+
+  const auto upmemTy =
+      rewriter.getType<upmem::DeviceHierarchyType>(wg[0], wg[1]);
+
+  auto dpuProgram = upmem::DpuProgramOp::create(
+      rewriter, launch->getLoc(), "program", upmemTy.getNumTaskletsPerDpu());
+  dpuProgram.getBody().emplaceBlock();
+  SymbolTable symTable(dpuKernelModule);
+  symTable.insert(dpuProgram);
+
+  auto programPath = upmem::getSymbolPath(rootModule, dpuProgram);
+  assert(llvm::succeeded(programPath));
+
+  auto wgAlloc = cast<cnm::WorkgroupOp>(launch.getWg().getDefiningOp());
+  rewriter.setInsertionPoint(wgAlloc);
+
+  // The device set this launch runs on: a workgroup FORWARDED from outside
+  // the enclosing region when one is in scope (a whole-program schedule
+  // allocated it once, per group, and passed it in -- see
+  // findForwardedWorkgroup), otherwise a fresh allocation right where the
+  // cnm.workgroup was (the per-block schedule, in which residency and
+  // allocation coincide). In both cases the program load stays HERE: which
+  // binary the set holds is this block's decision; only ownership of the
+  // set itself moves out. A residency schedule that also hoists the load
+  // does so after conversion, once the program symbol exists.
+  FailureOr<Value> forwarded = findForwardedWorkgroup(launch, wg);
+  if (failed(forwarded))
+    return failure();
+  TypedValue<upmem::DeviceHierarchyType> hierarchy;
+  if (*forwarded) {
+    hierarchy = cast<TypedValue<upmem::DeviceHierarchyType>>(*forwarded);
+  } else {
+    hierarchy = upmem::AllocDPUsOp::create(rewriter, wgAlloc->getLoc(), upmemTy)
+                    .getResult();
+  }
+  upmem::LoadProgramOp::create(rewriter, wgAlloc->getLoc(), *programPath,
+                               hierarchy);
+
+  llvm::MapVector<Value, upmem::StaticAllocOp> buffersToMramBuf;
+  // llvm::MapVector<Value, upmem::StaticAllocOp> buffersToSharedWramBuf;
+  llvm::MapVector<Value, TypedValue<MemRefType>> buffersToWramBufValue;
+  // Output buffers whose per-tasklet result is smaller than a DMA granule, so
+  // no tasklet can write its own back. Their WRAM buffer is one shared array
+  // with a slot per tasklet, flushed to MRAM in a single transfer; the value
+  // recorded here is that whole array, which is what the flush moves.
+  llvm::DenseSet<Value> pooledWritebackBuffers;
+  // Buffers the launch body computes on in MRAM directly. It has already been
+  // given its own WRAM staging (--upmem-tile-mram-buffers), so this pass must
+  // not add a second one around it: the body binds straight to MRAM.
+  llvm::DenseSet<Value> mramLevelBuffers;
+
+  rewriter.setInsertionPointToStart(&dpuProgram.getBody().front());
+
+  // create named static MRAM buffers for each cnm.declare_buffer operation, put
+  // them in the dpu program
+  SmallVector<DeclareBufferOp> allocsToDelete;
+
+  SymbolTable dpuProgramSymTable(dpuProgram);
+  auto mramMemspaceAttr =
+      rewriter.getAttr<upmem::DpuMemSpaceAttr>(upmem::DpuMemSpace::MRAM);
+  auto wramMemspaceAttr =
+      rewriter.getAttr<upmem::DpuMemSpaceAttr>(upmem::DpuMemSpace::WRAM);
+
+  for (auto user : launch.getWg().getUsers()) {
+    if (auto alloc = llvm::dyn_cast_or_null<cnm::DeclareBufferOp>(user)) {
+      allocsToDelete.push_back(alloc);
+
+      auto bufferType = alloc.getType();
+
+      SmallVector<int64_t> bufShape(bufferType.getShape());
+
+      // the pwram buffer has the shape we expect
+      MemRefType memrefTy =
+          MemRefType::get(bufShape, bufferType.getElementType(),
+                          MemRefLayoutAttrInterface{}, wramMemspaceAttr);
+
+      // MRAM sharing only depends on the scatter maps
+      // (isMramBroadcastOverThreads); WRAM sharing additionally requires that
+      // cinm1-codegen isn't forcing private per-tasklet WRAM buffers.
+      bool mramIsBroadcast = isMramBroadcastOverThreads(alloc);
+      bool wramIsShared = !opts.cinm1codegen && mramIsBroadcast;
+      bool stagedInBody = bufferType.getLevel() == mramMemspaceAttr;
+
+      // A DMA moves whole granules between granule-aligned addresses, so a
+      // tasklet can only write back its own slice of the MRAM buffer when
+      // that slice is a whole number of them: slice t sits at `t *
+      // tileBytes`, and a shorter tile both misaligns the odd slices and
+      // makes the rounded-up length spill into the next one. A reduction is
+      // the standard way to get here -- one accumulator per tasklet is four
+      // bytes whatever the tile shape.
+      //
+      // Such an output is pooled instead: every tasklet writes its result
+      // into its slot of one shared WRAM array, and after a barrier tasklet 0
+      // flushes the whole array to MRAM in a single aligned transfer. The
+      // MRAM layout is unchanged, so the host gather is none the wiser.
+      //
+      // Only when the slots add up to whole granules, though. They usually do
+      // -- a tasklet count is even -- but one tasklet holding one scalar
+      // leaves the flush as sub-granule as the write it replaces, and the
+      // host gather would round its own copy up over the next DPU's result.
+      // Pooling cannot rescue that, so it stays a transfer the emitter
+      // refuses and the search space rules out.
+      const int64_t tileBits =
+          computeProduct(bufShape) *
+          bufferType.getElementType().getIntOrFloatBitWidth();
+      const int64_t granuleBits = dmaGranuleBits(
+          launch.getWg().getType().getAccelerator(), mramMemspaceAttr);
+      bool pooledWriteback =
+          !mramIsBroadcast &&
+          llvm::is_contained(launch.getOutBuffers(), alloc.getResult()) &&
+          tileBits % granuleBits != 0 &&
+          (tileBits * upmemTy.getNumTaskletsPerDpu()) % granuleBits == 0;
+
+      if (pooledWriteback) {
+        // One slot per tasklet, so the flush is one contiguous run whose
+        // shape matches the MRAM buffer's exactly. The body binds to this
+        // tasklet's slot, below -- including when it stages the buffer
+        // itself, where its own write-back becomes a WRAM-to-WRAM copy into
+        // the slot, which is exactly the pooling this is here to do.
+        SmallVector<int64_t> pooledShape{upmemTy.getNumTaskletsPerDpu()};
+        llvm::append_range(pooledShape, bufShape);
+        auto pooled = upmem::StaticAllocOp::create(
+            rewriter, alloc->getLoc(),
+            MemRefType::get(pooledShape, bufferType.getElementType(),
+                            MemRefLayoutAttrInterface{}, wramMemspaceAttr),
+            upmem::DpuMemSpace::WRAM, "buf", true);
+        dpuProgramSymTable.insert(pooled);
+        buffersToWramBufValue[alloc.getResult()] = pooled.getBuffer();
+        pooledWritebackBuffers.insert(alloc.getResult());
+      } else if (stagedInBody) {
+        // No WRAM buffer and no transfers here: the body already stages what
+        // it needs. It binds to the tasklet's slice of the MRAM buffer, which
+        // is created below once its shape is known.
+        mramLevelBuffers.insert(alloc.getResult());
+      } else if (wramIsShared) {
+        // If all threads see the same buffer (broadcast), then we only
+        // create one static buffer in WRAM.
+        auto wrambuf =
+            upmem::StaticAllocOp::create(rewriter, alloc->getLoc(), memrefTy,
+                                         upmem::DpuMemSpace::WRAM, "buf", true);
+        dpuProgramSymTable.insert(wrambuf); // this renames it to a unique name
+        buffersToWramBufValue[alloc.getResult()] = wrambuf.getBuffer();
+      } else {
+        // WRAM is private - each tasklet gets its own buffer.
+        auto pwramBuf =
+            memref::AllocaOp::create(rewriter, alloc.getLoc(), memrefTy);
+
+        buffersToWramBufValue[alloc.getResult()] = pwramBuf.getResult();
       }
 
-      const int64_t dpuMemOffset =
-          llvm::cast<cnm::AllocOp>(buffer.getDefiningOp())
-              ->getAttrOfType<IntegerAttr>(BUFFER_OFFSET_ATTR)
-              .getInt();
+      if (!mramIsBroadcast) {
+        // the mram buffer type has tasklet dimension prepended - unless the
+        // buffer is broadcasted.
+        bufShape.insert(bufShape.begin(), upmemTy.getNumTaskletsPerDpu());
+      }
+      (void)memrefTy;
 
-      const BufferType bufferType = llvm::cast<BufferType>(buffer.getType());
-      const size_t elementTypeSize = bufferType.getElementTypeBitWidth() / 8;
-      const size_t chunkSize = reduceMul(bufferType.getShape());
-      size_t mramCopySize = chunkSize;
+      memrefTy = MemRefType::get(bufShape, bufferType.getElementType(),
+                                 MemRefLayoutAttrInterface{}, mramMemspaceAttr);
 
-      if (!bufferType.getShape().empty() &&
-          chunkSize * elementTypeSize % 8 != 0) {
-        emitError(op.getLoc(), "chunksize (" +
-                                   std::to_string(chunkSize * elementTypeSize) +
-                                   ") isn't 8-byte aligned");
+      auto mrambuf = upmem::StaticAllocOp::create(
+          rewriter, alloc->getLoc(), memrefTy, upmem::DpuMemSpace::MRAM, "buf",
+          opts.useMramNoInit);
+      dpuProgramSymTable.insert(mrambuf); // this renames it to a unique name
+      buffersToMramBuf[alloc.getResult()] = mrambuf;
+    }
+  }
+
+  // then, replace all scatter/gather with the upmem equivalents
+
+  for (auto user : launch.getWg().getUsers()) {
+
+    if (auto scatter = llvm::dyn_cast_or_null<cnm::ScatterOp>(user)) {
+      upmem::StaticAllocOp alloc = buffersToMramBuf.lookup(scatter.getBuffer());
+      // A DPU only stores one leaf's worth when the MRAM buffer has no
+      // per-tasklet leading dimension (isMramBroadcastOverThreads). This is
+      // independent of whether WRAM ends up shared.
+      bool sharedAcrossTasklets =
+          alloc && alloc.getBuffer().getType().getRank() ==
+                       static_cast<int64_t>(
+                           scatter.getBuffer().getType().getShape().size());
+
+      if (!alloc || failed(convertCnmScatterToUpmem(
+                        rewriter, scatter, sharedAcrossTasklets, hierarchy,
+                        alloc.getSymNameAttr(), nextTransferId++))) {
         return failure();
       }
-
-      size_t memoryPerTasklet = chunksPerTasklet * chunkSize *
-                                bufferType.getElementTypeBitWidth() / 8;
-
-      const MemRefType sliceType =
-          MemRefType::get(bufferType.getShape(), bufferType.getElementType());
-
-      Value mramAddr;
-      bool isInput = false;
-      for (Value other : op.getInputs()) {
-        if (buffer == other) {
-          isInput = true;
-          break;
-        }
-      }
-
-      // When loading a value from a scalar buffer on the dpu we ignore the
-      // tasklet id to avoid alignment issues: when copying a single value for
-      // tasklet > 0 the mram address may not be 8-byte aligned. The values in
-      // the mram are the same for all tasklets anyway.
-      if (isInput && bufferType.getShape().empty()) {
-        mramAddr = dpuHeapAddr;
-      } else {
-        if (!isInput && memoryPerTasklet < 8) {
-          memoryPerTasklet = 8;
-          mramCopySize = 8 / elementTypeSize;
-        }
-
-        mramAddr = rewriter.create<arith::AddIOp>(
-            op.getLoc(), dpuHeapAddr,
-            rewriter.create<arith::MulIOp>(
-                op.getLoc(), taskletId,
-                rewriter.create<arith::ConstantIndexOp>(op.getLoc(),
-                                                        memoryPerTasklet)));
-      }
-
-      // To get to the minimum mram_read() size (8 bytes) we can copy
-      // additional bytes of the input as we don't care if they are garbage
-      // because we only use the first element. This doesn't apply to single
-      // output values as they would interfere with / overwrite the result
-      // values of other tasklets.
-      if (isInput && chunkSize * elementTypeSize < 8) {
-        mramCopySize = 8 / elementTypeSize;
-      }
-
-      const BufferSliceInfo slice{
-          rewriter.create<arith::ConstantIndexOp>(op.getLoc(), chunkSize),
-          rewriter.create<arith::ConstantIndexOp>(op.getLoc(), mramCopySize),
-          mramAddr,
-          rewriter.create<upmem::PrivateWRAMAllocOp>(op.getLoc(), sliceType),
-      };
-
-      const size_t memoryPerDPU = alignTo(wgShape[2] * memoryPerTasklet, 8);
-      dpuHeapAddr = rewriter.create<arith::AddIOp>(
-          op.getLoc(), dpuHeapAddr,
-          rewriter.create<arith::ConstantIndexOp>(op.getLoc(), memoryPerDPU));
-
-      bufferSlices[buffer] = slice;
-      op.getBody().getArgument(i++).replaceAllUsesWith(slice.wramMemref);
     }
-
-    // loop over chunks & execute launch body
-    if (chunksPerTasklet == 1) {
-      // copy data from the input buffers to wram
-      for (Value buffer : op.getInputs()) {
-        if (!dyn_cast<BufferType>(buffer.getType())) {
-          continue;
-        }
-
-        const BufferSliceInfo slice = bufferSlices.at(buffer);
-        rewriter.create<upmem::MemcpyOp>(
-            op.getLoc(), upmem::MemcpyDirOp::MRAMToWRAM, slice.wramMemref,
-            slice.mramCopySize, slice.mramAddr);
+    if (auto gather = llvm::dyn_cast_or_null<cnm::GatherOp>(user)) {
+      auto alloc = buffersToMramBuf.lookup(gather.getBuffer());
+      if (!alloc || failed(convertCnmGatherToUpmem(rewriter, gather, hierarchy,
+                                                   alloc.getSymNameAttr(),
+                                                   nextTransferId++))) {
+        return failure();
       }
-
-      // insert original launch body into loop before the AffineYieldOp
-      // implicitly created by the AffineForOp
-      launchOp.getBody().front().getOperations().splice(
-          launchOp.getBody().front().end(),
-          op.getBody().front().getOperations());
-
-      // copy data from wram to output buffers
-      for (Value buffer : op.getOutBuffers()) {
-        const BufferSliceInfo slice = bufferSlices.at(buffer);
-        rewriter.create<upmem::MemcpyOp>(
-            op.getLoc(), upmem::MemcpyDirOp::WRAMToMRAM, slice.wramMemref,
-            slice.mramCopySize, slice.mramAddr);
-      }
-    } else {
-      affine::AffineForOp loop = rewriter.create<affine::AffineForOp>(
-          op.getLoc(), 0, chunksPerTasklet, 1);
-
-      rewriter.setInsertionPointToStart(&loop.getRegion().front());
-      const Value currentChunk =
-          loop.getRegion().front().getArguments().front();
-
-      // copy data from the input buffers to wram
-      for (Value buffer : op.getInputs()) {
-        if (!dyn_cast<BufferType>(buffer.getType())) {
-          continue;
-        }
-
-        const BufferSliceInfo slice = bufferSlices.at(buffer);
-        Value offset = rewriter.create<arith::MulIOp>(op.getLoc(), currentChunk,
-                                                      slice.chunkSize);
-        Value mramAddr =
-            rewriter.create<arith::AddIOp>(op.getLoc(), slice.mramAddr, offset);
-        rewriter.create<upmem::MemcpyOp>(
-            op.getLoc(), upmem::MemcpyDirOp::MRAMToWRAM, slice.wramMemref,
-            slice.mramCopySize, mramAddr);
-      }
-
-      // insert original launch body into loop before the AffineYieldOp
-      // implicitly created by the AffineForOp
-      loop.getRegion().front().getOperations().splice(
-          (--loop.getRegion().front().end()),
-          op.getBody().front().getOperations());
-      rewriter.setInsertionPoint(&loop.getRegion().front().back());
-
-      // copy data from wram to output buffers
-      for (Value buffer : op.getOutBuffers()) {
-        const BufferSliceInfo slice = bufferSlices.at(buffer);
-        Value offset = rewriter.create<arith::MulIOp>(op.getLoc(), currentChunk,
-                                                      slice.chunkSize);
-        Value mramAddr =
-            rewriter.create<arith::AddIOp>(op.getLoc(), slice.mramAddr, offset);
-        rewriter.create<upmem::MemcpyOp>(
-            op.getLoc(), upmem::MemcpyDirOp::WRAMToMRAM, slice.wramMemref,
-            slice.mramCopySize, mramAddr);
-      }
-
-      rewriter.setInsertionPointToEnd(&launchOp.getBody().front());
     }
-
-    rewriter.create<upmem::TerminatorOp>(op.getLoc());
-
-    rewriter.eraseOp(op);
-    return success();
   }
-};
 
-struct ConvertCnmTerminatorToUPMEM
-    : public OpConversionPattern<cnm::TerminatorOp> {
-  using OpConversionPattern<cnm::TerminatorOp>::OpConversionPattern;
+  // At this point we have replaced (and deleted) the scatter and gather.
+  // We still need to move the body of the launch into the new DPU program,
+  // and delete all remaining CNM ops.
+
+  // these memrefs map to the pwram bufs. TODO we need to transfer from mram to
+  // pwram
+  IRMapping mapping;
+  rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
+  for (auto [cnmBuf, memref] : llvm::zip_equal(
+           llvm::concat<Value>(launch.getInputs(), launch.getOutBuffers()),
+           launch.getBody().getArguments())) {
+
+    if (mramLevelBuffers.contains(cnmBuf)) {
+      // The body computes on MRAM: bind it to this tasklet's slice.
+      mapping.map(memref, getTaskletSlice(rewriter, cnmBuf.getLoc(),
+                                          buffersToMramBuf[cnmBuf],
+                                          cast<MemRefType>(memref.getType())));
+      continue;
+    }
+    if (pooledWritebackBuffers.contains(cnmBuf)) {
+      // The body writes into this tasklet's slot of the shared array; the
+      // flush below moves all the slots at once. Slicing in WRAM is free of
+      // the alignment rule that forced the pooling in the first place.
+      mapping.map(
+          memref,
+          getTaskletSlice(rewriter, cnmBuf.getLoc(),
+                          cast<upmem::StaticAllocOp>(
+                              buffersToWramBufValue[cnmBuf].getDefiningOp()),
+                          cast<MemRefType>(memref.getType())));
+      continue;
+    }
+    auto wrambuf = buffersToWramBufValue.lookup(cnmBuf);
+    mapping.map(memref, wrambuf);
+  }
+
+  // todo support moving tiles of the mram buffer into pwram
+  rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
+  for (auto [buf, mramBuf] : buffersToMramBuf) {
+    if (mramLevelBuffers.contains(buf))
+      continue;
+    auto wramBuf = buffersToWramBufValue[buf];
+    createTransfer(rewriter, true, buf.getLoc(), mramBuf, wramBuf);
+    rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
+  }
+
+  // copy the old ops
+  for (auto &op : launch.getBody().front().without_terminator())
+    rewriter.clone(op, mapping);
+
+  // transfer buffers back to mram
+  for (auto buf : launch.getOutBuffers()) {
+    if (mramLevelBuffers.contains(buf))
+      continue;
+    auto wramBuf = buffersToWramBufValue[buf];
+    auto mramBuf = buffersToMramBuf[buf];
+
+    createTransfer(rewriter, false, buf.getLoc(), mramBuf, wramBuf);
+    rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
+  }
+
+  upmem::ReturnOp::create(rewriter, launch->getLoc());
+
+  if (failed(lowerBodyStagingOps(rewriter, dpuProgram, wramMemspaceAttr)))
+    return failure();
+
+  rewriter.setInsertionPoint(launch);
+  upmem::WaitForOp::create(rewriter, launch->getLoc(), hierarchy);
+
+  // cleanup
+
+  rewriter.eraseOp(launch);
+  for (auto op : allocsToDelete) {
+    if (op->getResults().use_empty()) {
+      rewriter.eraseOp(op);
+    } else {
+      op->emitOpError("should have no uses");
+      return failure();
+    }
+  }
+
+  for (auto user : wgAlloc.getResult().getUsers()) {
+    if (auto free = llvm::dyn_cast_or_null<cnm::FreeWorkgroupOp>(user)) {
+      // A forwarded set is not this block's to release: whoever allocated it
+      // frees it, so the cnm-level free simply disappears here.
+      if (!*forwarded) {
+        rewriter.setInsertionPoint(free);
+        upmem::FreeDPUsOp::create(rewriter, free->getLoc(), hierarchy);
+      }
+      rewriter.eraseOp(free);
+    }
+  }
+
+  if (wgAlloc.getResult().use_empty()) {
+    rewriter.eraseOp(wgAlloc);
+    return success();
+  } else {
+    return wgAlloc.getResult().user_begin()->emitOpError(
+        "Unexpected workgroup usage");
+  }
+}
+
+struct ConvertCnmTerminatorToUPMEM : public OpConversionPattern<cnm::ReturnOp> {
+  using OpConversionPattern<cnm::ReturnOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(cnm::TerminatorOp op, OpAdaptor,
+  matchAndRewrite(cnm::ReturnOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
     rewriter.eraseOp(op); // gets generated by ConvertCnmLaunchToUPMEM
     return success();
@@ -395,59 +788,68 @@ struct ConvertCnmTerminatorToUPMEM
 
 } // namespace
 
-void populateCnmToUPMEMFinalTypeConversions(TypeConverter &typeConverter) {
-  typeConverter.addConversion([&](cnm::WorkgroupType wgType) -> Type {
-    return upmem::DeviceHierarchyType::get(wgType.getContext(),
-                                           wgType.getShape());
-  });
-
-  typeConverter.addConversion([](ShapedType st) -> Type { return st; });
-}
-
-void populateCnmToUPMEMConversionPatterns(TypeConverter &typeConverter,
-                                          RewritePatternSet &patterns) {
-  patterns.add<ConvertCnmWorkgroupToUPMEM, ConvertCnmSetZeroToAffine,
-               ConvertCnmScatterToUPMEM, ConvertCnmGatherToUPMEM,
-               ConvertCnmLaunchToUPMEM, ConvertCnmTerminatorToUPMEM,
-               ConvertCnmFreeWorkgroup>(typeConverter, patterns.getContext());
-}
-
 struct ConvertCnmToUPMEMPass
-    : public ::impl::ConvertCnmToUPMEMPassBase<ConvertCnmToUPMEMPass> {
+    : public impl::ConvertCnmToUPMEMPassBase<ConvertCnmToUPMEMPass> {
+  using Base::Base;
+
   void runOnOperation() final {
-    TypeConverter converter;
-    populateCnmToUPMEMFinalTypeConversions(converter);
-    const auto addUnrealizedCast = [](OpBuilder &builder, Type type,
-                                      ValueRange inputs, Location loc) {
-      return builder.create<UnrealizedConversionCastOp>(loc, type, inputs)
-          .getResult(0);
-    };
-    converter.addSourceMaterialization(addUnrealizedCast);
-    converter.addTargetMaterialization(addUnrealizedCast);
+    Operation *rootOp = getOperation();
+    Opts opts{.cinm1codegen = cinm1Codegen, .useMramNoInit = !cinm1Codegen};
 
-    RewritePatternSet patterns(&getContext());
-    populateCnmToUPMEMConversionPatterns(converter, patterns);
-    populateFinalBufferizationPatterns(patterns);
+    // Determine kernel module name: prefer per-op annotation, else option.
+    std::string kmName = kernelModuleName;
+    if (auto attr = rootOp->getAttrOfType<StringAttr>("upmem.kernel_module"))
+      kmName = attr.getValue().str();
 
-    ConversionTarget target(getContext());
-    target.addIllegalDialect<cnm::CnmDialect>();
-    // alloc ops are deleted in second pass
-    target.addLegalOp<cnm::AllocOp>();
-    // target.addIllegalDialect<bufferization::BufferizationDialect>();
-
-    target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
-
-    if (failed(
-            applyFullConversion(getOperation(), target, std::move(patterns)))) {
+    // Find the enclosing ModuleOp (or use rootOp itself if it is one).
+    ModuleOp parentModule = llvm::dyn_cast<ModuleOp>(rootOp);
+    if (!parentModule)
+      parentModule = rootOp->getParentOfType<ModuleOp>();
+    if (!parentModule) {
+      mlir::emitError(rootOp->getLoc(), "No parent ModuleOp found");
       signalPassFailure();
+      return;
     }
 
-    getOperation()->walk([](cnm::AllocOp op) { op->erase(); });
+    auto sym = SymbolTable::lookupSymbolIn(parentModule, kmName);
+    ModuleOp dpuKernelModule = llvm::dyn_cast_or_null<ModuleOp>(sym);
+    if (!dpuKernelModule && sym) {
+      mlir::emitError(sym->getLoc(), "Should be a module");
+      signalPassFailure();
+      return;
+    }
+    if (!dpuKernelModule) {
+      OpBuilder builder(&getContext());
+      builder.setInsertionPointToEnd(&parentModule.getBodyRegion().front());
+      dpuKernelModule =
+          ModuleOp::create(builder, parentModule->getLoc(), kmName);
+    }
+
+    SmallVector<LaunchOp> launchOps;
+    rootOp->walk([&](cnm::LaunchOp launch) { launchOps.push_back(launch); });
+
+    SymbolTable rootSymTable(parentModule);
+
+    IRRewriter rewriter(&getContext());
+    // Runs over every launch, so a transfer's label identifies it within the
+    // whole module and not just within its own launch.
+    unsigned nextTransferId = 0;
+    for (auto launch : launchOps) {
+      if (failed(convertCnmLaunchToUpmem(launch, rewriter, opts, rootSymTable,
+                                         dpuKernelModule, nextTransferId))) {
+        signalPassFailure();
+        return;
+      }
+    }
   }
 };
 
 std::unique_ptr<Pass> createConvertCnmToUPMEMPass() {
   return std::make_unique<ConvertCnmToUPMEMPass>();
+}
+std::unique_ptr<Pass>
+createConvertCnmToUPMEMPass(ConvertCnmToUPMEMPassOptions options) {
+  return std::make_unique<ConvertCnmToUPMEMPass>(std::move(options));
 }
 
 } // namespace mlir::cnm

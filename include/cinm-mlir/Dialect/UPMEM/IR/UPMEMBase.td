@@ -23,30 +23,38 @@ def UPMEM_Dialect : Dialect {
     }];
 
     let useDefaultTypePrinterParser = 1;
+    let useDefaultAttributePrinterParser = 0;
     let hasOperationAttrVerify = 1;
     // let useFoldAPI = kEmitFoldAdaptorFolder;
 
 
     code extraClassDeclaration = [{
+      void printAttribute(Attribute attr, DialectAsmPrinter &printer) const override;
+      Attribute parseAttribute(DialectAsmParser &parser, Type type) const override;
+
+      /// Tile sizes --upmem-tile-mram-buffers should use for an op in a
+      /// cnm.launch body when staging it down to the leaf memory level.
+      /// Distinct from cinm.tile_sizes, which the Cinm dialect reserves for
+      /// ops implementing CinmTilingInterface -- these sit on linalg ops.
+      constexpr static StringRef LEAF_TILE_SIZES_NAME = "upmem.leaf_tile_sizes";
+
+      /// A StringAttr labelling a transfer op's rows in the runtime's timing
+      /// CSVs, as `static:<id>` or `dyn:<id>`: whether the data it moves is
+      /// the same on every inference (cinm::isStaticValue, asked while the
+      /// host value's definition is still in the IR), and which op moved it.
+      /// Absent means the transfer is unattributed.
+      constexpr static StringRef TIMING_TAG_NAME = "upmem.timing_tag";
+
     private:
         void registerOps();
         void registerTypes();
+        void registerAttributes();
     public:
-        static StringRef getContainerModuleAttrName() {
-            return "upmem.container_module";
-        }
-        static StringRef getKernelFuncAttrName() { return "upmem.kernel"; }
-        static bool isKernel(Operation *op);
-        static unsigned getNumWorkgroupDimensions() { return 1; }
-        // static AddressSpace getWorkgroupAddressSpace() { return AddressSpace::Workgroup; }
-        // static AddressSpace getPrivateAddressSpace() { return AddressSpace::Private; }
     }];
-    // let dependentDialects = ["arith::ArithDialect"];
-    let useDefaultAttributePrinterParser = 1;
-    // let useDefaultTypePrinterParser = 1;
+    let dependentDialects = ["cinm::CinmDialect"];
 }
 
-class UPMEM_Op<string mnemonic, list<Trait> traits = []>
+class Upmem_Op<string mnemonic, list<Trait> traits = []>
         : Op<UPMEM_Dialect, mnemonic, traits>;
 
 //===----------------------------------------------------------------------===//
@@ -65,6 +73,8 @@ class UPMEM_I32EnumAttr<string mnemonic, UPMEM_I32Enum enumInfo> :
 
 
 
+class UPMEM_Attr<string name, list<Trait> traits = []>
+        : AttrDef<UPMEM_Dialect, name, traits>;
 
 class UPMEM_Type<string name, list<Trait> traits = []>
         : TypeDef<UPMEM_Dialect, name, traits>;

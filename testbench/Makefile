@@ -17,53 +17,85 @@ BUILD_PREFIX=$(OUT_DIR)/out
 CLANG_18_BASE=../third-party/llvm/build/bin
 CINM_OPT=../build/bin/cinm-opt
 
-$(IR_PREFIX).tiled.mlir: $(BENCH_NAME).mlir
+$(IR_PREFIX).1.tiled.mlir: $(BENCH_NAME).mlir
 	@mkdir -p $(@D)
-	$(CINM_OPT) $< --pass-pipeline="builtin.module(func.func(cinm-tiling,affine-loop-unroll{unroll-full unroll-full-threshold=1}))" > $@
+	$(CINM_OPT) $< --pass-pipeline="builtin.module(func.func(cinm-infer-tile-sizes,cinm-tiling,cinm-isolate-compute-blocks))" | $(CINM_OPT) --pass-pipeline="builtin.module(**cinm.compute_block(affine-loop-unroll{unroll-full-threshold=1},canonicalize),cinm-deisolate-compute-blocks)" > $@
 
-$(IR_PREFIX).cnm.mlir: $(IR_PREFIX).tiled.mlir
-	$(CINM_OPT) $< --convert-cinm-to-cnm --cnm-hoist-workgroups --canonicalize --cse > $@
+# $(IR_PREFIX).1a.cinm.buffered.mlir: $(IR_PREFIX).1.tiled.mlir
+# 	$(CINM_OPT) $< --eliminate-empty-tensors --canonicalize --cse --one-shot-bufferize='bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map'  \
+# 					--cse --canonicalize --buffer-results-to-out-params=hoist-static-allocs > $@
 
-$(IR_PREFIX).cnm.bufferized.mlir: $(IR_PREFIX).cnm.mlir
-	$(CINM_OPT) $< --lower-affine --one-shot-bufferize='bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map'  \
-				  --convert-linalg-to-affine-loops --lower-affine --buffer-loop-hoisting --buffer-hoisting --canonicalize --cse > $@
+# $(IR_PREFIX).1b.cnm.mlir: $(IR_PREFIX).1a.cinm.buffered.mlir
+# 	$(CINM_OPT) $< --convert-cinm-to-cnm --canonicalize --cnm-hoist-workgroups --canonicalize --cse > $@
 
-$(IR_PREFIX).upmem.mlir: $(IR_PREFIX).cnm.bufferized.mlir
-	$(CINM_OPT) $< --convert-cnm-to-upmem --cse --upmem-outline-kernel --upmem-dedup-kernels --cse > $@
+$(IR_PREFIX).2.cnm.mlir: $(IR_PREFIX).1.tiled.mlir
+	$(CINM_OPT) $< --convert-cinm-to-cnm --canonicalize --cnm-hoist-workgroups --canonicalize --cse > $@
 
-$(IR_PREFIX).llvm.mlir: $(IR_PREFIX).upmem.mlir
-	$(CINM_OPT) $< --mlir-print-ir-after-failure --canonicalize \
-	--convert-scf-to-cf --convert-cf-to-llvm --fold-memref-alias-ops --lower-affine --convert-arith-to-llvm \
-	--convert-upmem-to-llvm \
-    --expand-strided-metadata --memref-expand --finalize-memref-to-llvm --lower-affine --convert-arith-to-llvm \
-	--convert-func-to-llvm=use-bare-ptr-memref-call-conv=true --cse --reconcile-unrealized-casts --llvm-legalize-for-export --canonicalize --cse \
+#					--promote-buffers-to-stack --fold-memref-alias-ops --canonicalize --affine-loop-fusion --sroa --canonicalize --affine-scalrep --loop-invariant-code-motion --affine-loop-invariant-code-motion --sroa --affine-scalrep \
+
+# $(IR_PREFIX).1c.cnm.affine.mlir: $(IR_PREFIX).1b.cnm.mlir
+# 	$(CINM_OPT) $< --eliminate-empty-tensors  \
+# 					--cse --canonicalize --buffer-results-to-out-params=hoist-static-allocs \
+# 				  --convert-linalg-to-affine-loops --buffer-loop-hoisting --buffer-hoisting --canonicalize --cse > $@
+
+# $(IR_PREFIX).3.cnm.affine.mlir: $(IR_PREFIX).1c.cnm.affine.mlir
+
+$(IR_PREFIX).3.cnm.affine.mlir: $(IR_PREFIX).2.cnm.mlir
+	$(CINM_OPT) $< --eliminate-empty-tensors --cse \
+	   			--one-shot-bufferize='bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map' \
+					--cse --canonicalize --convert-linalg-to-affine-loops --buffer-loop-hoisting --buffer-hoisting --canonicalize --cse --buffer-results-to-out-params=hoist-static-allocs \
+				   --canonicalize --cse > $@
+
+$(IR_PREFIX).4.cnm.after_opts.mlir: $(IR_PREFIX).3.cnm.affine.mlir
+	$(CINM_OPT) $< \
+					--promote-buffers-to-stack --fold-memref-alias-ops --canonicalize --affine-loop-fusion --sroa --canonicalize --affine-scalrep --loop-invariant-code-motion --affine-loop-invariant-code-motion --sroa --affine-scalrep \
+				   --canonicalize --cse > $@
+
+#	$(CINM_OPT) $< --affine-loop-unroll=unroll-factor=4 --lower-affine --buffer-loop-hoisting --buffer-hoisting
+
+$(IR_PREFIX).5.cnm.scf.mlir: $(IR_PREFIX).4.cnm.after_opts.mlir
+	$(CINM_OPT) $<  --lower-affine --buffer-loop-hoisting --buffer-hoisting \
+				   --canonicalize --cse > $@
+
+$(IR_PREFIX).6.upmem.mlir: $(IR_PREFIX).5.cnm.scf.mlir
+	$(CINM_OPT) $< --cnm-ensure-scatter-gather-contiguous --convert-cnm-to-upmem --cse --upmem-dedup-kernels --cse  > $@
+
+$(IR_PREFIX).6a1.llvm.mlir: $(IR_PREFIX).6.upmem.mlir
+	$(CINM_OPT) $< --mlir-print-ir-after-failure --canonicalize --cinm-unwrap-compute-blocks \
+	--convert-upmem-to-llvm --convert-scf-to-cf \
+	--convert-func-to-llvm=use-bare-ptr-memref-call-conv=true \
+  --expand-strided-metadata --memref-expand --lower-affine --convert-to-llvm \
+	 --cse --reconcile-unrealized-casts --canonicalize --llvm-legalize-for-export --canonicalize --cse \
 	> $@
+# --fold-memref-alias-ops \
 
-$(IR_PREFIX).dpu.c: $(IR_PREFIX).upmem.mlir
-	../build/bin/cinm-translate --mlir-to-upmem-cpp $< > $@
+$(IR_PREFIX).6b.dpu.c: $(IR_PREFIX).6.upmem.mlir
+	../build/bin/cinm-translate --allow-unregistered-dialect --mlir-to-upmem-cpp $< > $@
 
-$(IR_PREFIX).host.ll: $(IR_PREFIX).llvm.mlir
-	../build/bin/cinm-translate --mlir-to-llvmir $< > $@
+$(IR_PREFIX).6a2.host.ll: $(IR_PREFIX).6a1.llvm.mlir
+	../build/bin/cinm-translate --allow-unregistered-dialect --mlir-to-llvmir $< > $@
 
-$(IR_PREFIX).host.opt.ll: $(IR_PREFIX).host.ll
+$(IR_PREFIX).6a3.host.opt.ll: $(IR_PREFIX).6a2.host.ll
 	$(CLANG_18_BASE)/opt -O3 -S $< > $@
 
-$(IR_PREFIX).host.o: $(IR_PREFIX).host.opt.ll
+$(IR_PREFIX).6a3a.host.dbg.o: $(IR_PREFIX).6a2.host.ll
+	$(CLANG_18_BASE)/llc $< -o $@ -filetype=obj -relocation-model=pic
+
+$(IR_PREFIX).6a3b.host.o: $(IR_PREFIX).6a3.host.opt.ll
 	$(CLANG_18_BASE)/llc -O3 $< -o $@ -filetype=obj -relocation-model=pic
 
 # Compile all DPU kernel executables
-$(BENCH_NAME)-kernel-compile: $(IR_PREFIX).dpu.c
+$(BENCH_NAME)-kernel-compile: $(IR_PREFIX).6b.dpu.c
 	lib/compile_dpu.sh $< $(OUT_DIR)/bin
 
 # HOST executable
-$(OUT_DIR)/bin/host: $(IR_PREFIX).host.o $(IR_PREFIX).dpu.c
+$(OUT_DIR)/bin/host: $(IR_PREFIX).6a3b.host.o apps/$(BENCH_NAME).cpp
 	@mkdir -p $(@D)
-	clang++ -g apps/$(BENCH_NAME).cpp $(IR_PREFIX).host.o -lUpmemDialectRuntime -fPIE -ldpu -ldpuverbose -L${UPMEM_HOME}/lib -L../build/lib -I${UPMEM_HOME}/include/dpu -o $@
+	clang++ -g $^ -lUpmemDialectRuntime -fPIE -ldpu -ldpuverbose -L${UPMEM_HOME}/lib -L../build/lib -I${UPMEM_HOME}/include/dpu -o $@
 
-# $(BENCH_NAME): $(OUT_DIR)/bin/host $(OUT_DIR)/bin/dpu
-$(BENCH_NAME): $(IR_PREFIX).host.opt.ll $(IR_PREFIX).dpu.c
+$(BENCH_NAME): $(IR_PREFIX).6a3.host.opt.ll $(IR_PREFIX).6b.dpu.c
 
 $(BENCH_NAME)-exe: $(OUT_DIR)/bin/host $(BENCH_NAME)-kernel-compile
 
 clean:
-	rm -rf $(OUT_DIR)
+	rm -rf $(OUT_DIR)/irs/* $(OUT_DIR)/bin/*

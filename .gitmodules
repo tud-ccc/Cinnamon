@@ -1,0 +1,13 @@
+[submodule "third-party/cnm-cost-model"]
+	path = third-party/cnm-cost-model
+	url = https://github.com/tud-ccc/cnm-cost-model.git
+[submodule "samples/transformers/llama2.c"]
+	path = samples/transformers/llama2.c
+	url = https://github.com/karpathy/llama2.c.git
+[submodule "third-party/llvm"]
+	path = third-party/llvm
+	url = https://github.com/tud-ccc/cinnamon-llvm.git
+	branch = cinnamon
+[submodule "third-party/torch-mlir"]
+	path = third-party/torch-mlir
+	url = https://github.com/llvm/torch-mlir.git

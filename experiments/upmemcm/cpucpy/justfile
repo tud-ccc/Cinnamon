@@ -1,0 +1,10 @@
+
+
+make:
+  make all -j8
+
+run:
+  make run
+
+plot:
+  python3 plot.py

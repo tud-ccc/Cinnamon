@@ -1,0 +1,1114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>BO Pool Viewer</title>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #181825;
+      color: #cdd6f4;
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── Sidebar ── */
+    #sidebar {
+      width: 220px;
+      min-width: 220px;
+      background: #1e1e2e;
+      border-right: 1px solid #313244;
+      padding: 16px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 13px;
+      overflow-y: auto;
+    }
+    #sidebar h1 { font-size: 13px; font-weight: 700; color: #cba6f7; letter-spacing: 0.03em; }
+
+    .group { display: flex; flex-direction: column; gap: 4px; }
+    .group > label, .group > .lbl {
+      font-size: 10px;
+      color: #6c7086;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    select {
+      width: 100%;
+      background: #313244;
+      color: #cdd6f4;
+      border: 1px solid #45475a;
+      border-radius: 4px;
+      padding: 5px 7px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    select:focus { outline: none; border-color: #cba6f7; }
+    select:disabled { opacity: 0.4; cursor: default; }
+
+    input[type=file] { display: none; }
+    .file-btn {
+      display: block;
+      width: 100%;
+      padding: 6px 8px;
+      background: #313244;
+      border: 1px solid #45475a;
+      border-radius: 4px;
+      color: #cdd6f4;
+      font-size: 12px;
+      cursor: pointer;
+      text-align: center;
+    }
+    .file-btn:hover { border-color: #cba6f7; }
+
+    /* Mode toggle */
+    .toggle-row {
+      display: flex;
+      gap: 6px;
+    }
+    .toggle-btn {
+      flex: 1;
+      padding: 4px 0;
+      border: 1px solid #45475a;
+      border-radius: 4px;
+      background: #313244;
+      color: #6c7086;
+      font-size: 11px;
+      cursor: pointer;
+      text-align: center;
+    }
+    .toggle-btn.active {
+      border-color: #cba6f7;
+      color: #cba6f7;
+      background: #2a273f;
+    }
+    .toggle-btn:disabled { opacity: 0.3; cursor: default; }
+
+    /* Dimension sliders */
+    #dim-sliders { display: flex; flex-direction: column; gap: 10px; }
+    .slider-group { display: flex; flex-direction: column; gap: 3px; }
+    .slider-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+    }
+    .slider-name { font-size: 10px; color: #6c7086; text-transform: uppercase; letter-spacing: 0.06em; }
+    .slider-val  { font-size: 12px; color: #cdd6f4; font-weight: 600; }
+    input[type=range] {
+      width: 100%;
+      accent-color: #cba6f7;
+      cursor: pointer;
+      height: 4px;
+    }
+    input[type=range]:disabled { opacity: 0.3; cursor: default; }
+
+    #status { font-size: 11px; color: #585b70; line-height: 1.5; }
+    #status b { color: #a6adc8; }
+    hr { border: none; border-top: 1px solid #313244; }
+
+    /* ── Main area ── */
+    #main {
+      flex: 1;
+      overflow: auto;
+      padding: 24px 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    #drop-zone {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 2px dashed #313244;
+      border-radius: 10px;
+      color: #45475a;
+      font-size: 14px;
+      transition: border-color 0.15s;
+      user-select: none;
+    }
+    #drop-zone.drag-over { border-color: #cba6f7; color: #a6adc8; }
+
+    #heatmap-wrap { display: none; overflow: auto; }
+
+    /* ── Tooltip ── */
+    #tooltip {
+      position: fixed;
+      background: #1e1e2e;
+      border: 1px solid #45475a;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 12px;
+      line-height: 1.65;
+      pointer-events: none;
+      display: none;
+      z-index: 999;
+      max-width: 260px;
+    }
+    #tooltip b { color: #cba6f7; }
+
+    /* ── SVG ── */
+    .x-axis text, .y-axis text { fill: #a6adc8; font-size: 11px; }
+    .x-axis path, .x-axis line,
+    .y-axis path, .y-axis line { stroke: #45475a; }
+    .axis-label { fill: #cdd6f4; font-size: 12px; }
+    .legend-tick text { fill: #6c7086; font-size: 10px; }
+    .legend-tick line, .legend-tick path { stroke: #45475a; }
+
+  </style>
+</head>
+<body>
+
+<div id="sidebar">
+  <h1>BO Pool Viewer</h1>
+
+  <div class="group">
+    <label>CSV File</label>
+    <label class="file-btn" for="file-input">Choose file…</label>
+    <input type="file" id="file-input" accept=".csv">
+  </div>
+
+  <hr>
+
+  <div class="group">
+    <label>X Axis</label>
+    <select id="sel-x" disabled></select>
+  </div>
+
+  <div class="group">
+    <label>Y Axis</label>
+    <select id="sel-y" disabled></select>
+  </div>
+
+  <div class="group">
+    <label>Metric</label>
+    <select id="sel-metric" disabled></select>
+  </div>
+
+  <div class="group">
+    <label>Cost scale</label>
+    <select id="sel-scale">
+      <option value="log10">log₁₀</option>
+      <option value="log2">log₂</option>
+      <option value="ln">ln</option>
+      <option value="sqrt">√</option>
+      <option value="cbrt">∛</option>
+      <option value="linear">linear</option>
+    </select>
+  </div>
+
+  <div class="group">
+    <label>Facet by</label>
+    <select id="sel-facet" disabled></select>
+  </div>
+
+  <div id="facet-empty-ctrl" style="display:none" class="group">
+    <div style="display:flex;align-items:center;gap:8px;">
+      <button class="toggle-btn" id="btn-hide-empty" disabled>Hide empty</button>
+      <span id="hidden-count" style="font-size:11px;color:#585b70;"></span>
+    </div>
+  </div>
+
+  <hr>
+
+  <div class="group">
+    <div class="lbl">Other dimensions</div>
+    <div class="toggle-row">
+      <button class="toggle-btn active" id="btn-agg"  disabled>Aggregate</button>
+      <button class="toggle-btn"        id="btn-slice" disabled>Slice</button>
+    </div>
+  </div>
+
+  <!-- shown in aggregate mode -->
+  <div id="agg-section" class="group">
+    <label>Aggregation</label>
+    <select id="sel-agg" disabled>
+      <option value="min">Min</option>
+      <option value="max">Max</option>
+      <option value="mean">Mean</option>
+    </select>
+  </div>
+
+  <!-- shown in slice mode -->
+  <div id="slice-section" style="display:none">
+    <div id="dim-sliders"></div>
+  </div>
+
+  <hr>
+
+  <div class="group">
+    <label>Color scale</label>
+    <select id="sel-palette" disabled>
+      <option value="viridis">Viridis</option>
+      <option value="plasma">Plasma</option>
+      <option value="inferno">Inferno</option>
+      <option value="turbo">Turbo</option>
+      <option value="rdylgn">RdYlGn (low=red)</option>
+    </select>
+  </div>
+
+  <hr>
+
+  <div class="group">
+    <div class="lbl">Highlight top N</div>
+    <div class="toggle-row" style="margin-bottom:4px">
+      <button class="toggle-btn active" id="btn-topn-pct"   disabled>%</button>
+      <button class="toggle-btn"        id="btn-topn-count" disabled>#</button>
+    </div>
+    <div class="slider-header">
+      <span class="slider-name">Top configs</span>
+      <span class="slider-val" id="topn-val">off</span>
+    </div>
+    <input type="range" id="topn-slider" min="0" max="50" step="1" value="0" disabled>
+  </div>
+
+  <hr>
+  <div id="status">No file loaded.</div>
+</div>
+
+<div id="main">
+  <div id="drop-zone">Drop a pool.csv here, or use the file picker →</div>
+  <div id="heatmap-wrap"></div>
+</div>
+
+<div id="tooltip"></div>
+
+<script>
+// ─────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────
+const METRIC_COLS = new Set(['cost', 'mu', 'sigma', 'acq', 'eval_time_ms']);
+const META_COLS   = new Set(['visited', 'valid']);
+
+// Per-metric display defaults. 'invert' maps low→bright (better = brighter).
+const METRIC_DEFAULTS = {
+  eval_time_ms:  { palette: 'viridis', invert: true  },
+  cost:  { palette: 'viridis', invert: true  },
+  mu:    { palette: 'viridis', invert: true  },
+  acq:   { palette: 'plasma',  invert: true },
+  sigma: { palette: 'plasma',  invert: false },
+};
+
+// Applied to raw values before color-scaling and domain computation.
+// costScale is kept in sync with the #sel-scale dropdown.
+let costScale = 'log10';
+function scaleTransform(scale) {
+  if (scale === 'linear') return v => v;
+  if (scale === 'log2')   return v => Math.log2(v);
+  if (scale === 'ln')     return v => Math.log(v);
+  if (scale === 'sqrt')   return v => Math.sqrt(v);
+  if (scale === 'cbrt')   return v => Math.cbrt(v);
+  return v => Math.log10(v); // 'log10' and default
+}
+function getMetricTransform(m) {
+  if (m === 'cost' || m === 'mu') return scaleTransform(costScale);
+  return v => v;
+}
+
+const PALETTE = {
+  viridis:  d3.interpolateViridis,
+  plasma:   d3.interpolatePlasma,
+  inferno:  d3.interpolateInferno,
+  turbo:    d3.interpolateTurbo,
+  rdylgn:   t => d3.interpolateRdYlGn(1 - t),
+};
+
+let rows         = [];
+let dimCols      = [];
+let metricCols   = [];
+let dimUniq      = {};   // dim -> sorted unique values
+let metricDomain = {};   // metric -> [min, max] over full dataset (fixed on load)
+let mode         = 'agg'; // 'agg' | 'slice'
+let sliceIdx     = {};   // dim -> index into dimUniq[dim]
+let hasVisited   = false; // whether CSV contains a 'visited' column
+let hasValid     = false; // whether CSV contains a 'valid' column
+let facetDim        = '';    // dimension to spread into multiple heatmaps ('' = none)
+let hideEmptyFacets = false; // skip facets with no valid rows
+let topNMode        = 'pct'; // 'pct' | 'count'
+let topNPct         = 0;     // 0 = off; >0 = highlight cheapest n% configs
+let topNCount       = 0;     // 0 = off; >0 = highlight cheapest n configs (count mode)
+let countSteps      = [];    // exponential-ish step sequence for count mode
+let sortedCosts     = [];    // sorted valid costs, precomputed on load for O(1) threshold lookup
+
+// ─── Parallel worker state ──────────────────────────────────────────────────
+let renderToken  = 0;
+let sharedBuf    = null;   // SharedArrayBuffer (null if unsupported / not yet loaded)
+let sharedCols   = [];     // column names in sharedBuf order
+let workerPool   = null;
+let dispatchIdCt = 0;
+const N_WORKERS  = Math.min(8, Math.max(1, (navigator.hardwareConcurrency || 4) - 1));
+
+// ─────────────────────────────────────────────
+// CSV loading
+// ─────────────────────────────────────────────
+function loadText(text) {
+  const result = Papa.parse(text, { header: true, dynamicTyping: true, skipEmptyLines: true });
+  if (!result.data.length) { alert('CSV appears empty.'); return; }
+
+  rows = result.data;
+  const fields = result.meta.fields;
+
+  const firstMetricIdx = fields.findIndex(f => METRIC_COLS.has(f));
+  hasVisited = fields.includes('visited');
+  hasValid   = fields.includes('valid');
+  dimCols    = (firstMetricIdx === -1 ? fields : fields.slice(0, firstMetricIdx))
+               .filter(f => !META_COLS.has(f));
+  metricCols = firstMetricIdx === -1 ? [] : fields.slice(firstMetricIdx)
+               .filter(f => METRIC_COLS.has(f));
+
+  dimUniq = {};
+  for (const d of dimCols)
+    dimUniq[d] = [...new Set(rows.map(r => r[d]))].sort((a, b) => a - b);
+
+  // Precompute sorted costs for O(1) top-N threshold lookup.
+  sortedCosts = rows
+    .filter(r => (!hasValid || r['valid'] == 1) && Number.isFinite(r['cost']))
+    .map(r => r['cost'])
+    .sort((a, b) => a - b);
+
+  // Build count-mode step sequence: 1-2-5 style, dense at the low end.
+  countSteps = buildCountSteps(sortedCosts.length);
+
+  // Fix color domain per metric over the entire dataset.
+  metricDomain = {};
+  for (const m of metricCols) {
+    const tf   = getMetricTransform(m);
+    const vals = rows.map(r => r[m]).filter(Number.isFinite).map(tf).filter(Number.isFinite);
+    if (vals.length)
+      metricDomain[m] = [d3.min(vals), d3.max(vals)];
+  }
+
+  const availMetrics = metricCols.filter(m => m in metricDomain);
+
+  populate('sel-x', dimCols, 0);
+  populate('sel-y', dimCols, Math.min(1, dimCols.length - 1));
+  populate('sel-metric', availMetrics, 0);
+  applyMetricDefaults(availMetrics[0]);
+
+  ['sel-x','sel-y','sel-metric','sel-agg','sel-palette','sel-facet',
+   'btn-agg','btn-slice','btn-hide-empty','topn-slider',
+   'btn-topn-pct','btn-topn-count'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = false;
+  });
+  topNPct   = 0;
+  topNCount = 0;
+  topNMode  = 'pct';
+  document.getElementById('btn-topn-pct').classList.add('active');
+  document.getElementById('btn-topn-count').classList.remove('active');
+  syncTopNSlider();
+  document.getElementById('topn-val').textContent = 'off';
+
+  sliceIdx = {};
+  for (const d of dimCols) sliceIdx[d] = 0;
+
+  const obsCount = rows.filter(r => Number.isFinite(r['cost'])).length;
+  document.getElementById('status').innerHTML =
+    `<b>${rows.length}</b> configs<br>` +
+    `<b>${obsCount}</b> observed<br>` +
+    `<b>${dimCols.length}</b> dims: ${dimCols.join(', ')}`;
+
+  document.getElementById('drop-zone').style.display = 'none';
+  document.getElementById('heatmap-wrap').style.display = 'block';
+
+  rebuildFacetSelector();
+  rebuildSliders();
+  encodeToShared();
+  render();
+}
+
+function applyMetricDefaults(metric) {
+  const def = METRIC_DEFAULTS[metric];
+  if (def) document.getElementById('sel-palette').value = def.palette;
+}
+
+function populate(id, options, defaultIdx) {
+  const sel = document.getElementById(id);
+  const prev = sel.value;
+  sel.innerHTML = '';
+  for (const o of options) {
+    const el = document.createElement('option');
+    el.value = el.textContent = String(o);
+    sel.appendChild(el);
+  }
+  if (options.map(String).includes(prev)) sel.value = prev;
+  else sel.selectedIndex = Math.min(defaultIdx, options.length - 1);
+}
+
+// ─────────────────────────────────────────────
+// Facet selector
+// ─────────────────────────────────────────────
+function rebuildFacetSelector() {
+  const xDim = get('sel-x');
+  const yDim = get('sel-y');
+  const sel  = document.getElementById('sel-facet');
+  const prev = facetDim;
+  sel.innerHTML = '<option value="">(none)</option>';
+  for (const d of dimCols) {
+    if (d === xDim || d === yDim) continue;
+    const el = document.createElement('option');
+    el.value = el.textContent = d;
+    sel.appendChild(el);
+  }
+  sel.value = (prev && prev !== xDim && prev !== yDim) ? prev : '';
+  facetDim = sel.value;
+}
+
+// ─────────────────────────────────────────────
+// Slice-mode sliders
+// ─────────────────────────────────────────────
+function rebuildSliders() {
+  const xDim = get('sel-x');
+  const yDim = get('sel-y');
+  const container = document.getElementById('dim-sliders');
+  container.innerHTML = '';
+
+  // Exclude X, Y, and the facet dim — facet values are iterated in render().
+  const otherDims = dimCols.filter(d => d !== xDim && d !== yDim && d !== facetDim);
+  for (const dim of otherDims) {
+    const vals = dimUniq[dim];
+    const idx  = Math.min(sliceIdx[dim] ?? 0, vals.length - 1);
+    sliceIdx[dim] = idx;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'slider-group';
+    wrap.innerHTML = `
+      <div class="slider-header">
+        <span class="slider-name">${dim}</span>
+        <span class="slider-val" id="slval-${dim}">${vals[idx]}</span>
+      </div>
+      <input type="range" min="0" max="${vals.length - 1}" step="1" value="${idx}"
+             data-dim="${dim}">
+    `;
+    const input = wrap.querySelector('input');
+    input.addEventListener('input', () => {
+      sliceIdx[dim] = +input.value;
+      document.getElementById(`slval-${dim}`).textContent = dimUniq[dim][sliceIdx[dim]];
+      render();
+    });
+    container.appendChild(wrap);
+  }
+}
+
+// ─────────────────────────────────────────────
+// Top-N threshold helpers
+// ─────────────────────────────────────────────
+
+// Exponential-ish step sequence for count mode: 1-2-5 within each decade,
+// clipped to [1, nValid] with the exact maximum always included.
+function buildCountSteps(nValid) {
+  if (nValid <= 0) return [];
+  const mults = [1, 2, 3, 5, 7]; // per-decade multipliers
+  const steps = new Set();
+  let decade = 1;
+  while (decade <= nValid) {
+    for (const m of mults) {
+      const v = decade * m;
+      if (v >= 1 && v <= nValid) steps.add(v);
+    }
+    decade *= 10;
+  }
+  steps.add(nValid);
+  return [...steps].sort((a, b) => a - b);
+}
+
+// Sync the slider element to the current mode (range + value).
+function syncTopNSlider() {
+  const sl = document.getElementById('topn-slider');
+  if (topNMode === 'pct') {
+    sl.min = 0; sl.max = 50; sl.step = 1;
+    sl.value = topNPct;
+  } else {
+    sl.min = 0; sl.max = countSteps.length; sl.step = 1;
+    sl.value = topNCount === 0 ? 0 : countSteps.indexOf(topNCount) + 1;
+  }
+}
+
+function getTopNThreshold() {
+  if (topNMode === 'pct') {
+    if (topNPct <= 0 || !sortedCosts.length) return null;
+    return sortedCosts[Math.max(0, Math.ceil(sortedCosts.length * topNPct / 100) - 1)];
+  } else {
+    if (topNCount <= 0 || !sortedCosts.length) return null;
+    return sortedCosts[Math.min(topNCount, sortedCosts.length) - 1];
+  }
+}
+
+function opacityForCell(d) {
+  const thr = getTopNThreshold();
+  if (thr === null) return 1;
+  return d.minCost > thr ? 0.2 : 1;
+}
+
+// ─────────────────────────────────────────────
+// Aggregation helper
+// ─────────────────────────────────────────────
+function aggValues(values, method) {
+  // Use reduce, not spread, to avoid call-stack overflow on large arrays.
+  let min = Infinity, max = -Infinity, sum = 0, count = 0;
+  for (const v of values) {
+    if (!Number.isFinite(v)) continue;
+    if (v < min) min = v;
+    if (v > max) max = v;
+    sum += v;
+    count++;
+  }
+  if (!count) return NaN;
+  if (method === 'min') return min;
+  if (method === 'max') return max;
+  return sum / count;
+}
+
+// ─────────────────────────────────────────────
+// Parallel worker infrastructure
+// ─────────────────────────────────────────────
+
+// Worker source: receives a SharedArrayBuffer slice, returns partial cell stats.
+// 12 fields per cell: sum, count, min, max, nObs, nFailed, nUnobserved,
+//                     minCost, bestRowIdx, bestMetricVal, nTotal, nVisited
+const WORKER_SRC = `
+self.onmessage = function({ data: msg }) {
+  const { id, buf, nCols, rowStart, rowEnd, nCells,
+          xIdx, yIdx, metricIdx, costIdx, validIdx, visitedIdx,
+          facetIdx, facetVal, hasFacet,
+          mode, pins, xValsArr, yValsArr, nXVals,
+          hasValid, hasVisited, needsCost } = msg;
+  const arr = new Float64Array(buf);
+  const FIELDS = 12;
+  const stats = new Float64Array(nCells * FIELDS);
+  for (let c = 0; c < nCells; c++) {
+    const b = c * FIELDS;
+    stats[b+2] = Infinity; stats[b+3] = -Infinity;
+    stats[b+7] = Infinity; stats[b+8] = -1; stats[b+9] = Infinity;
+  }
+  const nPins = pins.length;
+  for (let i = rowStart; i < rowEnd; i++) {
+    const base = i * nCols;
+    if (hasFacet && arr[base + facetIdx] !== facetVal) continue;
+    if (mode === 'slice') {
+      let skip = false;
+      for (let p = 0; p < nPins; p += 2) {
+        if (arr[base + (pins[p]|0)] !== pins[p+1]) { skip = true; break; }
+      }
+      if (skip) continue;
+    }
+    const xV = arr[base + xIdx], yV = arr[base + yIdx];
+    let xi = -1, yi = -1;
+    for (let k = 0; k < xValsArr.length; k++) { if (xValsArr[k] === xV) { xi = k; break; } }
+    for (let k = 0; k < yValsArr.length; k++) { if (yValsArr[k] === yV) { yi = k; break; } }
+    if (xi < 0 || yi < 0) continue;
+    const ci = yi * nXVals + xi, cs = ci * FIELDS;
+    const valid   = validIdx   >= 0 ? arr[base + validIdx]   : 1;
+    const visited = visitedIdx >= 0 ? arr[base + visitedIdx] : NaN;
+    const cost    = costIdx    >= 0 ? arr[base + costIdx]    : NaN;
+    const mval    = metricIdx  >= 0 ? arr[base + metricIdx]  : NaN;
+    const isValid   = !hasValid || valid == 1;
+    const hasCost   = isFinite(cost);
+    const hasMetric = isValid && (!needsCost || hasCost) && isFinite(mval);
+    stats[cs+10] += 1;
+    if (hasVisited && isFinite(visited) && visited == 1) stats[cs+11] += 1;
+    if (hasMetric) {
+      stats[cs+0] += mval; stats[cs+1] += 1;
+      if (mval < stats[cs+2]) stats[cs+2] = mval;
+      if (mval > stats[cs+3]) stats[cs+3] = mval;
+    }
+    if (hasCost) stats[cs+4] += 1;
+    if (hasValid && hasVisited) {
+      if (valid == 1 && visited == 1 && !hasCost) stats[cs+5] += 1;
+      if (valid == 1 && visited == 0)             stats[cs+6] += 1;
+    }
+    if (isValid && hasCost && cost < stats[cs+7]) stats[cs+7] = cost;
+    if (hasMetric && mval < stats[cs+9]) { stats[cs+9] = mval; stats[cs+8] = i; }
+  }
+  self.postMessage({ id, stats: stats.buffer }, [stats.buffer]);
+};
+`;
+
+function getWorkerPool() {
+  if (workerPool) return workerPool;
+  const url = URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' }));
+  workerPool = Array.from({ length: N_WORKERS }, () => new Worker(url));
+  return workerPool;
+}
+
+function encodeToShared() {
+  if (typeof SharedArrayBuffer === 'undefined') return;
+  const colSet = new Set([...dimCols, ...metricCols]);
+  if (hasVisited) colSet.add('visited');
+  if (hasValid)   colSet.add('valid');
+  sharedCols = [...colSet];
+  const nCols = sharedCols.length;
+  sharedBuf = new SharedArrayBuffer(rows.length * nCols * 8);
+  const arr = new Float64Array(sharedBuf);
+  for (let i = 0; i < rows.length; i++) {
+    const base = i * nCols, r = rows[i];
+    for (let j = 0; j < nCols; j++) {
+      const v = r[sharedCols[j]];
+      arr[base + j] = (v == null) ? NaN : +v;
+    }
+  }
+  getWorkerPool(); // warm up workers while page finishes loading
+}
+
+function _initPartial(nCells, FIELDS) {
+  const e = new Float64Array(nCells * FIELDS);
+  for (let c = 0; c < nCells; c++) {
+    e[c*FIELDS+2] = Infinity;  e[c*FIELDS+3] = -Infinity;
+    e[c*FIELDS+7] = Infinity;  e[c*FIELDS+8] = -1;  e[c*FIELDS+9] = Infinity;
+  }
+  return e;
+}
+
+async function buildGridParallel(facetVal, xDim, yDim, xVals, yVals, metric) {
+  const pool = getWorkerPool();
+  const N = rows.length, nCols = sharedCols.length, nCells = xVals.length * yVals.length;
+  const xIdx       = sharedCols.indexOf(xDim);
+  const yIdx       = sharedCols.indexOf(yDim);
+  const metricIdx  = sharedCols.indexOf(metric);
+  const costIdx    = sharedCols.indexOf('cost');
+  const validIdx   = sharedCols.indexOf('valid');
+  const visitedIdx = sharedCols.indexOf('visited');
+  const facetIdx   = facetDim ? sharedCols.indexOf(facetDim) : -1;
+  const aggMethod  = mode === 'agg' ? get('sel-agg') : 'mean';
+  const needsCost  = metric === 'cost';
+
+  const pinsRaw = [];
+  if (mode === 'slice') {
+    for (const d of dimCols.filter(d => d !== xDim && d !== yDim && d !== facetDim)) {
+      const ci = sharedCols.indexOf(d);
+      if (ci >= 0) pinsRaw.push(ci, dimUniq[d][sliceIdx[d] ?? 0]);
+    }
+  }
+
+  const myId = ++dispatchIdCt;
+  const chunkSize = Math.ceil(N / pool.length);
+  const FIELDS = 12;
+
+  const partials = await Promise.all(pool.map((w, i) => {
+    const rowStart = i * chunkSize, rowEnd = Math.min(rowStart + chunkSize, N);
+    if (rowStart >= rowEnd) return Promise.resolve(_initPartial(nCells, FIELDS));
+    return new Promise(resolve => {
+      const handler = ({ data }) => {
+        if (data.id !== myId) return; // wrong dispatch, ignore
+        w.removeEventListener('message', handler);
+        resolve(new Float64Array(data.stats));
+      };
+      w.addEventListener('message', handler);
+      w.postMessage({
+        id: myId, buf: sharedBuf, nCols, rowStart, rowEnd, nCells,
+        xIdx, yIdx, metricIdx, costIdx, validIdx, visitedIdx,
+        facetIdx, facetVal: facetVal !== null ? facetVal : NaN, hasFacet: facetVal !== null,
+        mode, pins: new Float64Array(pinsRaw),
+        xValsArr: new Float64Array(xVals), yValsArr: new Float64Array(yVals),
+        nXVals: xVals.length, hasValid, hasVisited, needsCost,
+      });
+    });
+  }));
+
+  // Merge partial stats
+  const m = _initPartial(nCells, FIELDS);
+  for (const p of partials) {
+    for (let c = 0; c < nCells; c++) {
+      const b = c * FIELDS;
+      m[b+0] += p[b+0]; m[b+1] += p[b+1];
+      if (p[b+2] < m[b+2]) m[b+2] = p[b+2];
+      if (p[b+3] > m[b+3]) m[b+3] = p[b+3];
+      m[b+4] += p[b+4]; m[b+5] += p[b+5]; m[b+6] += p[b+6];
+      m[b+10] += p[b+10]; m[b+11] += p[b+11];
+      if (p[b+7] < m[b+7]) m[b+7] = p[b+7];
+      if (p[b+9] < m[b+9]) { m[b+9] = p[b+9]; m[b+8] = p[b+8]; }
+    }
+  }
+
+  // Build grid cell objects from merged stats
+  const tf = getMetricTransform(metric);
+  const grid = [];
+  for (let yi = 0; yi < yVals.length; yi++) {
+    for (let xi = 0; xi < xVals.length; xi++) {
+      const c = yi * xVals.length + xi, b = c * FIELDS;
+      const cnt = m[b+1];
+      let value = NaN;
+      if (cnt > 0) {
+        if (aggMethod === 'min')      value = tf(m[b+2]);
+        else if (aggMethod === 'max') value = tf(m[b+3]);
+        else                          value = tf(m[b+0] / cnt);
+      }
+      const bri = m[b+8];
+      grid.push({
+        x: xVals[xi], y: yVals[yi], value,
+        nObs:        m[b+4],
+        nVisited:    hasVisited ? m[b+11] : m[b+4],
+        nFailed:     m[b+5],
+        nUnobserved: m[b+6],
+        nTotal:      m[b+10],
+        bestRow:     (bri >= 0 && bri < rows.length) ? rows[bri] : null,
+        minCost:     m[b+7] < Infinity ? m[b+7] : Infinity,
+      });
+    }
+  }
+  return grid;
+}
+
+// ─────────────────────────────────────────────
+// Render
+// ─────────────────────────────────────────────
+function get(id) { return document.getElementById(id).value; }
+
+function buildGrid(sourceRows, xDim, yDim, xVals, yVals, metric) {
+  const needsCost = metric === 'cost';
+  const aggMethod = mode === 'agg' ? get('sel-agg') : 'mean';
+  const tf = getMetricTransform(metric);
+
+  // Pre-filter for slice mode once (O(N)) instead of per-cell (O(N × cells)).
+  let filteredRows = sourceRows;
+  if (mode === 'slice') {
+    const pins = dimCols
+      .filter(d => d !== xDim && d !== yDim && d !== facetDim)
+      .map(d => [d, dimUniq[d][sliceIdx[d] ?? 0]]);
+    if (pins.length) {
+      filteredRows = sourceRows.filter(r => pins.every(([d, v]) => r[d] === v));
+    }
+  }
+
+  // Index rows by "xVal|yVal" — O(N) build, O(1) per-cell lookup.
+  const cellMap = new Map();
+  for (const r of filteredRows) {
+    const key = `${r[xDim]}|${r[yDim]}`;
+    let bucket = cellMap.get(key);
+    if (!bucket) { bucket = []; cellMap.set(key, bucket); }
+    bucket.push(r);
+  }
+
+  const grid = [];
+  for (const y of yVals) {
+    for (const x of xVals) {
+      const bucket = cellMap.get(`${x}|${y}`) ?? [];
+
+      const aggBucket = hasValid
+        ? bucket.filter(r => r['valid'] == 1 && (!needsCost || Number.isFinite(r['cost'])))
+        : (needsCost ? bucket.filter(r => Number.isFinite(r['cost'])) : bucket);
+
+      const val         = tf(aggValues(aggBucket.map(r => r[metric]), aggMethod));
+      const nObs        = bucket.filter(r => Number.isFinite(r['cost'])).length;
+      const nVisited    = hasVisited ? bucket.filter(r => r['visited'] == 1).length : nObs;
+      const nFailed     = hasValid
+        ? bucket.filter(r => r['valid'] == 1 && r['visited'] == 1 && !Number.isFinite(r['cost'])).length
+        : 0;
+      const nUnobserved = hasValid
+        ? bucket.filter(r => r['valid'] == 1 && r['visited'] == 0).length
+        : 0;
+      const bestRow = aggBucket.filter(r => Number.isFinite(r[metric]))
+                               .reduce((b, r) => (!b || r[metric] < b[metric]) ? r : b, null);
+      const minCost = bucket.reduce((mn, r) =>
+        ((!hasValid || r['valid'] == 1) && Number.isFinite(r['cost'])) ? Math.min(mn, r['cost']) : mn,
+        Infinity);
+
+      grid.push({ x, y, value: val, nObs, nVisited, nFailed, nUnobserved, nTotal: bucket.length, bestRow, minCost });
+    }
+  }
+  return grid;
+}
+
+// render() schedules a deferred async render. Multiple rapid calls coalesce:
+// only the call with the current renderToken actually runs to completion.
+function render() {
+  if (!rows.length) return;
+  const myToken = ++renderToken;
+  Promise.resolve().then(() => _renderAsync(myToken));
+}
+
+async function _renderAsync(myToken) {
+  if (myToken !== renderToken) return;
+
+  const xDim   = get('sel-x');
+  const yDim   = get('sel-y');
+  const metric = get('sel-metric');
+  const pal    = get('sel-palette');
+  const xVals  = dimUniq[xDim];
+  const yVals  = dimUniq[yDim];
+
+  const [minV, maxV] = metricDomain[metric] ?? [0, 1];
+  const invert = METRIC_DEFAULTS[metric]?.invert ?? false;
+
+  const allFacetVals = facetDim ? dimUniq[facetDim] : [null];
+  const isMultiFacet = allFacetVals.length > 1;
+
+  let hiddenCount = 0;
+  const facetVals = allFacetVals.filter(fv => {
+    if (!isMultiFacet || fv === null || !hideEmptyFacets) return true;
+    const hasAnyValid = hasValid
+      ? rows.some(r => r[facetDim] === fv && r['valid'] == 1)
+      : rows.some(r => r[facetDim] === fv);
+    if (!hasAnyValid) { hiddenCount++; return false; }
+    return true;
+  });
+
+  document.getElementById('facet-empty-ctrl').style.display = isMultiFacet ? '' : 'none';
+  document.getElementById('btn-hide-empty').disabled = !isMultiFacet;
+  document.getElementById('hidden-count').textContent =
+    hiddenCount > 0 ? `${hiddenCount} hidden` : (hideEmptyFacets ? 'none hidden' : '');
+
+  // Build grids — parallel path when SharedArrayBuffer is available.
+  const grids = [];
+  for (const fv of facetVals) {
+    if (myToken !== renderToken) return; // cancelled by a newer render
+    if (sharedBuf) {
+      grids.push(await buildGridParallel(fv, xDim, yDim, xVals, yVals, metric));
+    } else {
+      const sourceRows = fv !== null ? rows.filter(r => r[facetDim] === fv) : rows;
+      grids.push(buildGrid(sourceRows, xDim, yDim, xVals, yVals, metric));
+    }
+  }
+
+  if (myToken !== renderToken) return; // cancelled while workers ran
+
+  const wrap = document.getElementById('heatmap-wrap');
+  wrap.innerHTML = '';
+  wrap.style.display    = 'flex';
+  wrap.style.flexWrap   = 'wrap';
+  wrap.style.gap        = '24px';
+  wrap.style.alignItems = 'flex-start';
+
+  for (let fi = 0; fi < facetVals.length; fi++) {
+    const fv = facetVals[fi], grid = grids[fi];
+    const panel = document.createElement('div');
+    if (fv !== null) {
+      const title = document.createElement('div');
+      title.textContent = `${facetDim} = ${fv}`;
+      title.style.cssText = 'color:#a6adc8;font-size:12px;font-weight:600;margin-bottom:6px;text-align:center;';
+      panel.appendChild(title);
+    }
+    wrap.appendChild(panel);
+    drawHeatmap(panel, grid, xVals, yVals, xDim, yDim, metric, pal, minV, maxV, invert);
+  }
+}
+
+// ─────────────────────────────────────────────
+// Draw
+// ─────────────────────────────────────────────
+function drawHeatmap(container, grid, xVals, yVals, xLabel, yLabel, metricLabel, palKey, minV, maxV, invert = false) {
+
+  const margin  = { top: 50, right: 90, bottom: 55, left: 65 };
+  const cellW   = Math.max(18, Math.min(64, Math.floor(700 / xVals.length)));
+  const cellH   = Math.max(18, Math.min(64, Math.floor(560 / yVals.length)));
+  const innerW  = xVals.length * cellW;
+  const innerH  = yVals.length * cellH;
+
+  const svg = d3.select(container).append('svg')
+    .attr('width',  innerW + margin.left + margin.right)
+    .attr('height', innerH + margin.top  + margin.bottom);
+
+  const g = svg.append('g')
+    .attr('transform', `translate(${margin.left},${margin.top})`);
+
+  const xScale = d3.scaleBand().domain(xVals.map(String)).range([0, innerW]).padding(0.04);
+  const yScale = d3.scaleBand().domain(yVals.map(String)).range([innerH, 0]).padding(0.04);
+
+  const baseInterp  = PALETTE[palKey] ?? PALETTE.viridis;
+  const interp      = invert ? (t => baseInterp(1 - t)) : baseInterp;
+  const colorScale  = d3.scaleSequential([minV, maxV], interp);
+
+  // Axes
+  g.append('g').attr('class', 'x-axis').attr('transform', `translate(0,${innerH})`)
+   .call(d3.axisBottom(xScale).tickSizeOuter(0));
+  g.append('g').attr('class', 'y-axis')
+   .call(d3.axisLeft(yScale).tickSizeOuter(0));
+
+  g.append('text').attr('class', 'axis-label')
+   .attr('x', innerW / 2).attr('y', innerH + 42)
+   .attr('text-anchor', 'middle').text(xLabel);
+  g.append('text').attr('class', 'axis-label')
+   .attr('transform', 'rotate(-90)')
+   .attr('x', -innerH / 2).attr('y', -52)
+   .attr('text-anchor', 'middle').text(yLabel);
+
+  // Cells
+  const tooltip = document.getElementById('tooltip');
+  g.selectAll('rect.cell')
+    .data(grid)
+    .join('rect')
+    .attr('class', 'cell')
+    .attr('x', d => xScale(String(d.x)))
+    .attr('y', d => yScale(String(d.y)))
+    .attr('width',  xScale.bandwidth())
+    .attr('height', yScale.bandwidth())
+    .attr('rx', 2)
+    .attr('fill', d => {
+      if (Number.isFinite(d.value)) return colorScale(d.value); // observed with cost
+      if (d.nFailed > 0)      return '#585b70'; // valid, visited, no cost → failed
+      if (d.nUnobserved > 0)  return '#e8e8f8'; // valid, not yet sampled
+      return '#252535';                          // invalid (constraint violation)
+    })
+    .attr('opacity', d => opacityForCell(d))
+    .on('mousemove', (event, d) => {
+      tooltip.style.display = 'block';
+      tooltip.style.left = (event.clientX + 14) + 'px';
+      tooltip.style.top  = (event.clientY - 12) + 'px';
+      let html = `<b>${xLabel}</b>: ${d.x}<br><b>${yLabel}</b>: ${d.y}<br>`;
+      html += `<b>${metricLabel}</b>: ${Number.isFinite(d.value) ? fmtNum(d.value) : '—'}<br>`;
+      if (hasValid)
+        html += `<b>observed</b>: ${d.nObs} &nbsp; <b>failed</b>: ${d.nFailed} &nbsp; <b>total</b>: ${d.nTotal}`;
+      else
+        html += `<b>observed</b>: ${d.nObs} / ${d.nTotal}`;
+      if (d.bestRow) {
+        const others = Object.keys(d.bestRow)
+          .filter(k => !METRIC_COLS.has(k) && k !== xLabel && k !== yLabel);
+        if (others.length) {
+          html += '<br><span style="color:#585b70;font-size:10px">best config (other dims):</span>';
+          for (const k of others) html += `<br><b>${k}</b>: ${d.bestRow[k]}`;
+        }
+      }
+      tooltip.innerHTML = html;
+    })
+    .on('mouseleave', () => { tooltip.style.display = 'none'; });
+
+  // Color bar legend (unique gradient id per SVG to avoid collisions when faceting)
+  const gradId = `cbar-grad-${Math.random().toString(36).slice(2)}`;
+  const lgH = innerH, lgW = 12, lgX = innerW + 22, nStops = 20;
+  const defs = svg.append('defs');
+  const grad = defs.append('linearGradient')
+    .attr('id', gradId)
+    .attr('x1','0%').attr('x2','0%').attr('y1','0%').attr('y2','100%');
+  for (let i = 0; i <= nStops; i++) {
+    const t = i / nStops;
+    grad.append('stop').attr('offset', `${t*100}%`).attr('stop-color', interp(1 - t));
+  }
+  const lg = svg.append('g').attr('transform', `translate(${margin.left + lgX},${margin.top})`);
+  lg.append('rect').attr('width', lgW).attr('height', lgH)
+    .attr('fill', `url(#${gradId})`).attr('rx', 2);
+  const lgScale = d3.scaleLinear().domain([maxV, minV]).range([0, lgH]);
+  lg.append('g').attr('class', 'legend-tick')
+    .attr('transform', `translate(${lgW},0)`)
+    .call(d3.axisRight(lgScale).ticks(5).tickFormat(d3.format('.3g')));
+  lg.append('text')
+    .attr('transform', `rotate(90) translate(${lgH / 2},${-lgW - 32})`)
+    .attr('text-anchor', 'middle').attr('fill', '#6c7086').attr('font-size', 10)
+    .text(metricLabel);
+}
+
+function fmtNum(v) {
+  if (Math.abs(v) >= 1e4 || (Math.abs(v) < 1e-2 && v !== 0)) return v.toExponential(3);
+  return v.toPrecision(5).replace(/\.?0+$/, '');
+}
+
+// ─────────────────────────────────────────────
+// Mode toggle
+// ─────────────────────────────────────────────
+function setMode(m) {
+  mode = m;
+  document.getElementById('btn-agg').classList.toggle('active', m === 'agg');
+  document.getElementById('btn-slice').classList.toggle('active', m === 'slice');
+  document.getElementById('agg-section').style.display   = m === 'agg'   ? '' : 'none';
+  document.getElementById('slice-section').style.display = m === 'slice' ? '' : 'none';
+  render();
+}
+
+document.getElementById('btn-agg').addEventListener('click',   () => setMode('agg'));
+document.getElementById('btn-slice').addEventListener('click', () => setMode('slice'));
+
+// Auto-load CSV and scale from ?csv= / ?scale= query params (used by view_pool.py).
+{
+  const params = new URLSearchParams(window.location.search);
+  const s = params.get('scale');
+  if (s) {
+    const sel = document.getElementById('sel-scale');
+    if ([...sel.options].some(o => o.value === s)) {
+      sel.value = s;
+      costScale = s;
+    }
+  }
+  const p = params.get('csv');
+  if (p) fetch(p)
+    .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
+    .then(loadText)
+    .catch(e => console.error('Auto-load failed:', e));
+}
+
+document.getElementById('sel-scale').addEventListener('change', e => {
+  costScale = e.target.value;
+  if (rows.length) {
+    // Recompute color domains with new scale then re-render.
+    metricDomain = {};
+    for (const m of metricCols) {
+      const tf   = getMetricTransform(m);
+      const vals = rows.map(r => r[m]).filter(Number.isFinite).map(tf).filter(Number.isFinite);
+      if (vals.length)
+        metricDomain[m] = [d3.min(vals), d3.max(vals)];
+    }
+    render();
+  }
+});
+
+// ─────────────────────────────────────────────
+// Event wiring
+// ─────────────────────────────────────────────
+document.getElementById('file-input').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (file) file.text().then(loadText);
+});
+
+const dropZone = document.getElementById('drop-zone');
+document.body.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+document.body.addEventListener('dragleave', e => { if (!e.relatedTarget) dropZone.classList.remove('drag-over'); });
+document.body.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (file) file.text().then(loadText);
+});
+
+document.getElementById('sel-metric').addEventListener('change', () => {
+  applyMetricDefaults(get('sel-metric'));
+  render();
+});
+document.getElementById('sel-facet').addEventListener('change', () => {
+  facetDim = get('sel-facet');
+  rebuildSliders();
+  render();
+});
+document.getElementById('btn-hide-empty').addEventListener('click', () => {
+  hideEmptyFacets = !hideEmptyFacets;
+  document.getElementById('btn-hide-empty').classList.toggle('active', hideEmptyFacets);
+  render();
+});
+document.getElementById('topn-slider').addEventListener('input', () => {
+  const v = +document.getElementById('topn-slider').value;
+  if (topNMode === 'pct') {
+    topNPct = v;
+    document.getElementById('topn-val').textContent = v === 0 ? 'off' : `top ${v}%`;
+  } else {
+    topNCount = v === 0 ? 0 : countSteps[v - 1];
+    document.getElementById('topn-val').textContent = topNCount === 0 ? 'off' : `top ${topNCount}`;
+  }
+  d3.selectAll('rect.cell').attr('opacity', d => opacityForCell(d));
+});
+
+function setTopNMode(m) {
+  topNMode = m;
+  topNPct  = 0;
+  topNCount = 0;
+  document.getElementById('btn-topn-pct').classList.toggle('active',   m === 'pct');
+  document.getElementById('btn-topn-count').classList.toggle('active', m === 'count');
+  syncTopNSlider();
+  document.getElementById('topn-val').textContent = 'off';
+  d3.selectAll('rect.cell').attr('opacity', 1);
+}
+document.getElementById('btn-topn-pct').addEventListener('click',   () => setTopNMode('pct'));
+document.getElementById('btn-topn-count').addEventListener('click', () => setTopNMode('count'));
+
+['sel-x', 'sel-y', 'sel-agg', 'sel-palette'].forEach(id => {
+  document.getElementById(id).addEventListener('change', () => {
+    rebuildFacetSelector();
+    rebuildSliders();
+    render();
+  });
+});
+</script>
+</body>
+</html>

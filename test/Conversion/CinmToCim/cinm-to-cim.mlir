@@ -1,4 +1,4 @@
-// RUN: cinm-opt --one-shot-bufferize --convert-cinm-to-cim %s | cinm-opt | FileCheck %s
+// RUN: cinm-opt --cinm-isolate-compute-blocks --one-shot-bufferize --convert-cinm-to-cim %s | cinm-opt | FileCheck %s
 
 // CHECK-LABEL: simple
 func.func @simple(%t0: tensor<6x6xi32>, %t1: tensor<6x6xi32>, %t2 : tensor<6xi32>) {
@@ -18,4 +18,3 @@ func.func @simple(%t0: tensor<6x6xi32>, %t1: tensor<6x6xi32>, %t2 : tensor<6xi32
 
     return
 }
-

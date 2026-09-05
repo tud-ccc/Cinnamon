@@ -63,25 +63,24 @@ void UPMEMDialect::registerTypes() {
 //===----------------------------------------------------------------------===//
 
 Type mlir::upmem::DeviceHierarchyType::parse(mlir::AsmParser &parser) {
-  SmallVector<int64_t, 3> shape;
+  SmallVector<int64_t, 2> shape;
   if (parser.parseLess() || parser.parseDimensionList(shape, false, false) ||
       parser.parseGreater()) {
     return Type();
   }
+  if (shape.size() != 2) {
+    parser.emitError(parser.getNameLoc(),
+                     "expected a dpus x tasklets shape, got ")
+        << shape.size() << " dimensions";
+    return {};
+  }
 
-  return upmem::DeviceHierarchyType::get(parser.getContext(), shape);
+  return upmem::DeviceHierarchyType::get(parser.getContext(), shape[0],
+                                         shape[1]);
 }
 
 void mlir::upmem::DeviceHierarchyType::print(mlir::AsmPrinter &printer) const {
   printer << "<";
-  printer.printDimensionList(getShape());
+  printer.printDimensionList(getWgShape());
   printer << ">";
-}
-
-LogicalResult mlir::upmem ::DeviceHierarchyType::verify(
-    function_ref<InFlightDiagnostic()> emitError, ArrayRef<int64_t> shape) {
-  if (shape.size() != 3)
-    return emitError() << "upmem device hierarchy should have 3 dimensions: "
-                       << shape;
-  return success();
 }

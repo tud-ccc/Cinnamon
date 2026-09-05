@@ -5,6 +5,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include <llvm/Support/Casting.h>
+#include <memory>
 #include <mlir/IR/BuiltinTypes.h>
 
 #define DEBUG_TYPE "mlir-memristor-to-func"
@@ -13,8 +14,10 @@ using namespace mlir;
 using namespace mlir::func;
 using namespace mlir::memristor;
 
-#define GEN_PASS_CLASSES
+namespace mlir::memristor {
+#define GEN_PASS_DEF_CONVERTMEMRISTORTOFUNC
 #include <cinm-mlir/Conversion/MemristorPasses.h.inc>
+} // namespace mlir::memristor
 
 namespace {
 template <typename MemristorOp>
@@ -41,8 +44,8 @@ static LogicalResult createLibraryCall(MemristorOp &op,
       auto dynamicMemrefType =
           MemRefType::get(shape, memrefType.getElementType());
 
-      auto unrankedMemref = rewriter.create<memref::CastOp>(
-          op.getLoc(), dynamicMemrefType, operand);
+      auto unrankedMemref = memref::CastOp::create(rewriter, op.getLoc(),
+                                                   dynamicMemrefType, operand);
 
       parameterTypes.push_back(dynamicMemrefType);
       parameters.push_back(unrankedMemref.getResult());
@@ -63,9 +66,8 @@ static LogicalResult createLibraryCall(MemristorOp &op,
                                        op->getResultTypes());
 
     // Insert before module terminator.
-    auto funcOp =
-        rewriter.create<FuncOp>(op->getLoc(), fnNameAttr.getValue(), libFnType,
-                                ArrayRef<NamedAttribute>{});
+    auto funcOp = FuncOp::create(rewriter, op->getLoc(), fnNameAttr.getValue(),
+                                 libFnType, ArrayRef<NamedAttribute>{});
     funcOp.setVisibility(FuncOp::Visibility::Nested);
 
     rewriter.restoreInsertionPoint(insertionPoint);
@@ -88,8 +90,21 @@ public:
   }
 };
 
+} // anonymous namespace
+
+void mlir::memristor::populateMemristorToFuncConversionPatterns(
+    RewritePatternSet &patterns, MLIRContext *ctx) {
+  patterns.insert<MemristorOpConversion<memristor::WriteToCrossbarOp>,
+                  MemristorOpConversion<memristor::GemmOp>,
+                  MemristorOpConversion<memristor::GevmOp>,
+                  MemristorOpConversion<memristor::BarrierOp>>(ctx);
+}
+
+namespace mlir::memristor {
+
 class ConvertMemristorToFunc
-    : public ConvertMemristorToFuncBase<ConvertMemristorToFunc> {
+    : public mlir::memristor::impl::ConvertMemristorToFuncBase<
+          ConvertMemristorToFunc> {
 public:
   void runOnOperation() override {
     RewritePatternSet patterns{&getContext()};
@@ -107,16 +122,9 @@ public:
       signalPassFailure();
   }
 };
-} // anonymous namespace
 
-void mlir::memristor::populateMemristorToFuncConversionPatterns(
-    RewritePatternSet &patterns, MLIRContext *ctx) {
-  patterns.insert<MemristorOpConversion<memristor::WriteToCrossbarOp>,
-                  MemristorOpConversion<memristor::GemmOp>,
-                  MemristorOpConversion<memristor::GevmOp>,
-                  MemristorOpConversion<memristor::BarrierOp>>(ctx);
-}
+} // namespace mlir::memristor
 
-std::unique_ptr<Pass> mlir::memristor::createConvertMemristorToFuncPass() {
+std::unique_ptr<Pass> memristor::createConvertMemristorToFuncPass() {
   return std::make_unique<ConvertMemristorToFunc>();
 }

@@ -5,146 +5,170 @@ script_dir="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
 # shellcheck source=/dev/null
 source "$script_dir/common.sh"
 
-# ---- Safe defaults to avoid 'unbound variable' ----
-reconfigure="${reconfigure:-0}"
-setup_python_venv="${setup_python_venv:-0}"
-checkout_and_build_llvm="${checkout_and_build_llvm:-0}"
-checkout_and_build_torch_mlir="${checkout_and_build_torch_mlir:-0}"
-checkout_upmem="${checkout_upmem:-0}"
 CINNAMON_CMAKE_OPTIONS="${CINNAMON_CMAKE_OPTIONS:-}"
+CINNAMON_BUILD_OPTIONS="${CINNAMON_BUILD_OPTIONS:-}"
 
-# Required paths (defined in common.sh)
-project_root="${project_root:?Define 'project_root' in common.sh}"
-cinnamon_path="${cinnamon_path:?Define 'cinnamon_path' in common.sh}"
-llvm_path="${llvm_path:-}"
-torch_mlir_path="${torch_mlir_path:-}"
-upmem_path="${upmem_path:-}"
-
-# ---- Tools ----
 command -v ninja >/dev/null 2>&1 || { error "Ninja not found. Install it (e.g., 'sudo apt install ninja-build')."; exit 1; }
 command -v cmake >/dev/null 2>&1 || { error "CMake not found. Install it."; exit 1; }
 
+# The C++ cost model predictor is built as part of this project.
+ensure_submodule third-party/cnm-cost-model
+
 cd "$cinnamon_path"
 
-# ---- Build dir sanity: reconfigure if wrong generator / missing files ----
-need_config=0
-reason=""
+cache_file="$cinnamon_build_dir/CMakeCache.txt"
 
-if [[ -f build/CMakeCache.txt ]] && ! grep -q 'CMAKE_GENERATOR:INTERNAL=Ninja' build/CMakeCache.txt; then
-  reason="existing build is not Ninja"
+# ---- Where our dependencies live ----
+dep_opts=(
+  -DLLVM_DIR="$llvm_cmake_dir"
+  -DMLIR_DIR="$mlir_cmake_dir"
+)
+if [[ "$enable_upmem" -eq 1 && -d "$upmem_dir" ]]; then
+  dep_opts+=( -DUPMEM_DIR="$upmem_dir" )
 fi
-if [[ -z "$reason" && ! -d build ]]; then reason="build/ directory missing"; fi
-if [[ -z "$reason" && -d build && ! -f build/CMakeCache.txt ]]; then reason="CMakeCache.txt missing"; fi
-if [[ -z "$reason" && -d build && ! -f build/build.ninja ]]; then reason="build.ninja missing"; fi
-if [[ -z "$reason" && "$reconfigure" -eq 1 ]]; then reason="forced reconfigure (reconfigure=1)"; fi
+if [[ -d "$torch_mlir_install_dir" ]]; then
+  dep_opts+=( -DTORCH_MLIR_DIR="$torch_mlir_install_dir" )
+else
+  warning "No Torch-MLIR installation at '$torch_mlir_install_dir'; the torch frontend will not be built"
+fi
+
+# LLVM wires up ccache itself via LLVM_CCACHE_BUILD; our own build has to ask.
+ccache_opts=()
+if command -v ccache >/dev/null 2>&1; then
+  ccache_opts=(
+    -DCMAKE_C_COMPILER_LAUNCHER=ccache
+    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+  )
+fi
 
 # ---- If a venv is active, make CMake use it (Python + pybind11) ----
-EXTRA_OPTS=()
+python_opts=()
 if [[ -n "${VIRTUAL_ENV:-}" ]]; then
-  PYBIN="$(command -v python)"
-  # Ensure pybind11 is available and get its cmake dir
-  if ! PYBIND11_DIR="$("$PYBIN" - <<'PY'
-import sys
-try:
-    import pybind11
-    print(pybind11.get_cmake_dir())
-except Exception:
-    sys.exit(1)
-PY
-)"; then
-    status "pybind11 not found in venv; installing…"
-    "$PYBIN" -m pip install -U "pybind11>=2.10" numpy >/dev/null
+  if [[ -z "${PYBIND11_DIR:-}" ]]; then
+    status "pybind11 not found in venv; installing..."
+    verbose_cmd "$PYBIN" -m pip install -U "pybind11>=2.10" numpy
     PYBIND11_DIR="$("$PYBIN" -c 'import pybind11; print(pybind11.get_cmake_dir())')"
   fi
-  EXTRA_OPTS+=( -DPython3_EXECUTABLE="$PYBIN" -Dpybind11_DIR="$PYBIND11_DIR" -DPython3_FIND_VIRTUALENV=ONLY )
+  python_opts=( -DPython3_EXECUTABLE="$PYBIN" -Dpybind11_DIR="$PYBIND11_DIR" -DPython3_FIND_VIRTUALENV=ONLY )
+fi
 
-  # If cache exists but uses a different Python, force reconfigure
-  if [[ -z "$reason" && -f build/CMakeCache.txt ]]; then
-    cached_py="$(grep -E '^Python3_EXECUTABLE:FILEPATH=' build/CMakeCache.txt | sed 's/.*=//')"
-    if [[ -n "${cached_py:-}" && "$cached_py" != "$PYBIN" ]]; then
-      reason="cached Python ($cached_py) != venv Python ($PYBIN)"
-    fi
+# ---- Decide whether we need to configure ----
+need_config=0
+reason=""
+if [[ ! -f "$cache_file" ]]; then
+  reason="no CMake cache in '$cinnamon_build_dir'"
+elif ! grep -q 'CMAKE_GENERATOR:INTERNAL=Ninja' "$cache_file"; then
+  reason="existing build is not Ninja"
+elif [[ ! -f "$cinnamon_build_dir/build.ninja" ]]; then
+  reason="build.ninja missing"
+elif [[ "$reconfigure" -eq 1 ]]; then
+  reason="forced reconfigure (reconfigure=1)"
+elif [[ -n "${PYBIN:-}" ]]; then
+  cached_py="$(grep -E '^Python3_EXECUTABLE:FILEPATH=' "$cache_file" | sed 's/.*=//' || true)"
+  if [[ -n "$cached_py" && "$cached_py" != "$PYBIN" ]]; then
+    reason="cached Python ($cached_py) != venv Python ($PYBIN)"
   fi
 fi
+[[ -n "$reason" ]] && need_config=1
 
-# ---- Dependency locations (assembled safely as an array) ----
-DEP_OPTS=()
-if [[ "$checkout_and_build_llvm" -eq 1 && -n "${llvm_path:-}" ]]; then
-  DEP_OPTS+=( -DLLVM_DIR="$llvm_path/build/lib/cmake/llvm" )
-  DEP_OPTS+=( -DMLIR_DIR="$llvm_path/build/lib/cmake/mlir" )
-fi
-if [[ "$checkout_upmem" -eq 1 && -n "${upmem_path:-}" ]]; then
-  DEP_OPTS+=( -DUPMEM_DIR="$upmem_path" )
-fi
-if [[ "$checkout_and_build_torch_mlir" -eq 1 && -n "${torch_mlir_path:-}" ]]; then
-  DEP_OPTS+=( -DTORCH_MLIR_DIR="$torch_mlir_path/install" )
-fi
+BUILD_TYPE="${CMAKE_BUILD_TYPE:-RelWithDebInfo}"
 
-# User-provided extra options (space-separated → array)
-EXTRA_USER_OPTS=()
-if [[ -n "$CINNAMON_CMAKE_OPTIONS" ]]; then
-  # shellcheck disable=SC2206
-  EXTRA_USER_OPTS=( $CINNAMON_CMAKE_OPTIONS )
-fi
-
-# ---- Configure helper ----
-configure() {
-  status "Configuring Cinnamon (Ninja)"
+if [[ "$need_config" -eq 1 ]]; then
+  status "Configuring Cinnamon (Ninja): $reason"
   ln -s "$project_root/LICENSE" "$cinnamon_path/python/" 2>/dev/null || true
 
-  local cmake_args=(
-    -S .
-    -B build
-    -G Ninja
-    -DCMAKE_BUILD_TYPE=RelWithDebInfo
-    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+  # ---- Conan: install C++ dependencies into the build dir ----
+  if ! command -v conan >/dev/null 2>&1; then
+    error "conan not found. Run setup-venv.sh, or install conan into the active environment."
+    exit 1
+  fi
+  mkdir -p "$cinnamon_build_dir"
+
+  # Our C++ dependencies must be built with the same compiler and standard
+  # library as Cinnamon itself, so the profile follows the resolved host
+  # compiler instead of being checked in with a hardcoded one.
+  conan_profile="$cinnamon_build_dir/conan-profile"
+  if "$CXX" --version 2>/dev/null | head -1 | grep -qi clang; then
+    conan_compiler=clang
+  else
+    conan_compiler=gcc
+  fi
+  case "$(uname -m)" in
+    aarch64|arm64) conan_arch=armv8 ;;
+    *)             conan_arch="$(uname -m)" ;;
+  esac
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    conan_os=Macos
+    conan_libcxx=libc++
+  else
+    conan_os=Linux
+    conan_libcxx=libstdc++11
+  fi
+  cat > "$conan_profile" <<EOF
+[settings]
+arch=$conan_arch
+build_type=$BUILD_TYPE
+compiler=$conan_compiler
+compiler.cppstd=20
+compiler.libcxx=$conan_libcxx
+compiler.version=$("$CXX" -dumpversion | cut -d. -f1)
+os=$conan_os
+
+[buildenv]
+CC=$CC
+CXX=$CXX
+
+[conf]
+tools.cmake.cmaketoolchain:generator=Ninja
+tools.build:compiler_executables={"c": "$CC", "cpp": "$CXX"}
+EOF
+  status "Running conan install"
+  verbose_cmd conan install . --output-folder="$cinnamon_build_dir" --build=missing \
+    -s build_type="$BUILD_TYPE" -pr "$conan_profile"
+
+  user_opts=()
+  if [[ -n "$CINNAMON_CMAKE_OPTIONS" ]]; then
+    # shellcheck disable=SC2206
+    user_opts=( $CINNAMON_CMAKE_OPTIONS )
+  fi
+
+  # shellcheck disable=SC1091
+  source "$cinnamon_build_dir/conanbuild.sh"
+  print_and_run cmake -S "$cinnamon_path" -B "$cinnamon_build_dir" -G Ninja \
+    -DCMAKE_TOOLCHAIN_FILE="$cinnamon_build_dir/conan_toolchain.cmake" \
+    -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+    -DLLVM_ENABLE_EH=ON \
+    -DLLVM_ENABLE_RTTI=ON \
+    "${dep_opts[@]}" \
+    ${ccache_opts[@]+"${ccache_opts[@]}"} \
+    ${python_opts[@]+"${python_opts[@]}"} \
+    ${user_opts[@]+"${user_opts[@]}"}
+  # shellcheck disable=SC1091
+  source "$cinnamon_build_dir/deactivate_conanbuild.sh"
+fi
+
+status "Building Cinnamon (Ninja)"
+# shellcheck disable=SC2086
+print_and_run cmake --build "$cinnamon_build_dir" --target all $CINNAMON_BUILD_OPTIONS
+
+# ---- Python package wiring ----
+if [[ "$setup_python_venv" -eq 1 ]]; then
+  status "Building Cinnamon Python package"
+  site_packages_dir="$(python -c 'import sysconfig; p=sysconfig.get_paths(); print(p.get("platlib") or p.get("purelib"))')"
+  cinnamon_python_package_dir_src="$project_root/python/src/cinnamon"
+  cinnamon_python_package_resource_dir="$site_packages_dir/_resources"
+
+  cinnamon_python_resources=(
+    "$cinnamon_build_dir/bin/cinm-opt"
+    "$cinnamon_build_dir/lib/libMemristorDialectRuntime.so"
+    "$torch_mlir_build_dir/bin/torch-mlir-opt"
+    "$llvm_build_dir/bin/mlir-translate"
+    "$llvm_build_dir/bin/clang"
   )
 
-  if ((${#DEP_OPTS[@]})); then
-    cmake_args+=("${DEP_OPTS[@]}")
-  fi
-  if ((${#EXTRA_OPTS[@]})); then
-    cmake_args+=("${EXTRA_OPTS[@]}")
-  fi
-  if ((${#EXTRA_USER_OPTS[@]})); then
-    cmake_args+=("${EXTRA_USER_OPTS[@]}")
-  fi
-
-  print_and_run cmake "${cmake_args[@]}"
-}
-
-# ---- Build with one clean retry on failure ----
-status "Building Cinnamon (Ninja)"
-cmake --build build --target all -j 4
-# if ! cmake --build build --target all -j 8; then
-#   warning "Build failed — cleaning build/ and retrying from fresh configure…"
-#   rm -rf build
-#   configure
-#   cmake --build build --target all -j 8
-# fi
-
-# ---- Python package wiring (optional) ----
-if [[ "$setup_python_venv" -eq 1 && -n "${llvm_path:-}" && -n "${torch_mlir_path:-}" ]]; then
-  status "Building Cinnamon Python package"
-  # Prefer sysconfig (distutils may be absent)
-  site_packages_dir="$(python - <<'PY'
-import sys, sysconfig
-print(sysconfig.get_paths().get("platlib") or sysconfig.get_paths().get("purelib"))
-PY
-)"
-  cinnamon_python_package_dir_src="$project_root/python/src/cinnamon"
-  cinnamon_python_package_dir_dest="$site_packages_dir"
-  cinnamon_python_package_resource_dir="$cinnamon_python_package_dir_dest/_resources"
-
-  cinnamon_python_resources=()
-  cinnamon_python_resources+=( "$cinnamon_path/build/bin/cinm-opt" )
-  cinnamon_python_resources+=( "$cinnamon_path/build/lib/libMemristorDialectRuntime.so" )
-  [[ -n "${torch_mlir_path:-}" ]] && cinnamon_python_resources+=( "$torch_mlir_path/build/bin/torch-mlir-opt" )
-  [[ -n "${llvm_path:-}" ]] && cinnamon_python_resources+=( "$llvm_path/build/bin/mlir-translate" )
-  [[ -n "${llvm_path:-}" ]] && cinnamon_python_resources+=( "$llvm_path/build/bin/clang" )
-
-  if [[ ! -e "$cinnamon_python_package_dir_dest" ]]; then
-    ln -s "$cinnamon_python_package_dir_src" "$cinnamon_python_package_dir_dest"
+  if [[ ! -e "$site_packages_dir" ]]; then
+    ln -s "$cinnamon_python_package_dir_src" "$site_packages_dir"
   fi
 
   mkdir -p "$cinnamon_python_package_resource_dir" || true
@@ -152,9 +176,10 @@ PY
     ln -s "$resource" "$cinnamon_python_package_resource_dir" 2>/dev/null || true
   done
 
-  if [[ "${build_cinnamon_wheel:-0}" -eq 1 ]]; then
-    cd "$cinnamon_path/python"
+  if [[ "$build_cinnamon_wheel" -eq 1 ]]; then
+    pushd "$cinnamon_path/python" >/dev/null
     PYTHONWARNINGS=ignore verbose_cmd python -m build
+    popd >/dev/null
   fi
 else
   warning "Skipping Cinnamon Python package build"

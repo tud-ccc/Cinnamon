@@ -1,0 +1,125 @@
+
+=== All DPU counts (n=14097 configs, num_dpus 1-1984) ===
+     key                        name  rel_rmse  rmse_ms       r2
+pairwise           pairwise products  0.251942 0.079719 0.794649
+  linear           linear (all dims)  0.285476 0.086549 0.757951
+simplest                   dpu, size  0.285476 0.086549 0.757951
+   lasso            LASSO (pairwise)  0.291400 0.089035 0.743849
+   total total (product of all dims)  0.434471 0.155534 0.218322
+
+=== LASSO term selection (alpha=0.002111, 3/3 terms kept) ===
+  num_dpus                    0.000262081
+  block_size                   6.9494e-06
+  num_dpus*block_size         9.16081e-09
+
+=== block_size <= 1023 && num_dpus <= 16 (n=1008 configs, num_dpus 1-16) ===
+  key             name  rel_rmse  rmse_ms      r2
+lasso LASSO (pairwise)  0.091061 0.004462 0.42507
+
+=== block_size <= 1023 && 16 < num_dpus && num_dpus <= 24 (n=504 configs, num_dpus 17-24) ===
+  key             name  rel_rmse  rmse_ms       r2
+lasso LASSO (pairwise)  0.042593  0.00229 0.838649
+
+=== block_size <= 1023 && 24 < num_dpus && num_dpus <= 64 (n=1512 configs, num_dpus 25-64) ===
+  key             name  rel_rmse  rmse_ms       r2
+lasso LASSO (pairwise)  0.080703 0.005253 0.853123
+
+=== block_size <= 1023 && 64 < num_dpus && num_dpus <= 128 (n=1008 configs, num_dpus 68-128) ===
+  key             name  rel_rmse  rmse_ms      r2
+lasso LASSO (pairwise)  0.057411 0.006154 0.94322
+
+=== block_size <= 1023 && 128 < num_dpus && num_dpus <= 256 (n=1008 configs, num_dpus 136-256) ===
+  key             name  rel_rmse  rmse_ms       r2
+lasso LASSO (pairwise)  0.077991 0.010755 0.901642
+
+=== block_size <= 1023 && 256 < num_dpus && num_dpus <= 384 (n=504 configs, num_dpus 272-384) ===
+  key             name  rel_rmse  rmse_ms       r2
+lasso LASSO (pairwise)  0.058116 0.009887 0.934668
+
+=== block_size <= 1023 && num_dpus > 384 (n=2457 configs, num_dpus 400-1984) ===
+  key             name  rel_rmse  rmse_ms       r2
+lasso LASSO (pairwise)  0.130644 0.046065 0.792956
+
+=== block_size > 1023 && num_dpus <= 16 (n=768 configs, num_dpus 1-16) ===
+  key             name  rel_rmse  rmse_ms       r2
+lasso LASSO (pairwise)  0.070204 0.003783 0.843533
+
+=== block_size > 1023 && 16 < num_dpus && num_dpus <= 24 (n=384 configs, num_dpus 17-24) ===
+  key             name  rel_rmse  rmse_ms       r2
+lasso LASSO (pairwise)   0.07439  0.00607 0.669958
+
+=== block_size > 1023 && 24 < num_dpus && num_dpus <= 64 (n=1152 configs, num_dpus 25-64) ===
+  key             name  rel_rmse  rmse_ms       r2
+lasso LASSO (pairwise)  0.125749 0.013508 0.512694
+
+=== block_size > 1023 && 64 < num_dpus && num_dpus <= 128 (n=768 configs, num_dpus 68-128) ===
+  key             name  rel_rmse  rmse_ms       r2
+lasso LASSO (pairwise)  0.073151 0.013844 0.709536
+
+=== block_size > 1023 && 128 < num_dpus && num_dpus <= 256 (n=768 configs, num_dpus 136-256) ===
+  key             name  rel_rmse  rmse_ms       r2
+lasso LASSO (pairwise)  0.069859 0.014906 0.786189
+
+=== block_size > 1023 && 256 < num_dpus && num_dpus <= 384 (n=384 configs, num_dpus 272-384) ===
+  key             name  rel_rmse  rmse_ms       r2
+lasso LASSO (pairwise)  0.057462 0.014663 0.846571
+
+=== block_size > 1023 && num_dpus > 384 (n=1872 configs, num_dpus 400-1984) ===
+  key             name  rel_rmse  rmse_ms       r2
+lasso LASSO (pairwise)  0.133286 0.071672 0.735037
+
+=== hybrid ===
+  relRMSE = 9.55%   RMSE = 0.03125 ms   R² = 0.9684
+
+Best fit: hybrid (key=hybrid)
+  relRMSE = 9.55%   RMSE = 0.03125 ms   R² = 0.9684
+constexpr double lut[][4] = {
+  // region 0: block_size <= 1023 && num_dpus <= 16
+  {0.04201516, 0.0004107542, -4.864119e-06, 1.007478e-06},
+  // region 1: block_size <= 1023 && 16 < num_dpus && num_dpus <= 24
+  {0.04280815, 9.484226e-05, 1.732712e-05, 4.959865e-08},
+  // region 2: block_size <= 1023 && 24 < num_dpus && num_dpus <= 64
+  {0.0464311, 8.772586e-06, 4.363134e-06, 9.052437e-07},
+  // region 3: block_size <= 1023 && 64 < num_dpus && num_dpus <= 128
+  {0.07438462, 0.000121778, 7.711215e-06, 8.385477e-07},
+  // region 4: block_size <= 1023 && 128 < num_dpus && num_dpus <= 256
+  {0.06513973, 0.0001751677, 6.339817e-05, 2.952758e-07},
+  // region 5: block_size <= 1023 && 256 < num_dpus && num_dpus <= 384
+  {0.09293916, 7.682656e-05, 0.000122156, 7.407878e-08},
+  // region 6: block_size <= 1023 && num_dpus > 384
+  {0.1436886, 0.0001074005, 0.0001970803, 7.630822e-08},
+  // region 7: block_size > 1023 && num_dpus <= 16
+  {0.03731812, 0.001194719, 4.124005e-06, -4.241184e-08},
+  // region 8: block_size > 1023 && 16 < num_dpus && num_dpus <= 24
+  {0.05960562, 0.0003575294, 5.173693e-06, -4.596225e-08},
+  // region 9: block_size > 1023 && 24 < num_dpus && num_dpus <= 64
+  {0.08411514, -0.0001504571, -1.605423e-06, 1.848356e-07},
+  // region 10: block_size > 1023 && 64 < num_dpus && num_dpus <= 128
+  {0.1202309, 0.0002083918, 6.682507e-06, 3.41834e-08},
+  // region 11: block_size > 1023 && 128 < num_dpus && num_dpus <= 256
+  {0.1211169, 0.0002326418, 6.52981e-06, 3.193415e-08},
+  // region 12: block_size > 1023 && 256 < num_dpus && num_dpus <= 384
+  {0.1655146, 0.0001027908, 1.926204e-06, 4.524731e-08},
+  // region 13: block_size > 1023 && num_dpus > 384
+  {0.2518087, 0.0001427762, 1.09941e-05, 2.315834e-08},
+};
+int ix;
+if (block_size <= 1023 && num_dpus <= 16) ix = 0;
+else if (block_size <= 1023 && 16 < num_dpus && num_dpus <= 24) ix = 1;
+else if (block_size <= 1023 && 24 < num_dpus && num_dpus <= 64) ix = 2;
+else if (block_size <= 1023 && 64 < num_dpus && num_dpus <= 128) ix = 3;
+else if (block_size <= 1023 && 128 < num_dpus && num_dpus <= 256) ix = 4;
+else if (block_size <= 1023 && 256 < num_dpus && num_dpus <= 384) ix = 5;
+else if (block_size <= 1023 && num_dpus > 384) ix = 6;
+else if (block_size > 1023 && num_dpus <= 16) ix = 7;
+else if (block_size > 1023 && 16 < num_dpus && num_dpus <= 24) ix = 8;
+else if (block_size > 1023 && 24 < num_dpus && num_dpus <= 64) ix = 9;
+else if (block_size > 1023 && 64 < num_dpus && num_dpus <= 128) ix = 10;
+else if (block_size > 1023 && 128 < num_dpus && num_dpus <= 256) ix = 11;
+else if (block_size > 1023 && 256 < num_dpus && num_dpus <= 384) ix = 12;
+else if (block_size > 1023 && num_dpus > 384) ix = 13;
+else assert(false);
+return lut[ix][0] +
+num_dpus * lut[ix][1] + block_size * lut[ix][2] + num_dpus*block_size * lut[ix][3];
+
+Plots written to plots/block/

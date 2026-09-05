@@ -12,11 +12,8 @@
 
 using namespace mlir;
 
-
 int main(int argc, char **argv) {
   registerAllTranslations();
   upmem_emitc::registerUPMEMCppTranslation();
   return failed(mlirTranslateMain(argc, argv, "MLIR Translation Testing Tool"));
 }
-
-

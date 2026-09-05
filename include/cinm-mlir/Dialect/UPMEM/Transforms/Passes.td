@@ -9,23 +9,595 @@
 
 include "mlir/Pass/PassBase.td"
 
-
-def UPMEMOutlineKernelPass: Pass<"upmem-outline-kernel", "ModuleOp"> {
-  let summary = "Outlines a launch operation to a kernel and replaces it with a function call";
-  let dependentDialects = [
-    "::mlir::upmem::UPMEMDialect"
-  ];
-  let description = [{
-  }];
-}
-
-def UPMEMDedupKernelsPass: Pass<"upmem-dedup-kernels", "upmem::UPMEMModuleOp"> {
+def UPMEMDedupKernelsPass: Pass<"upmem-dedup-kernels", "ModuleOp"> {
   let summary = "Deduplicate the DPU kernels within an upmem module";
   let description = [{
   }];
   let dependentDialects = [
     "::mlir::upmem::UPMEMDialect"
   ];
+}
+
+def UpmemHoistLoadProgramsPass : Pass<"upmem-hoist-load-programs"> {
+  let summary = "Load each DPU set's resident program once, where the set is allocated";
+  let description = [{
+    A DPU set whose every `upmem.load_program` references the same program
+    holds that program for its whole lifetime; this pass replaces those
+    loads with a single one placed directly after the set's definition, so
+    a resident program is loaded once per allocation instead of once per
+    member block or per loop iteration. A set that loads several distinct
+    programs is timeshared -- the placement of its loads *is* the schedule
+    -- and is left untouched, as is any load whose set is a block argument,
+    since the set's allocation is then not visible from here.
+
+    Program identity is symbol equality: run `--upmem-dedup-kernels` first
+    so structurally identical programs share one symbol, and run after
+    `--cinm-unwrap-compute-blocks` so sets forwarded into compute blocks
+    have become ordinary SSA values.
+  }];
+  let dependentDialects = [
+    "::mlir::upmem::UPMEMDialect"
+  ];
+}
+
+def UpmemCoalesceLocalTransfersPass: Pass<"upmem-coalesce-local-transfers"> {
+  let summary = "Make a launch body's staging transfers fewer and larger";
+  let description = [{
+    A `cnm.launch` body runs on one compute element, so every
+    `cnm.local_transfer` in it is that element's own: nothing else reads or
+    writes the leaf buffer it stages through, and moving a transfer needs no
+    synchronization. This pass exploits that in two ways.
+
+    A staging whose tile does not depend on the loop it sits in is **hoisted**:
+    the same bytes are read on every trip and written back unchanged in
+    between, so one read before the loop and one write after move the same
+    data. That is what makes an output tile cheap under a reduction -- the
+    reduction updates it every trip and only the final value has to travel.
+
+    A staging whose tile advances by one step per trip is **coalesced**: the
+    loop is split into a strip loop and a walk over the strip, and the transfer
+    moves the whole strip at once. The far-level buffer is indexed per tile, so
+    consecutive transfers start one tile apart; when a tile is a fraction of a
+    DMA granule every other one begins mid-granule, and an MRAM DMA drops the
+    low bits of such an address. Every fractional staging of the loop is
+    widened by that one split -- the walk it leaves behind no longer has
+    constant bounds, so one left out could never be widened afterwards -- and
+    the strip length is the least that reaches a granule for all of them at
+    once. That bounds what this costs in leaf-level space and leaves the tiles
+    the search chose as the tiles the kernel computes on.
+  }];
+  let dependentDialects = [
+    "::mlir::cnm::CnmDialect",
+    "::mlir::upmem::UPMEMDialect",
+    "mlir::affine::AffineDialect",
+    "mlir::memref::MemRefDialect"
+  ];
+}
+
+def UpmemTileMRAMBuffersPass: Pass<"upmem-tile-mram-buffers"> {
+  let summary = "Stage a launch body's non-leaf buffers down to the leaf memory level";
+  let description = [{
+    Inside a `cnm.launch`, operands may live in a memory level the compute
+    elements cannot address directly -- MRAM, for UPMEM. This pass tiles each
+    such op down to a leaf-sized tile and stages the tile through the leaf
+    level, wrapping it in `cnm.local_transfer`s.
+
+    It applies to any `linalg` op with pure buffer semantics whose operands are
+    in a non-leaf level, rather than to a fixed set of ops: the tiling is
+    `scf::tileUsingSCF` and the staging is `linalg::promoteSubViews`, with the
+    memory space, allocation and copy op supplied by this pass. Which levels
+    exist, which one is the leaf, and what memory space attribute denotes them
+    all come from the accelerator, so no backend names appear in the logic.
+
+    Tile sizes come from an `upmem.leaf_tile_sizes` attribute on the op when
+    present (which is how the inference plugin passes a resolved configuration
+    in), otherwise from the `tile-sizes` option. With neither, the op is staged
+    whole -- correct when the buffer already fits the leaf level. The attribute
+    is not `cinm.tile_sizes`: the Cinm dialect reserves that one for ops
+    implementing CinmTilingInterface, and these are linalg ops.
+  }];
+  let dependentDialects = [
+    "::mlir::cnm::CnmDialect",
+    "::mlir::upmem::UPMEMDialect",
+    "mlir::affine::AffineDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::linalg::LinalgDialect",
+    "mlir::memref::MemRefDialect",
+    "mlir::scf::SCFDialect"
+  ];
+  let options = [
+    ListOption<"tileSizes", "tile-sizes", "int64_t",
+               "Tile sizes for ops that carry no upmem.leaf_tile_sizes "
+               "attribute. One per iteration-space dimension; 0 means do not "
+               "tile.">,
+    Option<"hoistOutputTransfers", "hoist-output-transfers", "bool", "true",
+           "Stage the output tile outside the reduction loops rather than "
+           "around the op. An output is indexed only by parallel dimensions, "
+           "so its tile is the same on every trip of a reduction loop; staging "
+           "it inside would transfer it back and forth once per trip -- and, "
+           "when the accumulator is initialized on device, would reinitialize "
+           "it every trip and keep only the last one's partial sum. That is "
+           "why this is not left to --upmem-coalesce-local-transfers, which "
+           "moves transfers but cannot re-associate a fill with the "
+           "accumulation it belongs to.">
+  ];
+}
+
+def simulatorClValues {
+  string values = [{
+  ::llvm::cl::values(
+    clEnumValN(UpmemSimulatorId::CYCLE_ACCURATE, "cycle-accurate", "Cycle accurate simulator"),
+    clEnumValN(UpmemSimulatorId::FAST, "fast", "Fast simulator based on the cycle-accurate one, may be imprecise"),
+    clEnumValN(UpmemSimulatorId::HYBRID, "hybrid", "Cycle accurate, falling back on the hybrid model on timeout"),
+    clEnumValN(UpmemSimulatorId::OPCOUNT, "op-count", "Operation counting, broken because doesn't report time in milliseconds")
+    )}];
+}
+
+def packFragmentedClValues {
+  string values = [{
+  ::llvm::cl::values(
+    clEnumValN(PackFragmentedTransfers::NONE, "none", "Leave every fragmented transfer in the block form"),
+    clEnumValN(PackFragmentedTransfers::STATIC, "static", "Repack only operands that are the same on every inference, so the repack amortizes"),
+    clEnumValN(PackFragmentedTransfers::ALL, "all", "Repack per-inference operands too: a copy per call, but every scatter stays in the flat whole-array form")
+    )}];
+}
+
+def samplingModeClValues {
+  string values = [{
+  ::llvm::cl::values(
+    clEnumValN(::mlir::cinm::InferenceOptions::SamplingMode::LHS, "lhs", "Latin Hypercube Sampling: spreads the draw evenly over the space, but the picks are stratified rather than independent"),
+    clEnumValN(::mlir::cinm::InferenceOptions::SamplingMode::Uniform, "uniform", "Independent uniform draws without replacement: the only mode whose sample is an unbiased picture of the space")
+    )}];
+}
+
+def acquisitionClValues {
+  string values = [{
+  ::llvm::cl::values(
+    clEnumValN(::mlir::cinm::InferenceOptions::Acquisition::LCB, "lcb", "Rank by mu - kappa*sigma and take the best"),
+    clEnumValN(::mlir::cinm::InferenceOptions::Acquisition::Thompson, "thompson", "One posterior draw per batch slot, each slot taking its draw's minimum")
+    )}];
+}
+
+def searchStrategyClValues {
+  string values = [{
+  ::llvm::cl::values(
+    clEnumValN(::mlir::cinm::InferenceOptions::SearchStrategyKind::Bananas, "bananas", "BANANAS-style BO: MLP-ensemble surrogate ranked by an acquisition function over a neighbour+random candidate set"),
+    clEnumValN(::mlir::cinm::InferenceOptions::SearchStrategyKind::Random, "random", "Uniform random search over the unvisited configs: the floor every learned strategy has to beat at equal budget"),
+    clEnumValN(::mlir::cinm::InferenceOptions::SearchStrategyKind::Descent, "descent", "Random-restart neighbourhood descent: batched steepest descent over grid neighbours, restarting from a random config at local optima"),
+    clEnumValN(::mlir::cinm::InferenceOptions::SearchStrategyKind::Ga, "ga", "Steady-state GA: tournament selection, per-parameter crossover, neighbour-step mutation, population seeded from the init sample")
+    )}];
+}
+
+def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
+  let summary = "Infer UPMEM accelerator parameters for cinm.compute ops";
+  let description = [{
+    For each cinm.compute op that declares a UPMEM platform via
+    cinm.available_platforms, runs Bayesian optimization to find the best
+    combination of ranks, dpus_per_rank, tasklets_per_dpu, and tiling factors.
+    Annotates the op with the resulting accelerator attribute and sets
+    cinm.tile_sizes on each tileable op in the compute body.
+  }];
+  let dependentDialects = [
+    "::mlir::cinm::CinmDialect",
+    "::mlir::cnm::CnmDialect",
+    "::mlir::upmem::UPMEMDialect",
+    "::mlir::func::FuncDialect",
+    "mlir::LLVM::LLVMDialect",
+    "mlir::affine::AffineDialect",
+    "mlir::bufferization::BufferizationDialect",
+    "mlir::linalg::LinalgDialect",
+    "mlir::tensor::TensorDialect",
+    "mlir::vector::VectorDialect"
+  ];
+  let options = [
+    // InferenceOptions fields
+    Option<"maxEvals", "max-evals", "int", "50",
+           "Total number of valid BO evaluations (LHS init + surrogate-guided)">,
+    Option<"nInit", "n-init", "int", "10",
+           "Number of LHS evaluations before the surrogate model takes over">,
+    Option<"rngSeed", "rng-seed", "int", "42",
+           "RNG seed for reproducibility">,
+    Option<"nSeeds", "n-seeds", "int", "1",
+           "Number of independent BO seeds to run concurrently in one process, "
+           "sharing the config space / valid-config scan / validation set. Each "
+           "seed dumps to a seed_<value>/ subdirectory. 1 = single-seed">,
+    Option<"hostTransferBoundShare", "host-transfer-bound-share", "double",
+           "0.0",
+           "Graph profiling only: when > 0, a class stays on the host when "
+           "its best profile point is the smallest menu value AND spends at "
+           "least this share of its per-inference cost on data movement "
+           "(amortized weight scatters excluded). Heuristic in lieu of a "
+           "host cost model: transfer-bound work gains ~nothing from the "
+           "device, while the conjunction keeps compute-bound classes that "
+           "merely scale poorly. 0 (default) only surfaces transfer_share "
+           "in profiles.csv">,
+    Option<"profileRepair", "profile-repair", "bool", "true",
+           "Graph profiling only: lower-envelope repair of each class's cost "
+           "profile. A menu point whose pinned search measured worse than a "
+           "smaller point's incumbent takes that incumbent (config, cost, "
+           "residency) -- allocating R devices can always run the best "
+           "configuration found at any R' <= R and idle the rest -- so the "
+           "profile handed to the allocator is non-increasing by "
+           "construction and search-seed cliffs cannot reach it. "
+           "profiles.csv keeps the raw measurement in raw_cost_ms">,
+    Option<"profileSeeds", "profile-seeds", "int", "1",
+           "Graph allocation only: how many independent searches to run per "
+           "menu point, dumped to profile_seeds.csv as a measurement of how "
+           "much of a profile's shape is search noise. Diagnostic: the "
+           "allocator is always handed the first seed's point, so raising "
+           "this cannot change an allocation, only what is reported about "
+           "it. Costs a full search per extra seed">,
+    Option<"kappa", "kappa", "double", "2.0",
+           "UCB exploration weight for the BANANAS surrogate; used by the lcb "
+           "acquisition only">,
+    Option<"boBatchSize", "bo-batch-size", "size_t", "1",
+           "Candidates selected and evaluated per surrogate fit. One round "
+           "costs one fit whatever this is, so a larger batch amortises the "
+           "fit and, given spare evaluation workers, overlaps the evaluations. "
+           "Use with acquisition=thompson: the best q under lcb are "
+           "near-duplicates of one another">,
+    Option<"acquisition", "acquisition",
+           "::mlir::cinm::InferenceOptions::Acquisition",
+           "::mlir::cinm::InferenceOptions::Acquisition::Thompson",
+           "How a round turns surrogate predictions into candidates",
+           acquisitionClValues.values>,
+    Option<"searchStrategy", "search-strategy",
+           "::mlir::cinm::InferenceOptions::SearchStrategyKind",
+           "::mlir::cinm::InferenceOptions::SearchStrategyKind::Bananas",
+           "Search policy driving the post-init phase. Every strategy shares "
+           "the init sample and the evaluation machinery, so runs differing "
+           "only in this option are directly comparable",
+           searchStrategyClValues.values>,
+    Option<"epochs", "epochs", "int", "1800",
+           "Training epochs per MLP ensemble member">,
+    Option<"nEnsemble", "n-ensemble", "int", "5",
+           "Number of MLP ensemble members">,
+    Option<"hidden", "hidden-width", "int", "32",
+           "Hidden layer width of each ensemble MLP">,
+    Option<"depth", "hidden-depth", "int", "4",
+           "Number of hidden layers in each ensemble MLP">,
+    Option<"neighborDepth", "neighbor-depth", "unsigned", "2",
+           "Number of discrete steps away from observed points to include as "
+           "candidates (1 = immediate neighbors only)">,
+    Option<"nRandCandidates", "n-random-candidates", "size_t", "4096",
+           "When > 0, each BANANAS round draws this many random candidates in "
+           "addition to the neighbour set; the default follows the strategy "
+           "campaign's K-sweep (docs/SearchStrategyPlan.md). When 0, random "
+           "draws only top the candidate set up to the internal nCandidates "
+           "cap, which adds none once the neighbour set alone exceeds it (the "
+           "search then degenerates to a local hill climb from the init "
+           "sample -- the pre-campaign behaviour)">,
+    Option<"neighborFrontierOnly", "neighbor-frontier-only", "bool", "false",
+           "When true, only add candidates at exactly neighbor-depth steps away; "
+           "otherwise add all points within that distance">,
+    // UPMEM-specific options
+    Option<"debugPipeline", "debug-pipeline", "bool", "",
+           "Print debug info about the internal pipelines">,
+    Option<"annotateOpCosts", "annotate-op-costs", "bool", "false",
+           "Annotate each op in the committed region with its simulated cost "
+           "via the 'upmem.sim_cost' attribute">,
+    Option<"dumpDir", "dump-dir", "std::string", "\"\"",
+           "If non-empty, write a pool.csv file to this directory containing "
+           "all candidate configurations, their observed costs, and "
+           "surrogate model statistics (mu, sigma, acq) after inference">,
+    Option<"exhaustiveSearch", "exhaustive-search", "bool", "false",
+           "Evaluate every valid configuration in the search space exhaustively "
+           "instead of running Bayesian optimisation">,
+    Option<"sampleN", "sample-n", "unsigned", "0u",
+           "If > 0, evaluate a random sample of this many valid configurations "
+           "instead of the full exhaustive scan or Bayesian optimisation -- a "
+           "cheap alternative to exhaustive-search when only a small "
+           "ground-truth sample is needed. Takes priority over "
+           "exhaustive-search if both are set">,
+    Option<"samplingMode", "sampling-mode",
+           "::mlir::cinm::InferenceOptions::SamplingMode",
+           "::mlir::cinm::InferenceOptions::SamplingMode::LHS",
+           "How the sample-n draw picks configurations. Use uniform when the "
+           "sample feeds a statistic about the space -- a percentile, a rank "
+           "correlation, a confidence bound -- since lhs stratifies the picks "
+           "and voids that arithmetic. Read only by sample-n: BO's initial "
+           "design and the validation set always use lhs",
+           samplingModeClValues.values>,
+    Option<"sampleMaxCostMs", "sample-max-cost-ms", "double", "2000.0",
+           "When sample-n > 0, reject (and resample past) candidates predicted "
+           "to cost more than this many ms, so the sample isn't dominated by "
+           "configs that would take minutes on real hardware. Conditions the "
+           "sample on the accepted region, so set it to 0 with "
+           "sampling-mode=uniform if the draw has to stay unbiased">,
+    Option<"nValidation", "n-validation", "int", "0",
+           "Number of held-out validation points sampled before BO begins; "
+           "0 disables surrogate validation">,
+    Option<"validationInterval", "validation-interval", "int", "1",
+           "Record surrogate predictions on the validation set every N BO "
+           "iterations">,
+    Option<"objectiveScale", "objective-scale", "std::string", "\"log10\"",
+           "Cost transform before surrogate training: linear, log2, log10, ln, sqrt, cbrt">,
+    Option<"useMRAMTiling", "use-mram-tiling", "bool", "true",
+           "Enable MRAM tiling in the UPMEM lowering">,
+    Option<"enableScatterSpecialisation", "enable-scatter-specialisation",
+           "bool", "true",
+           "Enable scatter specialisation in the trial lowering: constant "
+           "scatters narrow to broadcasts and uniform buffers initialize "
+           "on-device. It fires at the cnm level and again at the upmem "
+           "level; false disables both sites. No space parameter denotes "
+           "the specialised forms, so the space itself is unchanged. "
+           "The capability-ablation switch (paper A1)">,
+    Option<"packFragmentedTransfers", "pack-fragmented-transfers",
+           "PackFragmentedTransfers", "PackFragmentedTransfers::ALL",
+           "Which operands whose transfer arrives as several blocks per leaf "
+           "are repacked into one whole-buffer block, trading those blocks "
+           "for a repack of the host value (see "
+           "--cnm-ensure-scatter-gather-contiguous's pack-fragmented).\n\n"
+           "`all` is the default because the trade is not currently a free "
+           "choice: the SDK's scatter/gather API drops a DPU's blocks once "
+           "they stop ascending in host address, so a transfer left in the "
+           "block form can simply be wrong. `static` and `none` leave more "
+           "of them there and are for measuring what the repack costs, not "
+           "for producing results",
+           packFragmentedClValues.values>,
+    Option<"stampConfigs", "stamp-configs", "bool", "false",
+           "Commit by writing the winning configuration onto each block as "
+           "attributes (accelerator, cnm.tile_sizes, upmem.leaf_tile_sizes, "
+           "cnm.workgroup_dim_order) instead of splicing lowered code. The "
+           "module is converted to linalg form up front and left in it; a "
+           "separate finalization pipeline lowers the stamped module in one "
+           "go, bufferizing across block boundaries.">,
+    Option<"graphAllocation", "graph-allocation", "bool", "false",
+           "Run the graph-level two-level solve (profile each program class "
+           "over the DPU rank menu, allocate the grid exactly across the "
+           "graph's classes, stamp each group's winning configuration onto "
+           "its members) instead of searching every compute block "
+           "independently with the whole device to itself. Incompatible "
+           "with fixed-dpus, which pins the resource the profiling needs "
+           "to sweep">,
+    Option<"latencyObjective", "latency-objective", "bool", "false",
+           "Graph allocation only: allocate for single-inference latency "
+           "(the makespan of the block dependency graph) instead of "
+           "steady-state throughput. Uses a critical-path greedy; the "
+           "throughput solve is the exact one">,
+    Option<"programReloadMs", "program-reload-ms", "double", "40.0",
+           "Graph allocation only: cost of switching a DPU set to a "
+           "different program, per op per inference -- what a timeshared "
+           "(non-pinned) placement pays and pinning avoids">,
+    Option<"allocationGranularity", "allocation-granularity", "int64_t",
+           "64",
+           "Graph allocation only: preferred quantum of a DPU-set size. The "
+           "profiling menu prefers multiples of it (rank-sized sets keep "
+           "host<->DPU transfers rank-parallel) but falls back to whatever "
+           "divides the problem size when no such multiple does">,
+    Option<"allowFloatReassociation", "allow-float-reassociation", "bool",
+           "false",
+           "Permit distributing a floating-point reduction across the "
+           "workgroup (forwarded to --convert-linalg-to-cnm in the trial "
+           "pipeline). Doing so reassociates the sum and changes the result, "
+           "so it is off by default. Without it, a block whose only "
+           "iteration dimension is an f32 reduction (an rmsnorm sum of "
+           "squares, a softmax max/sum) has no feasible configuration and "
+           "graph allocation fails">,
+    Option<"fusionEdges", "fusion-edges", "bool", "true",
+           "Declare a `fuse.<producer>-><consumer>` parameter for each "
+           "producer/consumer pair of distributed ops in the block, coupling "
+           "their tile sizes so that the configurations whose launches can be "
+           "fused are dense in the space. No pass reads the parameter; turning "
+           "this off only makes those configurations rarer, and shrinks the "
+           "space">,
+    Option<"simulator", "simulator", "UpmemSimulatorId", "UpmemSimulatorId::CYCLE_ACCURATE",
+           "Simulator backend",
+           simulatorClValues.values>,
+    Option<"evalTimeoutMs", "eval-timeout-ms", "int", "0",
+           "Wall-clock timeout in milliseconds for a single simulation; "
+           "0 disables the timeout (default: 0)">,
+    Option<"dumpFullPool", "dump-full-pool", "bool", "false",
+           "Dump the full pool (all valid configurations) into pool.csv, otherwise only the visited configurations are dumped.">,
+    Option<"dumpSpaceOnly", "dump-space-only", "bool", "false",
+           "Build each block's config space, write its space.json into "
+           "dump-dir, and stop: no evaluation, no search, no commit. The IR "
+           "is left untouched. Use to inspect the space (parameter docs, "
+           "permutation encodings) without paying for a run.">,
+    Option<"numWorkers", "n-workers", "unsigned", "0u",
+           "Worker threads for exhaustive search (0 = hardware_concurrency)">,
+    Option<"nSolveWorkers", "n-solve-workers", "unsigned", "1u",
+           "Worker threads used to solve the constraint system (0 = hardware_concurrency)">,
+    Option<"fixedDpus", "fixed-dpus", "int64_t", "-1",
+           "Pin the number of DPUs to this value instead of searching over it "
+           "(-1 = search normally). Remaining dimensions are still searched, "
+           "so this fixes the working group while letting the tiling be chosen "
+           "for it -- useful for comparing codegen quality at a fixed group size">,
+    Option<"fixedTasklets", "fixed-tasklets", "int64_t", "-1",
+           "Pin the number of tasklets to this value instead of searching over "
+           "it (-1 = search normally). See fixed-dpus.">,
+    ListOption<"evalSolution", "eval-solution", "std::string",
+               "Evaluate this single configuration and commit it, bypassing "
+               "search entirely. Given as `name=value` pairs, e.g. "
+               "`eval-solution=blockM=8,blockK=128`. Every parameter the space "
+               "declares must be named; unknown names are an error. Named "
+               "rather than positional so that changing the space cannot "
+               "silently reinterpret a stored configuration.">,
+    Option<"evalSolutionForce", "eval-solution-force", "bool", "false",
+           "With eval-solution: skip the feasible-set membership check and "
+           "attempt the lowering anyway. The lowering's own verdict on an "
+           "infeasible configuration is the measurement -- a rejected "
+           "configuration that lowers fine is a false negative of the "
+           "constraint system. Completeness and unknown-name checks still "
+           "apply.">
+  ];
+}
+
+def UpmemLowerStampedPass : Pass<"upmem-lower-stamped", "ModuleOp"> {
+  let summary = "Lower a module whose compute blocks carry stamped configurations";
+  let description = [{
+    Lowers the artifact --upmem-infer-accelerator=stamp-configs=1 produces:
+    compute blocks in linalg form, annotated with an accelerator and with
+    resolved cnm.tile_sizes / upmem.leaf_tile_sizes / cnm.workgroup_dim_order
+    on each distributed op. The same pipelines the search's trials ran are run
+    once here, over the whole module: distribution to cnm, then one global
+    one-shot bufferization -- across compute block boundaries and function
+    boundaries, so the defensive copies a per-block bufferization pays at
+    every block edge disappear -- then staging, cnm-to-upmem, and the
+    occupancy check. Host code is carried through the same bufferization and
+    ends as loops; ops without stamped tile sizes are never distributed.
+
+    The lowering options must match what the search measured: a module
+    stamped under one setting of use-mram-tiling or
+    pack-fragmented-transfers and lowered under another runs a program the
+    costs were never read from.
+  }];
+  let dependentDialects = [
+    "::mlir::cinm::CinmDialect",
+    "::mlir::cnm::CnmDialect",
+    "::mlir::upmem::UPMEMDialect",
+    "::mlir::func::FuncDialect",
+    "mlir::LLVM::LLVMDialect",
+    "mlir::affine::AffineDialect",
+    "mlir::bufferization::BufferizationDialect",
+    "mlir::linalg::LinalgDialect",
+    "mlir::tensor::TensorDialect",
+    "mlir::vector::VectorDialect"
+  ];
+  let options = [
+    Option<"useMRAMTiling", "use-mram-tiling", "bool", "true",
+           "Enable MRAM tiling in the UPMEM lowering">,
+    Option<"enableScatterSpecialisation", "enable-scatter-specialisation",
+           "bool", "true",
+           "Enable scatter specialisation (see --upmem-infer-accelerator)">,
+    Option<"packFragmentedTransfers", "pack-fragmented-transfers",
+           "PackFragmentedTransfers", "PackFragmentedTransfers::ALL",
+           "Which fragmented transfers are repacked (see "
+           "--upmem-infer-accelerator)",
+           packFragmentedClValues.values>,
+    Option<"allowFloatReassociation", "allow-float-reassociation", "bool",
+           "false",
+           "Permit distributing a floating-point reduction across the "
+           "workgroup (see --upmem-infer-accelerator)">,
+    Option<"debugPipeline", "debug-pipeline", "bool", "",
+           "Print IR between the pipeline's stages">
+  ];
+}
+
+def UpmemAnnotateCostsPass
+    : Pass<"upmem-annotate-costs"> {
+  let summary = "Annotate UPMEM ops with estimated simulation costs";
+  let description = [{
+    Runs the selected cost estimator on each cinm.compute_block body and
+    annotates each op with its estimated cost via the 'upmem.sim_cost'
+    float attribute.  Use 'opcount' for a fast weighted heuristic or
+    'cycleaccurate' for the cycle-accurate upmem_simulator Python backend.
+  }];
+  let dependentDialects = [
+    "::mlir::cinm::CinmDialect",
+    "::mlir::upmem::UPMEMDialect"
+  ];
+  let options = [
+    Option<"simulator", "simulator", "UpmemSimulatorId", "UpmemSimulatorId::CYCLE_ACCURATE",
+           "Simulator backend",
+           simulatorClValues.values>,
+    Option<"evalTimeoutMs", "eval-timeout-ms", "int", "0",
+           "Wall-clock timeout in milliseconds for a single simulation; "
+           "0 disables the timeout (default: 0)">,
+    Option<"costsCsv", "costs-csv", "std::string", "\"\"",
+           "If non-empty, write a detailed cost breakdown (one row per "
+           "compute_block x cost category x sub-label, e.g. transfer/scatter) "
+           "to this CSV path. A row flagged `excluded` is cost the program "
+           "pays that block_total_ms leaves out -- a transfer of data that "
+           "stays pinned on the device across inferences">,
+    Option<"programDumpDir", "program-dump-dir", "std::string", "\"\"",
+           "If non-empty, also write each simulated DPU program to "
+           "<dir>/<kernel>.cnmprog.json in the symbolic interchange format "
+           "the Python reference cost model reads (Predictor/cnmprog.py), so "
+           "the two simulators can be cross-checked on the same program. "
+           "Debugging aid; ignored by the opcount simulator, which builds no "
+           "instruction-level program">,
+  ];
+}
+
+def UpmemCheckOccupancyPass
+    : Pass<"upmem-check-occupancy", "ModuleOp"> {
+  let summary = "Fail if a DPU program's buffers do not fit the device";
+  let description = [{
+    Sums what each `upmem.dpu_program` actually allocates -- static MRAM and
+    WRAM buffers once per DPU, private WRAM once per tasklet plus the runtime's
+    stack reserve -- and fails the pass if either exceeds the capacity the
+    accelerator declares for that level.
+
+    This is a *measurement*, not a model, and that is the point. How much
+    memory a configuration ends up needing is not a property of the
+    configuration: it moves with whether the tasklets of a DPU can share a
+    buffer or must replicate it, with how promotion sizes its staging buffers,
+    with buffer hoisting, kernel deduplication, and even with how well the
+    affine simplifier folds a delinearized index. So it can only be known
+    after every memory optimization has run, which is where this pass belongs
+    -- last. See docs/CnmMemoryLevelsDesign.md §H3.
+
+    The capacities come from the accelerator of the `cinm.compute_block` whose
+    `upmem.alloc_dpus` loads the program, unless `mram-size`/`wram-size`
+    override them. A program that no `upmem.alloc_dpus` refers to is dead and
+    is not checked.
+  }];
+  let dependentDialects = [
+    "::mlir::cinm::CinmDialect",
+    "::mlir::upmem::UPMEMDialect"
+  ];
+  let options = [
+    Option<"mramSize", "mram-size", "int64_t", "0",
+           "MRAM capacity per DPU in bytes; 0 takes it from the accelerator">,
+    Option<"wramSize", "wram-size", "int64_t", "0",
+           "WRAM capacity per DPU in bytes; 0 takes it from the accelerator">,
+  ];
+}
+
+def UpmemSpecializeTransfersPass
+    : Pass<"upmem-specialize-transfers", "ModuleOp"> {
+  let summary = "Narrow each transfer op to the cheapest form its map allows";
+  let description = [{
+    The transfer ops are one capability at three levels of specificity:
+    `scatter_blocks`/`gather_blocks` give each DPU several blocks fetched
+    independently (`dpu_push_sg_xfer`), `scatter_on_array`/`gather_from_array`
+    give it one contiguous block (a flat memcpy), and `broadcast` gives every
+    DPU the same bytes (one `dpu_broadcast_to`). Emitters produce the general
+    form; this pass reads each op's map and narrows it where that is legal, so
+    the rule lives in one place instead of in every emitter.
+
+    Three rewrites, and they chain:
+
+    - **blocks to one block.** When a DPU's blocks turn out to be adjacent and
+      in order in the host buffer, they are one run, so one flat transfer
+      moves them.
+    - **the same bytes everywhere.** A map that does not depend on rank, DPU
+      or block sends every DPU the same region. If that region also *is* the
+      whole host buffer, `broadcast` delivers it.
+    - **a uniform value, widened.** A DPU's blocks land back to back in MRAM,
+      so when the transferred value is one repeated constant it does not
+      matter where each block came from: a constant of the target buffer's own
+      shape, broadcast once, puts the same bytes there. This is the only
+      rewrite that grows the host side, and it only ever grows a constant.
+
+    Gathers are never narrowed to a broadcast: two DPUs writing one host
+    region is a race, not a broadcast.
+  }];
+  let options = [
+    Option<"useSgXferCodegen", "use-sg-xfer-codegen", "bool", "true",
+           "Allow the scatter/gather transfer API. When false, an op that "
+           "cannot be narrowed out of the block form is an error: the "
+           "packing that would have made it flat was supposed to happen "
+           "upstream.">,
+    Option<"useBcXferCodegen", "use-bc-xfer-codegen", "bool", "true",
+           "Allow narrowing to upmem.broadcast.">,
+  ];
+  let dependentDialects = [
+    "::mlir::upmem::UPMEMDialect",
+    "::mlir::memref::MemRefDialect"
+  ];
+}
+
+def UpmemLegalizeForTranslationPass
+    : Pass<"upmem-legalize-for-translation", "ModuleOp"> {
+  let summary = "Strip all ops except upmem.dpu_program for DPU translation";
+  let description = [{
+    Erases every top-level op in the module that is not a upmem.dpu_program,
+    leaving a module that contains only DPU kernels and is ready for
+    mlir-to-upmem-cpp translation.
+  }];
+  let dependentDialects = ["::mlir::upmem::UPMEMDialect"];
 }
 
 #endif // UPMEM_TRANSFORM_PASSES

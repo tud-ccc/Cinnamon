@@ -15,10 +15,8 @@
 using namespace mlir;
 using namespace mlir::alpine;
 
-
 #define GET_OP_CLASSES
 #include "cinm-mlir/Dialect/Alpine/IR/AlpineOps.cpp.inc"
-
 
 void AlpineDialect::registerOps() {
   addOperations<
@@ -26,7 +24,6 @@ void AlpineDialect::registerOps() {
 #include "cinm-mlir/Dialect/Alpine/IR/AlpineOps.cpp.inc"
       >();
 }
-
 
 void AllocTileOp::getAsmResultNames(OpAsmSetValueNameFn setNameFn) {
   setNameFn(getResult(), "alpine_tile");

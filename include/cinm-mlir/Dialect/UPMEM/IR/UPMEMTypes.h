@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "cinm-mlir/Dialect/Cinm/IR/CinmWorkgroupTypeInterface.h"
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
 #include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/Dialect/DLTI/Traits.h"
@@ -20,14 +21,9 @@
 #include "llvm/ADT/STLExtras.h"
 #include <numeric>
 
-
 namespace mlir {
-namespace upmem {
-
-
-} // namespace upmem
+namespace upmem {} // namespace upmem
 } // namespace mlir
-
 
 //===- Generated includes -------------------------------------------------===//
 
@@ -35,4 +31,3 @@ namespace upmem {
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMTypes.h.inc"
 
 //===----------------------------------------------------------------------===//
-

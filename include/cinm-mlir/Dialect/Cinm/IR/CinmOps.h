@@ -4,6 +4,9 @@
 
 #pragma once
 
+#include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmComputeOpInterface.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmGemmlikeOpInterface.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmTypes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmTypes.h"
@@ -16,6 +19,7 @@
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include <llvm/Support/Casting.h>
 
 //===- Generated includes -------------------------------------------------===//
 
@@ -28,6 +32,29 @@ namespace mlir::cinm {
 
 Type inferGemmReturnType(Type lhsType, Type rhsType);
 
-cinm::ComputeOp getEnclosingComputeBlock(Operation *op);
+/// Map the CINM reduce method to the arith AtomicRMWKind, which allows
+/// using some utility functions in arith (eg to generate the corresponding
+/// reduction op).
+arith::AtomicRMWKind getArithConstant(ReduceMethod r, Type ty);
+
+cinm::ComputeOpInterface getEnclosingComputeBlock(Operation *op);
+
+inline cinm::CinmAcceleratorAttrInterface
+getEnclosingAccelerator(Operation *op) {
+  if (auto compute = getEnclosingComputeBlock(op)) {
+    if (compute.getAccelerator())
+      return *compute.getAccelerator();
+  }
+  return {};
+}
+
+template <class T> T getEnclosingAcceleratorAs(Operation *op) {
+  auto ax = getEnclosingAccelerator(op);
+  if (ax) {
+    T res = llvm::dyn_cast_or_null<T>(ax);
+    return res;
+  }
+  return {};
+}
 
 } // namespace mlir::cinm

@@ -5,7 +5,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-
 /// Scatter a tensor on the given DPU set.
 /// For each DPU `x`, copies `copy_bytes` bytes from `A`
 /// into DPU memory (at offset `offset_in_dpu`),

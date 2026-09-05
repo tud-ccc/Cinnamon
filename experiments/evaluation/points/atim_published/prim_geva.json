@@ -1,0 +1,74 @@
+[
+  {
+    "fn_name": "geva_256MB",
+    "trace": "points/traces/geva_67108864_1_1.published.tir.py",
+    "candidates": [
+      {
+        "label": "r0",
+        "params": {
+          "dpus": 2048,
+          "tasklets": 8,
+          "generic.D0.mram": 4096,
+          "generic.D0.wram": 16
+        },
+        "expected": {
+          "D": [
+            2048
+          ],
+          "T": [
+            8
+          ]
+        },
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fn_name": "geva_4MB",
+    "trace": "points/traces/geva_1048576_1_1.published.tir.py",
+    "candidates": [
+      {
+        "label": "r0",
+        "params": {
+          "dpus": 1024,
+          "tasklets": 16,
+          "generic.D0.mram": 64,
+          "generic.D0.wram": 64
+        },
+        "expected": {
+          "D": [
+            1024
+          ],
+          "T": [
+            16
+          ]
+        },
+        "notes": ""
+      }
+    ]
+  },
+  {
+    "fn_name": "geva_64MB",
+    "trace": "points/traces/geva_16777216_1_1.published.tir.py",
+    "candidates": [
+      {
+        "label": "r0",
+        "params": {
+          "dpus": 2048,
+          "tasklets": 8,
+          "generic.D0.mram": 1024,
+          "generic.D0.wram": 512
+        },
+        "expected": {
+          "D": [
+            2048
+          ],
+          "T": [
+            8
+          ]
+        },
+        "notes": ""
+      }
+    ]
+  }
+]
