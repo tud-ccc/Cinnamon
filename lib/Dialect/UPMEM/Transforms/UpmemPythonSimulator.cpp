@@ -589,11 +589,6 @@ struct CppSimulator : UpmemSimulator {
       int numDpus = hierarchy.getNumDpus();
       int numRanks = (numDpus + 63) / 64;
       double launchOverhead = 0.0389 + 0.00758 * numRanks;
-      // auto launchOverhead = 0.0254524 * numDpus / 64;
-      // auto launchOverhead = 0.041958 * log2(numDpus);
-      // auto launchOverhead =
-      //      -2.347115 - 0.001803433284655423 * numDpus +
-      //                       0.3805487552732298 * log2(numDpus);
       return SimCost::forKernel(kernelMs) +
              SimCost::forKernel(launchOverhead, "launchOverhead");
     };
