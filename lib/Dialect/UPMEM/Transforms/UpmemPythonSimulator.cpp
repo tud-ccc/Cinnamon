@@ -552,7 +552,8 @@ struct CppSimulator : UpmemSimulator {
       // simulateHostRegionOrFail turns a non-finite cost into a failed
       // evaluation, which the search records and moves past.
       if (tr.unresolvedTripCount)
-        return SimCost::forKernel(std::numeric_limits<double>::infinity());
+        return SimCost::forKernel(std::numeric_limits<double>::infinity(),
+                                  "unresolved-trip-count");
 
       if (!dumpDir.empty()) {
         llvm::StringRef name;
@@ -571,8 +572,17 @@ struct CppSimulator : UpmemSimulator {
         // simulator, and if we time out we reply with the fast simulator.
         kernelNs = builder.simulate(T, tms, true);
       }
+      // A simulation that ran out of its wall-clock budget is refused the
+      // same way an unresolved trip count is, but it is a different fact
+      // about the configuration -- one says the program could not be
+      // translated, the other only that pricing it took too long, which at
+      // small device counts is most of what the search sees -- so the two
+      // are labelled apart in the diagnostic.
+      const bool timedOut = !kernelNs.has_value();
       auto kernelMs =
           1e3 * kernelNs.value_or(std::numeric_limits<double>::infinity());
+      if (timedOut)
+        return SimCost::forKernel(kernelMs, "simulation-timeout");
 
       auto hierarchy =
           llvm::cast<DeviceHierarchyType>(waitFor.getDpuSet().getType());
