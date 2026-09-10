@@ -45,10 +45,6 @@ cinm-opt *ARGS: (doNinja "cinm-opt")
 cinm-translate *ARGS: (doNinja "cinm-translate")
     {{source_directory()}}/{{build_dir}}/bin/cinm-translate {{ARGS}}
 
-# Rebuild LLVM. Only needed after the third-party/llvm submodule moves.
-buildLlvm:
-    .github/workflows/build-llvm.sh
-
 # Incremental build of Cinnamon itself.
 build: doNinja
 

@@ -53,7 +53,7 @@ if [[ "$reconfigure" -eq 1 || "$reconfigure_python_venv" -eq 1 ]]; then
 
   # MLIR's Python bindings pin their own dependencies. The list lives in the
   # LLVM sources, so it needs those checked out even when we don't build LLVM.
-  if [[ "$build_llvm" -eq 1 ]]; then
+  if [[ "$build_llvm" -eq 1 && -z "${LLVM_SOURCE_DIR:-}" ]]; then
     ensure_submodule third-party/llvm 1
   fi
   mlir_requirements="$llvm_source_dir/mlir/python/requirements.txt"

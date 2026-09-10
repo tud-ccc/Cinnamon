@@ -3,6 +3,7 @@
 .env
 .idea/
 .venv/
+.pixi/
 .vscode/
 testbench/gen
 

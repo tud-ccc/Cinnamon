@@ -18,9 +18,11 @@ if [[ "$build_llvm" -eq 0 ]]; then
   export PATH="$llvm_build_dir/bin:$PATH"
 else
 
-# The submodule is only needed when we build LLVM ourselves. LLVM's history is
-# large, so fetch it shallowly.
-ensure_submodule third-party/llvm 1
+# The submodule is only needed when we build LLVM ourselves from the in-tree
+# sources. LLVM's history is large, so fetch it shallowly.
+if [[ -z "${LLVM_SOURCE_DIR:-}" ]]; then
+  ensure_submodule third-party/llvm 1
+fi
 
 command -v ninja >/dev/null 2>&1 || { error "Ninja not found."; exit 1; }
 command -v cmake >/dev/null 2>&1 || { error "CMake not found."; exit 1; }
