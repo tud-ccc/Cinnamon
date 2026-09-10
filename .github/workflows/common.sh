@@ -46,7 +46,8 @@ ensure_submodule() {
   local shallow="${2:-0}"
   local abs="$project_root/$path"
   local revision url current
-  revision="$(git -C "$project_root" ls-tree --object-only HEAD "$path")"
+  # Not `ls-tree --object-only`: that needs git 2.36.
+  revision="$(git -C "$project_root" ls-tree HEAD -- "$path" | awk '$2 == "commit" { print $3 }')"
 
   # Presence is judged by content, not by a .git entry: CI restores these trees
   # from a cache that does not carry the corresponding .git/modules directory.
