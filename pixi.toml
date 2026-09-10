@@ -3,9 +3,9 @@ name = "cinnamon"
 channels = ["conda-forge"]
 platforms = ["linux-64"]
 
-# conda-forge provides only the interpreter and native tools. Every Python
-# package comes from PyPI: when both provide one, pins clash (pyyaml) and
-# installs overwrite each other's files (wheel).
+# conda-forge provides only the interpreter, the compiler and native tools.
+# Every Python package comes from PyPI: when both provide one, pins clash
+# (pyyaml) and installs overwrite each other's files (wheel).
 [dependencies]
 # 3.12 is what setup-venv.sh prefers, and MLIR's numpy<=2.1.2 pin has no 3.14 wheels
 python = "3.12.*"
@@ -16,6 +16,9 @@ mold = "*"
 just = "*"
 # Matches the mirrors-clang-format rev in .pre-commit-config.yaml
 clang-format = "==22.1.8"
+# For -enable-gpu (cinm-vulkan-runner); the GPU driver itself comes from the system
+libvulkan-headers = "*"
+libvulkan-loader = "*"
 
 [pypi-dependencies]
 # pixi doesn't add pip to Python like conda does; build-torch.sh installs torch-mlir with it
@@ -43,14 +46,30 @@ plotly = "*"
 tqdm = "*"
 doit = "*"
 
-# For hosts whose system compiler is too old: conda-forge's GCC with its own
-# libstdc++, built against an old glibc baseline. LLVM must be built with it too.
+# conda-forge's GCC with its own libstdc++, built against an old glibc
+# baseline, so every machine builds with the same compiler. LLVM has to be
+# built with it too; the `host` environment is for an LLVM built with the
+# system compiler (see the README).
 [feature.toolchain.dependencies]
 c-compiler = "*"
 cxx-compiler = "*"
+# LLVM's optional dependencies; without them CMake falls back to /usr
+zlib = "*"
+libxml2-devel = "*"
+
+# The compiler packages set no CC/CXX; without these the build scripts would
+# prefer a versioned system compiler (g++-13, clang-18, ...) found on PATH.
+[feature.toolchain.activation.env]
+CC = "$CONDA_PREFIX/bin/gcc"
+CXX = "$CONDA_PREFIX/bin/g++"
+# Make CMake prefer this environment's libraries (Vulkan, zlib, ...) over the
+# system's, which are built against a newer glibc than this compiler targets.
+CMAKE_PREFIX_PATH = "$CONDA_PREFIX"
 
 [environments]
-toolchain = { features = ["toolchain"], solve-group = "default" }
+default = { features = ["toolchain"], solve-group = "default" }
+# The same tools and Python, with the system compiler
+host = { features = [], solve-group = "default" }
 
 [activation.env]
 # The build scripts only pick up Python and pybind11 from an active venv;
