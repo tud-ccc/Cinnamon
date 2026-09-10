@@ -1,0 +1,63 @@
+[workspace]
+name = "cinnamon"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+# conda-forge provides only the interpreter and native tools. Every Python
+# package comes from PyPI: when both provide one, pins clash (pyyaml) and
+# installs overwrite each other's files (wheel).
+[dependencies]
+# 3.12 is what setup-venv.sh prefers, and MLIR's numpy<=2.1.2 pin has no 3.14 wheels
+python = "3.12.*"
+cmake = "==4.2.1"
+ninja = "*"
+ccache = "*"
+mold = "*"
+just = "*"
+# Matches the mirrors-clang-format rev in .pre-commit-config.yaml
+clang-format = "==22.1.8"
+
+[pypi-dependencies]
+# pixi doesn't add pip to Python like conda does; build-torch.sh installs torch-mlir with it
+pip = "*"
+pre-commit = "*"
+# Last versions known to work with the pinned torch-mlir; bump them together
+torch = { version = "==2.10.0", index = "https://download.pytorch.org/whl/cpu" }
+torchvision = { version = "==0.25.0", index = "https://download.pytorch.org/whl/cpu" }
+torchaudio = { version = "==2.10.0", index = "https://download.pytorch.org/whl/cpu" }
+build = "*"
+wheel = "*"
+conan = "*"
+pybind11 = ">=3.0"
+# From $LLVM_SOURCE_DIR/mlir/python/requirements.txt
+nanobind = ">=2.9, <3.0"
+pyyaml = ">=5.4.0, <=6.0.1"
+typing-extensions = ">=4.12.2"
+numpy = ">=2.1.0, <=2.1.2"
+ml-dtypes = ">=0.5.0, <=0.6.0"
+# From experiments/requirements.txt
+pandas = "*"
+scipy = "*"
+matplotlib = "*"
+plotly = "*"
+tqdm = "*"
+doit = "*"
+
+# For hosts whose system compiler is too old: conda-forge's GCC with its own
+# libstdc++, built against an old glibc baseline. LLVM must be built with it too.
+[feature.toolchain.dependencies]
+c-compiler = "*"
+cxx-compiler = "*"
+
+[environments]
+toolchain = { features = ["toolchain"], solve-group = "default" }
+
+[activation.env]
+# The build scripts only pick up Python and pybind11 from an active venv;
+# pointing VIRTUAL_ENV at this environment lets them use it unchanged.
+VIRTUAL_ENV = "$CONDA_PREFIX"
+
+[tasks]
+# The conan exports from setup-venv.sh, which -no-python-venv skips
+conan-recipes = "conan export third-party/conan-recipes/mlpack --name mlpack --version 4.8.0 && conan export third-party/conan-recipes/gecode --name gecode --version 6.4.0"
+configure = { cmd = "just configure -no-python-venv", depends-on = ["conan-recipes"] }
