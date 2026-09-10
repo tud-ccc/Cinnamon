@@ -45,16 +45,30 @@ ensure_submodule() {
   local path="$1"
   local shallow="${2:-0}"
   local abs="$project_root/$path"
+  local revision url current
+  revision="$(git -C "$project_root" ls-tree --object-only HEAD "$path")"
 
   # Presence is judged by content, not by a .git entry: CI restores these trees
   # from a cache that does not carry the corresponding .git/modules directory.
-  if [[ -d "$abs" ]] && [[ -n "$(ls -A "$abs" 2>/dev/null)" ]]; then
+  # A lone .git does not count: that is a checkout whose files were removed.
+  if [[ -n "$(ls -A "$abs" 2>/dev/null | grep -v -x '\.git')" ]]; then
+    current=""
+    if [[ -e "$abs/.git" ]]; then
+      current="$(git -C "$abs" rev-parse -q --verify HEAD 2>/dev/null || true)"
+    fi
+    if [[ -n "$current" && -n "$revision" && "$current" != "$revision" ]]; then
+      warning "Submodule '$path' is at ${current:0:12}, but this repository pins ${revision:0:12}."
+      warning "Run 'git submodule update -- $path' unless that is intended."
+    fi
     info "Submodule '$path' is already checked out"
     return 0
   fi
+  if [[ -e "$abs/.git" ]]; then
+    error "Submodule '$path' has its git metadata but no files."
+    error "Restore them with: git -C '$abs' checkout -f ${revision:-<pinned revision>}"
+    exit 1
+  fi
 
-  local revision url
-  revision="$(git -C "$project_root" ls-tree --object-only HEAD "$path")"
   url="$(git -C "$project_root" config -f "$project_root/.gitmodules" --get "submodule.$path.url")"
   if [[ -z "$revision" || -z "$url" ]]; then
     error "'$path' is not a registered submodule of this repository"
