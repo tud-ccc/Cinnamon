@@ -7,13 +7,17 @@ platforms = ["linux-64"]
 # Every Python package comes from PyPI: when both provide one, pins clash
 # (pyyaml) and installs overwrite each other's files (wheel).
 [dependencies]
-# 3.12 is what setup-venv.sh prefers, and MLIR's numpy<=2.1.2 pin has no 3.14 wheels
+# 3.12 is what setup-venv.sh prefers, and MLIR's numpy<=2.1.2 pin has no 3.14 wheels.
+# The prebuilt LLVM's Python bindings are for this version too: keep it in
+# sync with cinnamon/pixi.toml in tud-ccc/cinnamon-llvm.
 python = "3.12.*"
 cmake = "==4.2.1"
 ninja = "*"
 ccache = "*"
 mold = "*"
 just = "*"
+# Unpacks the prebuilt LLVM
+zstd = "*"
 # Matches the mirrors-clang-format rev in .pre-commit-config.yaml
 clang-format = "==22.1.8"
 # For -enable-gpu (cinm-vulkan-runner); the GPU driver itself comes from the system

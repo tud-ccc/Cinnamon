@@ -246,13 +246,49 @@ done
 # ---- LLVM / MLIR ----
 llvm_source_dir="${LLVM_SOURCE_DIR:-$project_root/third-party/llvm}"
 llvm_build_dir="${LLVM_BUILD_DIR:-$llvm_source_dir/build}"
+
+# The CI of tud-ccc/cinnamon-llvm publishes an LLVM install tree for every
+# commit of its `cinnamon` branch. Rather than building the submodule, we
+# download the one for the revision it is pinned to (see build-llvm.sh) and
+# unpack it into third-party/llvm-prebuilt. LLVM_PREBUILT=never always builds
+# from source; LLVM_PREBUILT=always fails rather than fall back to that.
+llvm_prebuilt="${LLVM_PREBUILT:-auto}"
+case "$llvm_prebuilt" in
+  auto|always|never) ;;
+  *) error "LLVM_PREBUILT must be auto, always or never, not '$llvm_prebuilt'"; exit 1 ;;
+esac
+llvm_prebuilt_dir="$project_root/third-party/llvm-prebuilt"
+llvm_prebuilt_base_url="${LLVM_PREBUILT_URL:-https://github.com/tud-ccc/cinnamon-llvm/releases/download}"
+# A file in the install tree holding the LLVM revision it was built from
+llvm_prebuilt_stamp="cinnamon-llvm-revision"
+llvm_revision="$(git -C "$project_root" ls-tree HEAD -- third-party/llvm 2>/dev/null | awk '$2 == "commit" { print $3 }' || true)"
+
+# File name (without extension) and download URL of the prebuilt LLVM for a
+# revision. The CI of tud-ccc/cinnamon-llvm publishes it under these; its
+# cinnamon/build-prebuilt.sh has to agree.
+llvm_prebuilt_name() {
+  echo "cinnamon-llvm-${1:0:12}-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
+}
+llvm_prebuilt_url() {
+  echo "$llvm_prebuilt_base_url/cinnamon-${1:0:12}/$(llvm_prebuilt_name "$1").tar.zst"
+}
+
 # We only build LLVM ourselves when it lives in the tree we manage.
+use_prebuilt_llvm=0
 if [[ -n "${LLVM_BUILD_DIR:-}" ]]; then
   build_llvm=0
   info "Using LLVM build tree '$llvm_build_dir' (LLVM_BUILD_DIR)"
   [[ -d "$llvm_build_dir" ]] || warning "Directory '$llvm_build_dir' does not exist"
 else
   build_llvm=1
+  # A prebuilt LLVM stands in for the submodule, not for sources of your own.
+  if [[ -z "${LLVM_SOURCE_DIR:-}" && "$llvm_prebuilt" != never ]]; then
+    use_prebuilt_llvm=1
+    # Once build-llvm.sh has unpacked one, everything builds against it.
+    if [[ -f "$llvm_prebuilt_dir/$llvm_prebuilt_stamp" ]]; then
+      llvm_build_dir="$llvm_prebuilt_dir"
+    fi
+  fi
 fi
 if echo "$@" | grep -q -- "-no-llvm"; then
   build_llvm=0

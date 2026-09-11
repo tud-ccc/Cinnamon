@@ -41,6 +41,9 @@ sandbox
 /third-party/ALPINE/
 /third-party/alpine/
 /third-party/.venv/
+# Unpacked by build-llvm.sh
+/third-party/llvm-prebuilt/
+/third-party/.llvm-prebuilt.*/
 
 python/cinnamon/_resources
 .env

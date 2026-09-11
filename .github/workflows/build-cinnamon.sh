@@ -50,12 +50,15 @@ fi
 # ---- Decide whether we need to configure ----
 need_config=0
 reason=""
+cached_llvm_dir="$(grep -E '^LLVM_DIR:[A-Z]+=' "$cache_file" 2>/dev/null | sed 's/.*=//' || true)"
 if [[ ! -f "$cache_file" ]]; then
   reason="no CMake cache in '$cinnamon_build_dir'"
 elif ! grep -q 'CMAKE_GENERATOR:INTERNAL=Ninja' "$cache_file"; then
   reason="existing build is not Ninja"
 elif [[ ! -f "$cinnamon_build_dir/build.ninja" ]]; then
   reason="build.ninja missing"
+elif [[ -n "$cached_llvm_dir" && ! "$cached_llvm_dir" -ef "$llvm_cmake_dir" ]]; then
+  reason="LLVM moved from '$cached_llvm_dir' to '$llvm_cmake_dir'"
 elif [[ "$reconfigure" -eq 1 ]]; then
   reason="forced reconfigure (reconfigure=1)"
 elif [[ -n "${PYBIN:-}" ]]; then
@@ -141,6 +144,13 @@ EOF
     ${user_opts[@]+"${user_opts[@]}"}
   # shellcheck disable=SC1091
   source "$cinnamon_build_dir/deactivate_conanbuild.sh"
+fi
+
+# LLVM symbolizes the backtraces of crashes with the llvm-symbolizer it finds
+# next to the crashing executable (or on PATH), so put LLVM's there.
+if [[ -x "$llvm_build_dir/bin/llvm-symbolizer" ]]; then
+  mkdir -p "$cinnamon_build_dir/bin"
+  ln -sfn "$llvm_build_dir/bin/llvm-symbolizer" "$cinnamon_build_dir/bin/llvm-symbolizer"
 fi
 
 status "Building Cinnamon (Ninja)"

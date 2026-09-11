@@ -9,23 +9,25 @@ jobs:
   main:
     name: Build and test
     runs-on: ubuntu-24.04
-    env:
-      CC: clang
-      CXX: clang++
-      LDFLAGS: -fuse-ld=mold
-      CMAKE_GENERATOR: Ninja
+    defaults:
+      run:
+        shell: bash
 
     steps:
       # The build scripts check out the submodules they need, shallowly and
       # only when they are actually going to build them.
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: false
 
-      - name: Install build dependencies
-        run:
-          sudo apt-get install clang ninja-build mold libvulkan-dev python3.12-dev ccache
+      # Activated for all later steps, which is what `pixi run` would do
+      - name: Set up pixi
+        uses: prefix-dev/setup-pixi@v0.10.2
+        with:
+          environments: default
+          activate-environment: true
+          cache: true
 
       # Dependency builds are keyed on the revision this repo pins them to, so
       # a cache entry is reused until the submodule actually moves.
@@ -35,53 +37,54 @@ jobs:
           echo "llvm=$(git ls-tree --object-only HEAD third-party/llvm)" >> "$GITHUB_OUTPUT"
           echo "torch-mlir=$(git ls-tree --object-only HEAD third-party/torch-mlir)" >> "$GITHUB_OUTPUT"
 
-      - name: Restore venv cache
-        id: venv-cache-restore
-        uses: actions/cache/restore@v4
-        with:
-          path: .venv
-          key: cinnamon-venv-${{ runner.os }}-${{ hashFiles('experiments/requirements.txt') }}
+      # tud-ccc/cinnamon-llvm builds every commit pushed to its `cinnamon`
+      # branch. A push here that moves the submodule usually follows one there
+      # closely, so wait for that build instead of failing.
+      - name: Wait for the prebuilt LLVM
+        timeout-minutes: 330
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LLVM_REVISION: ${{ steps.revs.outputs.llvm }}
+        run: |
+          url="$(bash -c 'source .github/workflows/common.sh >/dev/null && llvm_prebuilt_url "$LLVM_REVISION"')"
+          runs="repos/tud-ccc/cinnamon-llvm/actions/workflows/cinnamon-prebuilt.yml/runs?head_sha=$LLVM_REVISION&per_page=1"
+          until curl -fsL -r 0-0 -o /dev/null "$url"; do
+            run="$(gh api "$runs" --jq '.workflow_runs[0] // empty | "\(.status) \(.conclusion) \(.html_url)"')"
+            read -r status conclusion run_url <<< "$run" || true
+            if [[ -z "$run" ]]; then
+              echo "::error::tud-ccc/cinnamon-llvm has not built LLVM $LLVM_REVISION. Push it to the cinnamon branch there, or run its 'Cinnamon prebuilt LLVM' workflow for it."
+              exit 1
+            elif [[ "$status" != completed ]]; then
+              echo "Waiting for $run_url ($status)"
+              sleep 120
+            elif [[ "$conclusion" != success ]]; then
+              echo "::error::The build of LLVM $LLVM_REVISION did not succeed ($conclusion): $run_url"
+              exit 1
+            else
+              # The release may have been published a moment ago.
+              sleep 30
+              curl -fsL -r 0-0 -o /dev/null "$url" && break
+              echo "::error::$run_url succeeded, but there is nothing at $url"
+              exit 1
+            fi
+          done
 
-      - name: Restore llvm cache
-        id: llvm-cache-restore
-        uses: actions/cache/restore@v4
-        with:
-          path: third-party/llvm
-          key: cinnamon-llvm-${{ runner.os }}-${{ steps.revs.outputs.llvm }}
+      - name: Fetch the prebuilt LLVM
+        run: LLVM_PREBUILT=always .github/workflows/build-llvm.sh -no-python-venv -verbose
 
       - name: Restore torch-mlir cache
         id: torch-mlir-cache-restore
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: third-party/torch-mlir
-          key: cinnamon-torch-mlir-${{ runner.os }}-${{ steps.revs.outputs.torch-mlir }}
-
-      - name: Setup venv
-        run: .github/workflows/setup-venv.sh -reconfigure -verbose
-
-      - name: Save venv cache
-        uses: actions/cache/save@v4
-        if: always()
-        with:
-          path: .venv
-          key: ${{ steps.venv-cache-restore.outputs.cache-primary-key }}
-
-      - name: Build LLVM
-        run: LLVM_CMAKE_OPTIONS='-DLLVM_CCACHE_BUILD=OFF' .github/workflows/build-llvm.sh -verbose
-
-      - name: Save llvm cache
-        uses: actions/cache/save@v4
-        if: always()
-        with:
-          path: third-party/llvm
-          key: ${{ steps.llvm-cache-restore.outputs.cache-primary-key }}
+          key: cinnamon-torch-mlir-${{ runner.os }}-${{ steps.revs.outputs.torch-mlir }}-llvm-${{ steps.revs.outputs.llvm }}
 
       - name: Build Torch-MLIR
-        run: .github/workflows/build-torch.sh -verbose
+        run: .github/workflows/build-torch.sh -no-python-venv -verbose
 
       - name: Save torch-mlir cache
-        uses: actions/cache/save@v4
-        if: always()
+        uses: actions/cache/save@v6
+        if: always() && steps.torch-mlir-cache-restore.outputs.cache-hit != 'true'
         with:
           path: third-party/torch-mlir
           key: ${{ steps.torch-mlir-cache-restore.outputs.cache-primary-key }}
@@ -89,7 +92,9 @@ jobs:
       # The UPMEM SDK is no longer publicly downloadable, so the UPMEM runtime
       # library is not built here.
       - name: Build Cinnamon
-        run: .github/workflows/build-cinnamon.sh -reconfigure -verbose -no-upmem
+        run: |
+          pixi run conan-recipes
+          .github/workflows/build-cinnamon.sh -reconfigure -verbose -no-upmem -no-python-venv
 
       - name: Test Cinnamon
         run: ninja -Cbuild check-cinm-mlir

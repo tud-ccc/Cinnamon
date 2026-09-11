@@ -7,10 +7,11 @@ set dotenv-load := true
 # Allows running eg `just experiments run gemv`
 mod experiments
 
-# LLVM comes from the third-party/llvm submodule
-# (https://github.com/tud-ccc/cinnamon-llvm, branch `cinnamon`). To build
-# against an LLVM you already have, set LLVM_BUILD_DIR; the submodule then
-# stays uninitialized. See the README.
+# LLVM is the third-party/llvm submodule
+# (https://github.com/tud-ccc/cinnamon-llvm, branch `cinnamon`), which is
+# usually downloaded prebuilt rather than built. To build against an LLVM you
+# already have, set LLVM_BUILD_DIR; the submodule then stays uninitialized.
+# See BUILDING.md.
 
 upmem_dir := env_var_or_default("UPMEM_HOME", "third-party/upmem")
 build_dir := "build"

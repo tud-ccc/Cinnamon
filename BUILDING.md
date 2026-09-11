@@ -47,9 +47,10 @@ to work with is recorded in the repository:
 
 **You do not have to clone them.** Each build step checks out only the
 submodule it is about to build, and only if you have not pointed it at a tree
-of your own. If you already have an LLVM build you reuse across projects, set
-`LLVM_BUILD_DIR` and `third-party/llvm` is never cloned. So there is no need
-for `--recursive` when cloning:
+of your own. LLVM is usually downloaded prebuilt (see below), and if you
+already have an LLVM build you reuse across projects, you can set
+`LLVM_BUILD_DIR`: either way `third-party/llvm` is never cloned. So there is
+no need for `--recursive` when cloning:
 
 ```sh
 git clone https://github.com/tud-ccc/Cinnamon.git
@@ -58,6 +59,49 @@ git clone https://github.com/tud-ccc/Cinnamon.git
 The UPMEM SDK is the exception: it is no longer publicly downloadable, so it
 cannot be a submodule. Unpack it into `third-party/upmem`, point `UPMEM_HOME`
 at it, or build without it using `-no-upmem`.
+
+### Prebuilt LLVM
+
+Building LLVM takes hours, so the build downloads it instead. The CI of
+[tud-ccc/cinnamon-llvm](https://github.com/tud-ccc/cinnamon-llvm/actions/workflows/cinnamon-prebuilt.yml)
+builds every commit pushed to its `cinnamon` branch, and publishes it as a
+release tagged `cinnamon-<first 12 digits of the commit>`. `build-llvm.sh`
+downloads the one for the revision `third-party/llvm` is pinned to, unpacks it
+into `third-party/llvm-prebuilt`, and replaces it when the pin moves. If there
+is none, it builds the submodule from source instead.
+
+- It is built for Linux on x86-64 with pixi's toolchain, whose C++ runtime it
+  bundles, so it runs on any system with glibc 2.28 or newer.
+- Its MLIR Python bindings only work with the Python version in `pixi.toml`
+  (3.12), which has to match `cinnamon/pixi.toml` in the fork.
+- It is a release build with assertions and line-table debug info, so crash
+  backtraces show file and line numbers in LLVM too. The build links LLVM's
+  `llvm-symbolizer` into `build/bin`, where LLVM looks for it.
+
+`LLVM_PREBUILT=never` always builds LLVM from source; `LLVM_PREBUILT=always`
+fails rather than do that. Setting `LLVM_SOURCE_DIR` or `LLVM_BUILD_DIR`
+bypasses the download.
+
+The fork configures LLVM for Cinnamon in `cinnamon/llvm-config.cmake`. The
+prebuilt LLVM and source builds of the fork both use that file, so that is
+where to change an LLVM option. To move to a new LLVM:
+
+1. Push the commit to the `cinnamon` branch of the fork. That starts its
+   "Cinnamon prebuilt LLVM" workflow.
+2. Point the submodule at the commit and commit that. Without a checkout of
+   the submodule:
+
+   ```sh
+   git update-index --cacheinfo 160000,<commit>,third-party/llvm
+   ```
+
+Our CI waits for the fork's build of the pinned commit, and fails if that
+build failed or there is none. To build a commit that is not on the
+`cinnamon` branch:
+
+```sh
+gh workflow run cinnamon-prebuilt.yml -R tud-ccc/cinnamon-llvm --ref cinnamon -f llvm-ref=<commit>
+```
 
 ### Configuration
 
@@ -92,6 +136,8 @@ leaves the matching submodule uninitialized.
 |---|---|
 | `LLVM_SOURCE_DIR` | Build LLVM from your checkout instead of the submodule |
 | `LLVM_BUILD_DIR` | Use an LLVM you have already built; nothing is cloned or built |
+| `LLVM_PREBUILT` | `auto` (default), `always` or `never` download a [prebuilt LLVM](#prebuilt-llvm) |
+| `LLVM_PREBUILT_URL` | Where to download it from, in place of the fork's releases |
 | `TORCH_MLIR_SOURCE_DIR` | Build Torch-MLIR from your checkout instead of the submodule |
 | `TORCH_MLIR_INSTALL_DIR` | Use a Torch-MLIR you have already installed |
 | `UPMEM_HOME` | Location of the UPMEM SDK |
@@ -111,8 +157,8 @@ Without pixi:
 just configure
 ```
 
-This builds LLVM, Torch-MLIR and Cinnamon in order (without pixi, it first
-creates the Python venv). It is only needed for the first build; afterwards
+This downloads or builds LLVM, then builds Torch-MLIR and Cinnamon (without
+pixi, it first creates the Python venv). It is only needed for the first build; afterwards
 `just build` does an incremental build of Cinnamon alone.
 
 `pixi run configure` registers the in-tree Conan recipes, then runs
@@ -171,8 +217,8 @@ of its own.
    ```
 
    An LLVM built some other way works too, as long as it has MLIR's Python
-   bindings, RTTI and exceptions enabled; `build-llvm.sh` lists the options we
-   use.
+   bindings, RTTI and exceptions enabled; `cinnamon/llvm-config.cmake` in the
+   fork lists the options we use.
 
 3. Point the build at it in `.env`, then use the `host` environment for every
    command:
