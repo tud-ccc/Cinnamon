@@ -41,15 +41,10 @@ if command -v ccache >/dev/null 2>&1; then
   )
 fi
 
-# ---- If a venv is active, make CMake use it (Python + pybind11) ----
+# ---- If a venv is active, make CMake use its Python ----
 python_opts=()
 if [[ -n "${VIRTUAL_ENV:-}" ]]; then
-  if [[ -z "${PYBIND11_DIR:-}" ]]; then
-    status "pybind11 not found in venv; installing..."
-    verbose_cmd "$PYBIN" -m pip install -U "pybind11>=2.10" numpy
-    PYBIND11_DIR="$("$PYBIN" -c 'import pybind11; print(pybind11.get_cmake_dir())')"
-  fi
-  python_opts=( -DPython3_EXECUTABLE="$PYBIN" -Dpybind11_DIR="$PYBIND11_DIR" -DPython3_FIND_VIRTUALENV=ONLY )
+  python_opts=( -DPython3_EXECUTABLE="$PYBIN" -DPython3_FIND_VIRTUALENV=ONLY )
 fi
 
 # ---- Decide whether we need to configure ----

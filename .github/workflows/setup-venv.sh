@@ -7,7 +7,7 @@ source "$script_dir/common.sh"
 
 if [[ "$setup_python_venv" -eq 0 ]]; then
   warning "Skipping Python venv setup"
-  warning "Make sure your active Python has compatible torch, numpy, and pybind11 (>=3.0)."
+  warning "Make sure your active Python has compatible torch, numpy and nanobind."
   exit 0
 fi
 
@@ -71,10 +71,10 @@ if [[ "$reconfigure" -eq 1 || "$reconfigure_python_venv" -eq 1 ]]; then
   verbose_cmd conan export "$project_root/third-party/conan-recipes/gecode" --name gecode --version 6.4.0
 fi
 
-# Downstream scripts pick up this venv, and the pybind11 CMake flags derived
-# from it, when they source common.sh.
-if ! python -c 'import pybind11' 2>/dev/null; then
-  error "pybind11 not found in venv; run with -reconfigure or install MLIR dependencies manually"
+# MLIR's Python bindings, which Torch-MLIR builds on, need nanobind. It comes
+# from MLIR's own requirements.txt, installed above.
+if ! python -c 'import nanobind' 2>/dev/null; then
+  error "nanobind not found in venv; run with -reconfigure, or set LLVM_SOURCE_DIR so that MLIR's Python requirements are found"
   exit 1
 fi
 status "Python environment ready at $py_venv_path"
