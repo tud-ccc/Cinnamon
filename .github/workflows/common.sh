@@ -290,12 +290,7 @@ fi
 
 if [[ -n "${VIRTUAL_ENV:-}" ]]; then
   PYBIN="$(command -v python)"
-  # Absent before setup-venv.sh has populated the venv; scripts that need it
-  # check for themselves.
-  PYBIND11_DIR="$("$PYBIN" -c 'import pybind11; print(pybind11.get_cmake_dir())' 2>/dev/null || true)"
-  if [[ -n "$PYBIND11_DIR" ]]; then
-    export LLVM_CMAKE_OPTIONS="${LLVM_CMAKE_OPTIONS:-} -DPython3_EXECUTABLE=${PYBIN} -Dpybind11_DIR=${PYBIND11_DIR} -DPython3_FIND_VIRTUALENV=ONLY"
-  fi
+  export LLVM_CMAKE_OPTIONS="${LLVM_CMAKE_OPTIONS:-} -DPython3_EXECUTABLE=${PYBIN} -DPython3_FIND_VIRTUALENV=ONLY"
 fi
 
 fi

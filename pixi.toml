@@ -31,7 +31,6 @@ torchaudio = { version = "==2.10.0", index = "https://download.pytorch.org/whl/c
 build = "*"
 wheel = "*"
 conan = "*"
-pybind11 = ">=3.0"
 # From $LLVM_SOURCE_DIR/mlir/python/requirements.txt
 nanobind = ">=2.9, <3.0"
 pyyaml = ">=5.4.0, <=6.0.1"
@@ -72,7 +71,7 @@ default = { features = ["toolchain"], solve-group = "default" }
 host = { features = [], solve-group = "default" }
 
 [activation.env]
-# The build scripts only pick up Python and pybind11 from an active venv;
+# The build scripts only pick up Python from an active venv;
 # pointing VIRTUAL_ENV at this environment lets them use it unchanged.
 VIRTUAL_ENV = "$CONDA_PREFIX"
 
