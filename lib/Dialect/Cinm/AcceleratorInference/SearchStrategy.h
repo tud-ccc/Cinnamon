@@ -42,12 +42,16 @@ public:
   /// nothing and returns false.
   virtual bool predict(const arma::mat &X, arma::rowvec &mu,
                        arma::rowvec &sigma) const {
+    (void)X;
+    (void)mu, (void)sigma;
     return false;
   }
 
   /// Dump whatever per-round diagnostics the strategy collected into `dir`.
   /// Called once at the end of a seed, only when dumping is enabled.
-  virtual void dumpDiagnostics(const std::filesystem::path &dir) const {}
+  virtual void dumpDiagnostics(const std::filesystem::path &dir) const {
+    (void)dir;
+  }
 };
 
 /// Build the strategy selected by the pool's InferenceOptions. The validation

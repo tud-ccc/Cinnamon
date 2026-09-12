@@ -1300,9 +1300,8 @@ class RandomStrategy final : public SearchStrategy {
 public:
   explicit RandomStrategy(CandidatePool &pool) : pool(pool) {}
 
-  size_t step(std::mt19937 &rng, const std::function<bool(size_t)> &accept,
-              int round, size_t nObsAtRound, size_t batchSize,
-              unsigned workers) override {
+  size_t step(std::mt19937 &rng, const std::function<bool(size_t)> &accept, int,
+              size_t, size_t batchSize, unsigned workers) override {
     // Keep drawing until something is accepted: a returned 0 ends the whole
     // search (the driver's stop condition), which a failed draw does not
     // justify here. Termination: every drawn config is marked visited whether
@@ -1345,9 +1344,8 @@ public:
   explicit DescentStrategy(CandidatePool &pool)
       : pool(pool), space_(pool.space_) {}
 
-  size_t step(std::mt19937 &rng, const std::function<bool(size_t)> &accept,
-              int round, size_t nObsAtRound, size_t batchSize,
-              unsigned workers) override {
+  size_t step(std::mt19937 &rng, const std::function<bool(size_t)> &accept, int,
+              size_t, size_t batchSize, unsigned workers) override {
     while (pool.numVisited() < pool.size()) {
       if (cur == kNone && !startClimb(rng, accept))
         continue; // restart evaluation failed; its config is now visited
@@ -1469,9 +1467,8 @@ public:
       : pool(pool), space_(pool.space_),
         popSize(std::max<size_t>(16, static_cast<size_t>(pool.opts.nInit))) {}
 
-  size_t step(std::mt19937 &rng, const std::function<bool(size_t)> &accept,
-              int round, size_t nObsAtRound, size_t batchSize,
-              unsigned workers) override {
+  size_t step(std::mt19937 &rng, const std::function<bool(size_t)> &accept, int,
+              size_t, size_t batchSize, unsigned workers) override {
     if (population.empty())
       seedPopulation();
     while (pool.numVisited() < pool.size()) {

@@ -48,6 +48,9 @@ void upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *hostBuffer,
                          size_t num_elements_per_tasklet, size_t copy_bytes,
                          const char *bufId, size_t (*base_offset)(size_t),
                          const char *tag) {
+  (void)element_size;
+  (void)num_elements;
+  (void)num_elements_per_tasklet;
   if (rt_transfer_resident(dpu_set, tag, hostBuffer, copy_bytes))
     return;
 #ifdef UPMEM_RT_STATS
@@ -68,6 +71,7 @@ void upmemrt_dpu_gather(struct dpu_set_t *dpu_set, void *host_buffer,
                         size_t num_elements_per_tasklet, size_t copy_bytes,
                         const char *bufid, size_t (*base_offset)(size_t),
                         const char *tag) {
+  (void)num_elements_per_tasklet;
 #ifdef UPMEM_RT_STATS
   uint64_t t0 = upmemrt_now_ns();
 #endif

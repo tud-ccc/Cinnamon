@@ -140,6 +140,7 @@ void ParmKind<Permutation>::appendFeatures(const SearchParam &param,
 void ParmKind<Permutation>::appendNeighbours(
     const SearchParam &param, llvm::ArrayRef<ParmValue> values,
     llvm::SmallVectorImpl<llvm::SmallVector<ParmValue, 4>> &out) {
+  (void)param;
   // Adjacent transpositions: swap the items occupying two consecutive places.
   // Stepping one *dimension* would name no ordering at all -- two items would
   // share a place -- which is why a step is the model's business and spans the

@@ -182,7 +182,7 @@ private:
     unsigned resultIdx = 0;
     /// What the producer takes from the outside, and the id it is available
     /// under inside the block.
-    SmallVector<std::pair<Value, unsigned>> externals;
+    SmallVector<std::pair<Value, unsigned>> externals{};
   };
 
   unsigned capture(Value v) {
