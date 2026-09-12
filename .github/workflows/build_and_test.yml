@@ -5,6 +5,12 @@ on:
   push:
   pull_request:
       types: [opened, reopened]
+
+# A new push supersedes the run of the previous commit.
+concurrency:
+  group: build-and-test-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   main:
     name: Build and test
@@ -89,12 +95,34 @@ jobs:
           path: third-party/torch-mlir
           key: ${{ steps.torch-mlir-cache-restore.outputs.cache-primary-key }}
 
+      # Conan has no prebuilt binaries for the compiler we build with, so it
+      # builds its dependencies (OpenBLAS above all) from source. That happens
+      # once per compiler and set of recipes, and is restored from here after.
+      - name: Restore conan cache
+        id: conan-cache-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.conan2
+          key: cinnamon-conan-${{ runner.os }}-${{ hashFiles('conanfile.txt', 'third-party/conan-recipes/**', 'pixi.lock') }}
+
       # The UPMEM SDK is no longer publicly downloadable, so the UPMEM runtime
       # library is not built here.
       - name: Build Cinnamon
         run: |
           pixi run conan-recipes
           .github/workflows/build-cinnamon.sh -reconfigure -verbose -no-upmem -no-python-venv
+
+      # Keeps the packages that were built, drops the sources and build trees
+      - name: Trim the conan cache
+        if: always()
+        run: conan cache clean "*" --source --build --temp || true
+
+      - name: Save conan cache
+        uses: actions/cache/save@v6
+        if: always() && steps.conan-cache-restore.outputs.cache-hit != 'true'
+        with:
+          path: ~/.conan2
+          key: ${{ steps.conan-cache-restore.outputs.cache-primary-key }}
 
       - name: Test Cinnamon
         run: ninja -Cbuild check-cinm-mlir
