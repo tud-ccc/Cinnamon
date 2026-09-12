@@ -50,6 +50,9 @@ elif ! grep -q 'CMAKE_GENERATOR:INTERNAL=Ninja' "$cache_file"; then
   status "Existing Torch-MLIR build dir is not Ninja -> recreating it"
   rm -rf "$torch_mlir_build_dir"
   need_config=1
+elif [[ ! -f "$torch_mlir_build_dir/build.ninja" ]]; then
+  # A configure that failed leaves a cache behind but no build files.
+  need_config=1
 elif [[ -n "$cached_cxx" && ! "$cached_cxx" -ef "$CXX" ]]; then
   # CMake will not change the compiler of a build tree, and the cached one may
   # not even exist any more: an LLVM build it came from could have been
