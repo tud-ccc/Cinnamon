@@ -108,6 +108,7 @@ jobs:
       # The UPMEM SDK is no longer publicly downloadable, so the UPMEM runtime
       # library is not built here.
       - name: Build Cinnamon
+        id: build-cinnamon
         run: |
           pixi run conan-recipes
           .github/workflows/build-cinnamon.sh -reconfigure -verbose -no-upmem -no-python-venv
@@ -119,7 +120,8 @@ jobs:
 
       - name: Save conan cache
         uses: actions/cache/save@v6
-        if: always() && steps.conan-cache-restore.outputs.cache-hit != 'true'
+        if: always() && steps.build-cinnamon.outcome == 'success'
+          && steps.conan-cache-restore.outputs.cache-hit != 'true'
         with:
           path: ~/.conan2
           key: ${{ steps.conan-cache-restore.outputs.cache-primary-key }}
