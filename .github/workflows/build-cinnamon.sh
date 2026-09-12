@@ -157,12 +157,23 @@ EOF
   source "$cinnamon_build_dir/deactivate_conanbuild.sh"
 fi
 
-# LLVM symbolizes the backtraces of crashes with the llvm-symbolizer it finds
-# next to the crashing executable (or on PATH), so put LLVM's there.
-if [[ -x "$llvm_build_dir/bin/llvm-symbolizer" ]]; then
-  mkdir -p "$cinnamon_build_dir/bin"
-  ln -sfn "$llvm_build_dir/bin/llvm-symbolizer" "$cinnamon_build_dir/bin/llvm-symbolizer"
-fi
+# Link the LLVM tools next to ours, so that the opt, llc and mlir-translate on
+# PATH are the ones of the LLVM this build uses, whether that is the prebuilt
+# one, the submodule or LLVM_BUILD_DIR. IR from one version of LLVM is not
+# necessarily readable by the tools of another.
+#
+# llvm-symbolizer is here for a second reason: LLVM symbolizes the backtrace of
+# a crash with the one it finds next to the crashing executable, or on PATH.
+llvm_tools=( llvm-symbolizer opt llc llvm-as llvm-dis llvm-link mlir-opt mlir-translate )
+mkdir -p "$cinnamon_build_dir/bin"
+for tool in "${llvm_tools[@]}"; do
+  if [[ -x "$llvm_build_dir/bin/$tool" ]]; then
+    ln -sfn "$llvm_build_dir/bin/$tool" "$cinnamon_build_dir/bin/$tool"
+  elif [[ -L "$cinnamon_build_dir/bin/$tool" ]]; then
+    # The LLVM we link to no longer has it
+    rm -f "$cinnamon_build_dir/bin/$tool"
+  fi
+done
 
 status "Building Cinnamon (Ninja)"
 # shellcheck disable=SC2086

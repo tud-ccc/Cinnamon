@@ -173,6 +173,13 @@ place of the venv. With pixi, use it instead of `just configure`. Every other
 recipe works unchanged: enter the environment with `pixi shell` and use `just`
 as usual, or prefix a single command, as in `pixi run just test`.
 
+In a pixi shell, `build/bin` is on `PATH`. Besides `cinm-opt` and
+`cinm-translate`, the build links the LLVM tools there — `opt`, `llc`,
+`mlir-opt`, `mlir-translate`, `llvm-as`, `llvm-dis`, `llvm-link` and
+`llvm-symbolizer` — taken from the LLVM you build against, be it the prebuilt
+one, the submodule or `LLVM_BUILD_DIR`. IR that `mlir-translate` writes is
+then read by an `opt` of the same version.
+
 `configure` accepts flags to skip parts of the build:
 `-no-torch-mlir`, `-no-upmem`, `-no-llvm`, `-no-python-venv`,
 `-no-cinnamon-wheel`, `-enable-gpu`, `-enable-cuda`, `-enable-roc`, plus

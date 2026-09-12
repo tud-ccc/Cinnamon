@@ -82,6 +82,10 @@ host = { features = [], solve-group = "default" }
 # The build scripts only pick up Python from an active venv;
 # pointing VIRTUAL_ENV at this environment lets them use it unchanged.
 VIRTUAL_ENV = "$CONDA_PREFIX"
+# cinm-opt and friends, along with the LLVM tools the build links next to them
+# (opt, llc, mlir-translate, ...), which match the LLVM we build against. With
+# CINNAMON_BUILD_DIR pointing elsewhere, add that build's bin yourself.
+PATH = "$PIXI_PROJECT_ROOT/build/bin:$PATH"
 
 [tasks]
 # The conan exports from setup-venv.sh, which -no-python-venv skips
