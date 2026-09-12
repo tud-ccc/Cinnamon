@@ -42,11 +42,19 @@ ensure_submodule third-party/torch-mlir
 cache_file="$torch_mlir_build_dir/CMakeCache.txt"
 need_config=0
 cached_llvm_dir="$(grep -E '^LLVM_DIR:[A-Z]+=' "$cache_file" 2>/dev/null | sed 's/.*=//' || true)"
+cached_cxx="$(grep -E '^CMAKE_CXX_COMPILER:[A-Z]+=' "$cache_file" 2>/dev/null | sed 's/.*=//' || true)"
 
 if [[ ! -f "$cache_file" ]]; then
   need_config=1
 elif ! grep -q 'CMAKE_GENERATOR:INTERNAL=Ninja' "$cache_file"; then
   status "Existing Torch-MLIR build dir is not Ninja -> recreating it"
+  rm -rf "$torch_mlir_build_dir"
+  need_config=1
+elif [[ -n "$cached_cxx" && ! "$cached_cxx" -ef "$CXX" ]]; then
+  # CMake will not change the compiler of a build tree, and the cached one may
+  # not even exist any more: an LLVM build it came from could have been
+  # reconfigured without the clang project, or removed.
+  status "Torch-MLIR was built with '$cached_cxx', not '$CXX' -> recreating its build dir"
   rm -rf "$torch_mlir_build_dir"
   need_config=1
 elif [[ -n "$cached_llvm_dir" && ! "$cached_llvm_dir" -ef "$llvm_cmake_dir" ]]; then

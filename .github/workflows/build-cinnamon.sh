@@ -69,6 +69,16 @@ elif [[ -n "${PYBIN:-}" ]]; then
 fi
 [[ -n "$reason" ]] && need_config=1
 
+cached_cxx="$(grep -E '^CMAKE_CXX_COMPILER:[A-Z]+=' "$cache_file" 2>/dev/null | sed 's/.*=//' || true)"
+if [[ -n "$cached_cxx" && ! "$cached_cxx" -ef "$CXX" ]]; then
+  # CMake will not change the compiler of a build tree, so this one has to go.
+  warning "Cinnamon was built with '$cached_cxx', now building with '$CXX'"
+  warning "Recreating '$cinnamon_build_dir'"
+  rm -rf "$cinnamon_build_dir"
+  reason="the compiler changed"
+  need_config=1
+fi
+
 BUILD_TYPE="${CMAKE_BUILD_TYPE:-RelWithDebInfo}"
 
 if [[ "$need_config" -eq 1 ]]; then

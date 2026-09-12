@@ -130,6 +130,9 @@ elif [[ -d "$llvm_build_dir" && ! -f "$cache_file" ]] && [[ -n "$(ls -A "$llvm_b
   clean_reason="previous configure left the build dir incomplete"
 elif [[ -f "$cache_file" && ! "$(grep -o 'CMAKE_GENERATOR:INTERNAL=[^ ]*' "$cache_file" || true)" =~ Ninja ]]; then
   clean_reason="existing build is not Ninja"
+elif [[ -f "$cache_file" ]] && cached_cxx="$(grep -E '^CMAKE_CXX_COMPILER:[A-Z]+=' "$cache_file" | sed 's/.*=//')" \
+     && [[ -n "$cached_cxx" && ! "$cached_cxx" -ef "$CXX" ]]; then
+  clean_reason="cached compiler ($cached_cxx) != the one we build with ($CXX)"
 elif [[ -f "$cache_file" && -n "${PYBIN:-}" ]]; then
   cached_py="$(grep -E '^Python3_EXECUTABLE:(FILEPATH|UNINITIALIZED)=' "$cache_file" | sed 's/.*=//' || true)"
   [[ -n "$cached_py" && "$cached_py" != "${PYBIN:-}" ]] && clean_reason="cached Python ($cached_py) != venv Python (${PYBIN:-system})"
