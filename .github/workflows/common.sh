@@ -8,12 +8,31 @@ set -e
 script_dir="$( cd -- "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 ; pwd -P )"
 project_root="$(realpath "$script_dir/../..")"
 
-# Load .env file and export all variables
+# Load .env, which provides defaults: a variable already set in the environment
+# wins, so that `LLVM_BUILD_DIR= just configure` and the like work without
+# editing the file. This is also why pixi's compiler survives a CC in .env in
+# the environments that set one.
 if [ -f "$project_root/.env" ]; then
+  declare -A _env_preset=()
+  while IFS= read -r _line || [[ -n "$_line" ]]; do
+    _line="${_line#"${_line%%[![:space:]]*}"}"
+    [[ -z "$_line" || "$_line" == \#* ]] && continue
+    _line="${_line#export }"
+    _key="${_line%%=*}"
+    _key="${_key%%[[:space:]]*}"
+    [[ "$_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    [[ -n "${!_key+x}" ]] && _env_preset["$_key"]="${!_key}"
+  done < "$project_root/.env"
+
   set -o allexport
   # shellcheck source=/dev/null
   source "$project_root/.env"
   set +o allexport
+
+  for _key in "${!_env_preset[@]}"; do
+    export "$_key=${_env_preset[$_key]}"
+  done
+  unset _line _key _env_preset
 fi
 
 status() { echo -e "\033[1m$1\033[0m"; }

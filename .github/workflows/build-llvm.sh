@@ -91,6 +91,36 @@ if [[ "$use_prebuilt_llvm" -eq 1 ]]; then
       warning "The prebuilt LLVM has Python bindings for Python $prebuilt_python, but ours is ${our_python:-missing}."
       warning "Torch-MLIR will not build against them; use Python $prebuilt_python, or LLVM_PREBUILT=never."
     fi
+    # MLIR identifies traits and interfaces by addresses that compilers do not
+    # share, so a prebuilt LLVM only works with the compiler family it was
+    # built with. Mixing them gives passes that cannot see attributes and
+    # interfaces which are plainly there, and tests that fail far from the
+    # cause. A clang-built library names GCC too, for its startup files, so
+    # clang wins when both appear.
+    prebuilt_lib="$(find "$llvm_prebuilt_dir/lib" -maxdepth 1 -name 'libMLIRIR.so*' -print -quit 2>/dev/null || true)"
+    if [[ -n "$prebuilt_lib" ]] && command -v readelf >/dev/null 2>&1; then
+      comment="$(readelf -p .comment "$prebuilt_lib" 2>/dev/null || true)"
+      if [[ "$comment" == *"clang version"* ]]; then
+        their_cc="clang $(grep -m1 -oE 'clang version [0-9]+' <<<"$comment" | cut -d' ' -f3)"
+      elif [[ "$comment" == *"GCC:"* ]]; then
+        their_cc="gcc $(grep -m1 -oE 'GCC: \([^)]*\) [0-9]+' <<<"$comment" | sed 's/.* //')"
+      else
+        their_cc=""
+      fi
+      cxx_version_line="$("$CXX" --version 2>/dev/null | sed -n 1p)"
+      case "$cxx_version_line" in
+        *[Cc]lang*) our_cc="clang $("$CXX" -dumpversion 2>/dev/null | cut -d. -f1)" ;;
+        *)          our_cc="gcc $("$CXX" -dumpversion 2>/dev/null | cut -d. -f1)" ;;
+      esac
+      if [[ -n "$their_cc" && "$their_cc" != "$our_cc" ]]; then
+        error "The prebuilt LLVM was built with $their_cc, but this build uses $our_cc ($CXX)."
+        error "MLIR identifies traits and interfaces by addresses that compilers do not share,"
+        error "so the two cannot be mixed: passes stop seeing attributes that are plainly there."
+        error "Build with $their_cc (the default pixi environment), or set LLVM_PREBUILT=never"
+        error "to build LLVM here with the compiler you are using."
+        exit 1
+      fi
+    fi
     exit 0
   fi
   if [[ "$llvm_prebuilt" == always ]]; then

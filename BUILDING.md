@@ -77,7 +77,8 @@ pin moves. If there is none, it builds the submodule from source instead.
   by addresses that differ between compilers, so an LLVM built with one and a
   Cinnamon built with another gives passes that cannot see attributes and
   interfaces which are plainly there. This is why the `host` environment
-  needs an LLVM of its own.
+  needs an LLVM of its own; the build refuses a prebuilt LLVM built by
+  another compiler rather than let it fail in the tests.
 - Its MLIR Python bindings only work with the Python version in `pixi.toml`
   (3.12), which has to match `cinnamon/pixi.toml` in the fork.
 - It is a release build with assertions and line-table debug info, so crash
@@ -112,8 +113,9 @@ gh workflow run cinnamon-prebuilt.yml -R tud-ccc/cinnamon-llvm --ref cinnamon -f
 ### Configuration
 
 Configuration is read from a `.env` file in the repository root, and from the
-environment. The build scripts load `.env` last, so its values take
-precedence.
+environment. `.env` provides the defaults: a variable already set in the
+environment wins, so a single command can override it without the file being
+edited, as in `LLVM_PREBUILT=never just configure`.
 
 ```sh
 CMAKE_GENERATOR=Ninja
@@ -169,7 +171,10 @@ pixi, it first creates the Python venv). It is only needed for the first build; 
 
 `pixi run configure` registers the in-tree Conan recipes, then runs
 `just configure -no-python-venv` inside the pixi environment, which takes the
-place of the venv. With pixi, use it instead of `just configure`. Every other
+place of the venv: `VIRTUAL_ENV` points at the environment, and the build
+scripts use it as they used to use `.venv`. If you built this project before
+it used pixi, delete the `.venv` left in the repository root — nothing reads
+it any more, and CMake will happily prefer its Python over pixi's. With pixi, use it instead of `just configure`. Every other
 recipe works unchanged: enter the environment with `pixi shell` and use `just`
 as usual, or prefix a single command, as in `pixi run just test`.
 
@@ -245,9 +250,9 @@ of its own.
    pixi shell -e host        # then `just build`, `just test` as usual
    ```
 
-Only set `CC` and `CXX` in `.env` for the `host` environment: `.env` takes
-precedence over pixi's settings, so they would also replace pixi's compiler
-in the default environment.
+`CC` and `CXX` in `.env` only take effect in the `host` environment. The
+default environment sets them to pixi's compiler, and what the environment
+sets wins over `.env`.
 
 #### Changing tool or Python versions
 
