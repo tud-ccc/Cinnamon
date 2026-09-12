@@ -85,6 +85,12 @@ jobs:
           path: third-party/torch-mlir
           key: cinnamon-torch-mlir-${{ runner.os }}-${{ steps.revs.outputs.torch-mlir }}-llvm-${{ steps.revs.outputs.llvm }}
 
+      # The cached tree carries the submodule's .git file, but not the
+      # .git/modules directory it points at, so git walks into it and fails in
+      # the post-job cleanup. Our scripts judge a submodule by its content.
+      - name: Drop the cached submodule's dangling git pointer
+        run: rm -f third-party/torch-mlir/.git
+
       - name: Build Torch-MLIR
         run: .github/workflows/build-torch.sh -no-python-venv -verbose
 
@@ -92,7 +98,9 @@ jobs:
         uses: actions/cache/save@v6
         if: always() && steps.torch-mlir-cache-restore.outputs.cache-hit != 'true'
         with:
-          path: third-party/torch-mlir
+          path: |
+            third-party/torch-mlir
+            !third-party/torch-mlir/.git
           key: ${{ steps.torch-mlir-cache-restore.outputs.cache-primary-key }}
 
       # Conan has no prebuilt binaries for the compiler we build with, so it
