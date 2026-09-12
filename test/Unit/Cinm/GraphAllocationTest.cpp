@@ -308,27 +308,30 @@ TEST(LatencyAllocation, MergingIsFreeAlongAChain) {
     EXPECT_EQ(g, 0u);
 }
 
-TEST(LatencyAllocation, ParallelMembersSplitWhenBudgetAllows) {
-  // Three independent members of one class -- QKV. Merged they serialize at
-  // 3L; split they run at once. With room for three sets, splitting wins.
+TEST(LatencyAllocation, ParallelMembersStillShareOneSet) {
+  // Three independent members of one class -- QKV. The host blocks on every
+  // launch, so they serialize whichever sets they sit on and splitting them
+  // apart buys no latency. With room for three narrow sets, the budget goes
+  // into one wide one instead: three runs at 1024 beat three at 512.
   SmallVector<ClassProfile> classes;
-  classes.push_back({3, {point(512, 2.0)}});
+  classes.push_back({3, {point(512, 2.0), point(1024, 1.2)}});
   SmallVector<GraphNode> nodes{node(0, 0), node(0, 1), node(0, 2)};
   AllocationOptions opts;
   opts.resourceBudget = 1536;
 
   auto result = cinm::allocateGraphForLatency(classes, nodes, opts);
   ASSERT_TRUE(result);
-  EXPECT_EQ(result->perClass[0].groups.size(), 3u);
-  EXPECT_DOUBLE_EQ(result->objectiveMs, 2.0);
+  ASSERT_EQ(result->perClass[0].groups.size(), 1u);
+  EXPECT_EQ(result->perClass[0].groups[0].resource, 1024);
+  EXPECT_DOUBLE_EQ(result->objectiveMs, 3 * 1.2);
 
-  // Half the budget: only one member can be peeled off, so the makespan is
-  // the pair that stays together.
-  opts.resourceBudget = 1024;
+  // Too tight for the wide set: still one set, just a narrow one.
+  opts.resourceBudget = 512;
   result = cinm::allocateGraphForLatency(classes, nodes, opts);
   ASSERT_TRUE(result);
-  EXPECT_EQ(result->perClass[0].groups.size(), 2u);
-  EXPECT_DOUBLE_EQ(result->objectiveMs, 4.0);
+  ASSERT_EQ(result->perClass[0].groups.size(), 1u);
+  EXPECT_EQ(result->perClass[0].groups[0].resource, 512);
+  EXPECT_DOUBLE_EQ(result->objectiveMs, 3 * 2.0);
 }
 
 TEST(LatencyAllocation, CapacityForcesChunkingAndCanBeInfeasible) {
@@ -353,11 +356,11 @@ TEST(LatencyAllocation, CapacityForcesChunkingAndCanBeInfeasible) {
   EXPECT_FALSE(cinm::allocateGraphForLatency(classes, nodes, opts));
 }
 
-TEST(LatencyAllocation, SymmetricBranchesGrowTogether) {
-  // Two independent members of one class, already on sets of their own: a
-  // set's cost is masked by its equally slow sibling, so widening either one
-  // alone gains nothing. The pair still has to be widened, which is what the
-  // non-worsening tie-break is for.
+TEST(LatencyAllocation, SpareBudgetIsLeftUnspent) {
+  // Two independent members of one class, with budget enough for a set each
+  // at the widest size on the menu. Once the shared set is at that size the
+  // rest buys nothing -- a second set only moves work between launches that
+  // are serialized anyway -- and must be left unspent rather than pinned.
   SmallVector<ClassProfile> classes;
   classes.push_back({2, {point(256, 4.0), point(512, 2.0)}});
   SmallVector<GraphNode> nodes{node(0, 0), node(0, 1)};
@@ -366,16 +369,17 @@ TEST(LatencyAllocation, SymmetricBranchesGrowTogether) {
 
   auto result = cinm::allocateGraphForLatency(classes, nodes, opts);
   ASSERT_TRUE(result);
-  ASSERT_EQ(result->perClass[0].groups.size(), 2u);
-  for (const auto &group : result->perClass[0].groups)
-    EXPECT_EQ(group.resource, 512);
-  EXPECT_DOUBLE_EQ(result->objectiveMs, 2.0);
+  ASSERT_EQ(result->perClass[0].groups.size(), 1u);
+  EXPECT_EQ(result->perClass[0].groups[0].resource, 512);
+  EXPECT_DOUBLE_EQ(result->objectiveMs, 2 * 2.0);
+  EXPECT_EQ(result->resourceUsed, 512);
 }
 
-TEST(LatencyAllocation, DiamondOverlapsTheBranches) {
-  // A source feeding two independent branches that join: the branches are
-  // different classes, so they always sit on different sets and overlap.
-  // The makespan is source + max(branches) + sink, not the sum.
+TEST(LatencyAllocation, DiamondSerializesTheBranches) {
+  // A source feeding two independent branches that join. The branches are
+  // different classes and so always sit on different sets, but the host
+  // blocks on every launch: the makespan is source + both branches + sink,
+  // the sum rather than source + max(branches) + sink.
   SmallVector<ClassProfile> classes;
   classes.push_back({2, {point(256, 1.0)}}); // source and sink
   classes.push_back({1, {point(256, 5.0)}}); // slow branch
@@ -388,8 +392,8 @@ TEST(LatencyAllocation, DiamondOverlapsTheBranches) {
   auto result = cinm::allocateGraphForLatency(classes, nodes, opts);
   ASSERT_TRUE(result);
   // Source and sink are one class of two, and they are chained, so they
-  // share a set for free: 1 + 5 + 1.
-  EXPECT_DOUBLE_EQ(result->objectiveMs, 7.0);
+  // share a set for free: 1 + 5 + 2 + 1.
+  EXPECT_DOUBLE_EQ(result->objectiveMs, 9.0);
   EXPECT_EQ(result->perClass[0].groups.size(), 1u);
 }
 

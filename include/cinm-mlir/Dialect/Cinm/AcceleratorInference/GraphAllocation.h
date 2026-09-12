@@ -123,9 +123,9 @@ std::optional<AllocationResult> allocateGraph(ArrayRef<ClassProfile> classes,
                                               const AllocationOptions &opts);
 
 /// Allocate for single-inference latency: the makespan of `nodes`, where a
-/// node costs its group's profiled time, co-resident nodes serialize in
-/// member order, and nodes on different sets overlap wherever the
-/// dependencies allow.
+/// node costs its group's profiled time and the launches run one after
+/// another -- dependencies, the order a set imposes on its co-residents, and
+/// program order, since the host blocks on every launch (see makespanOf).
 ///
 /// This is the critical-path greedy of the mixed task/data-parallel
 /// scheduling literature (CPA/CPR), and makes no claim to optimality. It
@@ -137,11 +137,13 @@ std::optional<AllocationResult> allocateGraph(ArrayRef<ClassProfile> classes,
 /// budget, so the loop terminates. Timesharing is not offered: it can only
 /// lengthen the path.
 ///
-/// Note what the starting point already achieves: members of one class that
-/// are sequentially dependent never run concurrently, so merging them costs
-/// no latency at all while dividing their budget by their number. On a
-/// layered model that collapses every layer's copy of a kernel onto one set
-/// for free, and the greedy then spends the whole device widening those sets.
+/// Note what the starting point already achieves: no two blocks run
+/// concurrently, so merging a class's members costs no latency at all while
+/// dividing their budget by their number. On a layered model that collapses
+/// every layer's copy of a kernel onto one set for free, and the greedy then
+/// spends the whole device widening those sets. Splitting stays on the menu
+/// for when it can pay -- a capacity that forces chunking, and the
+/// asynchronous lowering that would let sets overlap.
 ///
 /// Returns std::nullopt when even maximal merging at the smallest sizes
 /// exceeds the budget or violates a capacity.

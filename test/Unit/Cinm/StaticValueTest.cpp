@@ -2,8 +2,9 @@
 //
 // isStaticValue decides which operands hold the same data on every inference
 // and so may be pinned on an accelerator. The cases below are the
-// definition, one per rule, plus the sound-rejection cases: dynamic indexing
-// and ops that combine two tensors.
+// definition, one per rule, plus the sound-rejection cases: a value that
+// varies between inferences reaching the result through any operand, whether
+// as data or as an index.
 //
 //===----------------------------------------------------------------------===//
 
@@ -59,7 +60,7 @@ TEST(StaticValue, FunctionArguments) {
 
 TEST(StaticValue, ConstantsAndViews) {
   checkStaticness(R"mlir(
-    func.func @f(%w: tensor<8x8xi32> {cinm.static}, %i: index) {
+    func.func @f(%w: tensor<8x8xi32> {cinm.static}, %x: tensor<8x8xi32>, %i: index) {
       %cst = arith.constant dense<0> : tensor<8x8xi32>
       "test.check"(%cst) {expect, case = "constant is static"} : (tensor<8x8xi32>) -> ()
 
@@ -72,8 +73,17 @@ TEST(StaticValue, ConstantsAndViews) {
       %s2 = tensor.extract_slice %w[%i, 0] [4, 4] [1, 1] : tensor<8x8xi32> to tensor<4x4xi32>
       "test.check"(%s2) {case = "dynamically offset slice is dynamic"} : (tensor<4x4xi32>) -> ()
 
+      // Not a pure view -- two tensors in -- but a pure op, so it is static
+      // exactly when both are. This is the shape tensor.pad lowers to, and
+      // the reason a padded weight is recognised as static.
       %ins = tensor.insert_slice %s0 into %cst[0, 0] [4, 4] [1, 1] : tensor<4x4xi32> into tensor<8x8xi32>
-      "test.check"(%ins) {case = "insert_slice is not a pure view"} : (tensor<8x8xi32>) -> ()
+      "test.check"(%ins) {expect, case = "insert of static into static"} : (tensor<8x8xi32>) -> ()
+
+      %insd = tensor.insert_slice %s0 into %x[0, 0] [4, 4] [1, 1] : tensor<4x4xi32> into tensor<8x8xi32>
+      "test.check"(%insd) {case = "insert into a dynamic destination"} : (tensor<8x8xi32>) -> ()
+
+      %insi = tensor.insert_slice %s0 into %cst[%i, 0] [4, 4] [1, 1] : tensor<4x4xi32> into tensor<8x8xi32>
+      "test.check"(%insi) {case = "dynamically offset insert"} : (tensor<8x8xi32>) -> ()
       return
     }
   )mlir");
