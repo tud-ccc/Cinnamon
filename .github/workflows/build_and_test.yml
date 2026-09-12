@@ -15,6 +15,12 @@ jobs:
   main:
     name: Build and test
     runs-on: ubuntu-24.04
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      # pixi installs the compiler with fresh timestamps, which ccache's
+      # default check would take for a different compiler.
+      CCACHE_COMPILERCHECK: content
     defaults:
       run:
         shell: bash
@@ -117,13 +123,37 @@ jobs:
           key: cinnamon-conan-${{ runner.os }}-${{ hashFiles('conanfile.txt', 'third-party/conan-recipes/**', 'pixi.lock') }}-${{ github.run_id }}
           restore-keys: cinnamon-conan-${{ runner.os }}-${{ hashFiles('conanfile.txt', 'third-party/conan-recipes/**', 'pixi.lock') }}-
 
+      # build-cinnamon.sh compiles through ccache whenever it finds one, which
+      # is only worth anything if the cache outlives the run. Keyed per run so
+      # that a failed build still contributes what it compiled; the newest
+      # entry of this branch is restored.
+      - name: Restore ccache
+        id: ccache
+        uses: actions/cache/restore@v6
+        with:
+          path: .ccache
+          key: cinnamon-ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: cinnamon-ccache-${{ runner.os }}-
+
       # The UPMEM SDK is no longer publicly downloadable, so the UPMEM runtime
       # library is not built here.
       - name: Build Cinnamon
         id: build-cinnamon
         run: |
+          ccache --zero-stats
           pixi run conan-recipes
           .github/workflows/build-cinnamon.sh -reconfigure -verbose -no-upmem -no-python-venv
+
+      - name: Show ccache statistics
+        if: always()
+        run: ccache --show-stats
+
+      - name: Save ccache
+        uses: actions/cache/save@v6
+        if: always()
+        with:
+          path: .ccache
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
 
       # Keeps the packages that were built, drops the sources and build trees
       - name: Trim the conan cache
