@@ -68,11 +68,16 @@ Building LLVM takes hours, so the build downloads it instead. The CI of
 builds every commit pushed to its `cinnamon` branch, and publishes it as a
 release tagged `cinnamon-<first 12 digits of the commit>`. `build-llvm.sh`
 downloads the one for the revision `third-party/llvm` is pinned to, unpacks it
-into `third-party/llvm-prebuilt` (a 440 MB download), and replaces it when the
+into `third-party/llvm-prebuilt` (a 300 MB download), and replaces it when the
 pin moves. If there is none, it builds the submodule from source instead.
 
 - It is built for Linux on x86-64 with pixi's toolchain, whose C++ runtime it
-  bundles, so it runs on any system with glibc 2.28 or newer.
+  bundles, so it runs on any system with glibc 2.28 or newer. Build Cinnamon
+  against it with that same toolchain. MLIR identifies traits and interfaces
+  by addresses that differ between compilers, so an LLVM built with one and a
+  Cinnamon built with another gives passes that cannot see attributes and
+  interfaces which are plainly there. This is why the `host` environment
+  needs an LLVM of its own.
 - Its MLIR Python bindings only work with the Python version in `pixi.toml`
   (3.12), which has to match `cinnamon/pixi.toml` in the fork.
 - It is a release build with assertions and line-table debug info, so crash
