@@ -67,8 +67,8 @@ Building LLVM takes hours, so the build downloads it instead. The CI of
 builds every commit pushed to its `cinnamon` branch, and publishes it as a
 release tagged `cinnamon-<first 12 digits of the commit>`. `build-llvm.sh`
 downloads the one for the revision `third-party/llvm` is pinned to, unpacks it
-into `third-party/llvm-prebuilt`, and replaces it when the pin moves. If there
-is none, it builds the submodule from source instead.
+into `third-party/llvm-prebuilt` (a 440 MB download), and replaces it when the
+pin moves. If there is none, it builds the submodule from source instead.
 
 - It is built for Linux on x86-64 with pixi's toolchain, whose C++ runtime it
   bundles, so it runs on any system with glibc 2.28 or newer.

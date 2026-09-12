@@ -122,7 +122,7 @@ tools.build:compiler_executables={"c": "$CC", "cpp": "$CXX"}
 EOF
   status "Running conan install"
   verbose_cmd conan install . --output-folder="$cinnamon_build_dir" --build=missing \
-    -s build_type="$BUILD_TYPE" -pr "$conan_profile"
+    -s build_type="$BUILD_TYPE" -pr:h "$conan_profile" -pr:b "$conan_profile"
 
   user_opts=()
   if [[ -n "$CINNAMON_CMAKE_OPTIONS" ]]; then
