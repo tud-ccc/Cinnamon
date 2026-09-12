@@ -39,6 +39,23 @@ fi
 # checked out: this init is deliberately not recursive.
 ensure_submodule third-party/torch-mlir
 
+# Torch-MLIR builds on MLIR's Python bindings, which are built for one Python
+# version. Ours has to be that version, or what we install below cannot import
+# them, with an ImportError far from its cause.
+# -print -quit, not `| head -1`: that kills find with SIGPIPE, which pipefail
+# then turns into the death of this script.
+mlir_pyext="$(find "$llvm_build_dir" -path '*/mlir/_mlir_libs/*' -name '*.cpython-*.so' -print -quit 2>/dev/null || true)"
+if [[ -n "$mlir_pyext" ]]; then
+  mlir_pytag="$(basename "$mlir_pyext" | sed -n 's/.*\.\(cpython-[0-9]\+\)-.*/\1/p')"
+  our_pytag="$("$python_for_install" -c 'import sysconfig; print("-".join(sysconfig.get_config_var("SOABI").split("-")[:2]))' 2>/dev/null || true)"
+  if [[ -n "$mlir_pytag" && -n "$our_pytag" && "$mlir_pytag" != "$our_pytag" ]]; then
+    error "The MLIR Python bindings in '$llvm_build_dir' are built for $mlir_pytag,"
+    error "but this build uses $our_pytag ($python_for_install)."
+    error "Build that LLVM with this Python, use one whose bindings match, or pass -no-torch-mlir."
+    exit 1
+  fi
+fi
+
 cache_file="$torch_mlir_build_dir/CMakeCache.txt"
 need_config=0
 cached_llvm_dir="$(grep -E '^LLVM_DIR:[A-Z]+=' "$cache_file" 2>/dev/null | sed 's/.*=//' || true)"
@@ -75,6 +92,13 @@ if [[ "$need_config" -eq 1 ]]; then
 
   if [[ $setup_python_venv -eq 1 ]]; then
     dependency_paths+=( -DPython3_FIND_VIRTUALENV=ONLY )
+  fi
+  # Without this, CMake takes the highest Python version it can find, which is
+  # the system one on a distribution that ships a newer Python than ours. Its
+  # MLIR bindings and nanobind are then missing, and it does not match the
+  # interpreter we install the package into below.
+  if [[ -n "${PYBIN:-}" ]]; then
+    dependency_paths+=( -DPython3_EXECUTABLE="$PYBIN" )
   fi
 
   llvm_lib_dir="$llvm_build_dir/lib"
