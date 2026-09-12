@@ -172,11 +172,14 @@ pixi, it first creates the Python venv). It is only needed for the first build; 
 `pixi run configure` registers the in-tree Conan recipes, then runs
 `just configure -no-python-venv` inside the pixi environment, which takes the
 place of the venv: `VIRTUAL_ENV` points at the environment, and the build
-scripts use it as they used to use `.venv`. If you built this project before
-it used pixi, delete the `.venv` left in the repository root — nothing reads
-it any more, and CMake will happily prefer its Python over pixi's. With pixi, use it instead of `just configure`. Every other
-recipe works unchanged: enter the environment with `pixi shell` and use `just`
-as usual, or prefix a single command, as in `pixi run just test`.
+scripts use it as they used to use `.venv`. With pixi, use it instead of
+`just configure`. Every other recipe works unchanged: enter the environment
+with `pixi shell` and use `just` as usual, or prefix a single command, as in
+`pixi run just test`.
+
+If you built this project before it used pixi, delete the `.venv` left in the
+repository root. Nothing reads it any more, and CMake will happily pick its
+Python over pixi's, which fails later on missing MLIR bindings or nanobind.
 
 In a pixi shell, `build/bin` is on `PATH`. Besides `cinm-opt` and
 `cinm-translate`, the build links the LLVM tools there — `opt`, `llc`,
