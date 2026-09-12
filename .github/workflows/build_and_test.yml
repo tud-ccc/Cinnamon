@@ -12,8 +12,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  main:
-    name: Build and test
+  # One job builds, and each test suite gets a job of its own downstream of it,
+  # so a pull request shows a green light per suite and one suite's failure
+  # does not hide the other's result.
+  build:
+    name: Build
     runs-on: ubuntu-24.04
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -167,5 +170,106 @@ jobs:
           path: ~/.conan2
           key: ${{ steps.conan-cache-restore.outputs.cache-primary-key }}
 
-      - name: Test Cinnamon
-        run: ninja -Cbuild check-cinm-mlir
+      # Only what the test jobs need: the binaries, the libraries they load and
+      # the test configuration CMake generated (lit's site config, ctest's test
+      # lists). Object files stay behind. Packed with tar rather than left to
+      # the artifact's own archiving, which follows symlinks and would store
+      # every library twice, once per SONAME alias.
+      - name: Pack the build tree
+        run: tar -cf - --exclude='*.o' build/bin build/lib build/test | zstd -T0 -3 -o cinnamon-build.tar.zst
+
+      - name: Upload the build tree
+        uses: actions/upload-artifact@v7
+        with:
+          name: cinnamon-build
+          path: cinnamon-build.tar.zst
+          if-no-files-found: error
+          # Already compressed, and it is only here to reach the test jobs.
+          compression-level: 0
+          retention-days: 1
+
+  # Both test jobs restore the same tree the build job produced. What they have
+  # to reproduce around it is everything the build baked absolute paths to: the
+  # prebuilt LLVM whose libraries the binaries load, and the pixi environment
+  # holding the C++ runtime and the Python lit runs on. Both land at the same
+  # paths as in the build job, since every job of a run gets the same workspace.
+
+  lit:
+    name: Lit tests
+    needs: build
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      - name: Set up pixi
+        uses: prefix-dev/setup-pixi@v0.10.2
+        with:
+          environments: default
+          activate-environment: true
+          cache: true
+
+      # The build job waited for this release, so here it is only a download.
+      - name: Fetch the prebuilt LLVM
+        run: LLVM_PREBUILT=always .github/workflows/build-llvm.sh -no-python-venv -verbose
+
+      - name: Download the build tree
+        uses: actions/download-artifact@v8
+        with:
+          name: cinnamon-build
+
+      - name: Unpack the build tree
+        run: zstd -dc cinnamon-build.tar.zst | tar -x
+
+      # lit directly rather than through `ninja check-cinm-mlir`: the sources
+      # were checked out after the build outputs were packed, so ninja would
+      # find every one of them out of date and rebuild the tree we just
+      # restored. common.sh is where the path of the LLVM in use is decided.
+      - name: Run the lit tests
+        run: |
+          source .github/workflows/common.sh >/dev/null
+          python "$llvm_build_dir/bin/llvm-lit" -sv build/test
+
+  unit:
+    name: Unit tests
+    needs: build
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      - name: Set up pixi
+        uses: prefix-dev/setup-pixi@v0.10.2
+        with:
+          environments: default
+          activate-environment: true
+          cache: true
+
+      # Not for its tools, but for the MLIR libraries the test binary loads.
+      - name: Fetch the prebuilt LLVM
+        run: LLVM_PREBUILT=always .github/workflows/build-llvm.sh -no-python-venv -verbose
+
+      - name: Download the build tree
+        uses: actions/download-artifact@v8
+        with:
+          name: cinnamon-build
+
+      - name: Unpack the build tree
+        run: zstd -dc cinnamon-build.tar.zst | tar -x
+
+      # ctest directly, for the reason lit is: see the lit job. The test list
+      # was written out by gtest_discover_tests when the binary was built.
+      # --no-tests=error because an empty list is ctest's idea of success, and
+      # a restore that brought back no tests must not read as a passing suite.
+      - name: Run the unit tests
+        run: ctest --test-dir build/test --output-on-failure --no-tests=error -j "$(nproc)"
