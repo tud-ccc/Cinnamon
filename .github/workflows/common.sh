@@ -324,6 +324,19 @@ if [[ "$setup_python_venv" -eq 1 && -z "${VIRTUAL_ENV:-}" && -f "$py_venv_path/b
   source "$py_venv_path/bin/activate"
 fi
 
+# Clang's driver does not search this environment's lib directory, so the
+# linker cannot resolve what our dependencies need indirectly: libz, needed by
+# libLLVMSupport, is the one that bites. CMake seeds the linker flags of a
+# build from LDFLAGS, which is how conda's own toolchains pass this too.
+# -rpath so that what we build finds those libraries when it runs, as well.
+if [[ -n "${CONDA_PREFIX:-}" ]]; then
+  conda_ld_flags="-L$CONDA_PREFIX/lib -Wl,-rpath-link,$CONDA_PREFIX/lib -Wl,-rpath,$CONDA_PREFIX/lib"
+  case " ${LDFLAGS:-} " in
+    *" -L$CONDA_PREFIX/lib "*) ;;
+    *) export LDFLAGS="${LDFLAGS:+$LDFLAGS }$conda_ld_flags" ;;
+  esac
+fi
+
 if [[ -n "${VIRTUAL_ENV:-}" ]]; then
   PYBIN="$(command -v python)"
   export LLVM_CMAKE_OPTIONS="${LLVM_CMAKE_OPTIONS:-} -DPython3_EXECUTABLE=${PYBIN} -DPython3_FIND_VIRTUALENV=ONLY"

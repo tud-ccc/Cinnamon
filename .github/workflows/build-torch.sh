@@ -79,6 +79,8 @@ if [[ "$need_config" -eq 1 ]]; then
     Darwin) linker_flags="-L${llvm_lib_dir} -Wl,-rpath,${llvm_lib_dir} -lMLIRParser" ;;
     *)      linker_flags="-Wl,--no-as-needed -L${llvm_lib_dir} -Wl,-rpath,${llvm_lib_dir} -lMLIRParser" ;;
   esac
+  # These replace the flags CMake takes from LDFLAGS, so carry them over.
+  linker_flags="${linker_flags}${LDFLAGS:+ $LDFLAGS}"
 
   extra_opts=()
   if [[ -n "${TORCH_MLIR_CMAKE_OPTIONS:-}" ]]; then
