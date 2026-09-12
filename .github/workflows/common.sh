@@ -331,8 +331,9 @@ fi
 # -rpath so that what we build finds those libraries when it runs, as well.
 if [[ -n "${CONDA_PREFIX:-}" ]]; then
   conda_ld_flags="-L$CONDA_PREFIX/lib -Wl,-rpath-link,$CONDA_PREFIX/lib -Wl,-rpath,$CONDA_PREFIX/lib"
-  case " ${LDFLAGS:-} " in
-    *" -L$CONDA_PREFIX/lib "*) ;;
+  case "${LDFLAGS:-}" in
+    # conda's clang passes these itself; its GCC does not
+    *"-L$CONDA_PREFIX/lib"*) ;;
     *) export LDFLAGS="${LDFLAGS:+$LDFLAGS }$conda_ld_flags" ;;
   esac
 fi

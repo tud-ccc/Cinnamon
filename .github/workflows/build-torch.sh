@@ -107,7 +107,12 @@ if [[ "$need_config" -eq 1 ]]; then
     *)      linker_flags="-Wl,--no-as-needed -L${llvm_lib_dir} -Wl,-rpath,${llvm_lib_dir} -lMLIRParser" ;;
   esac
   # These replace the flags CMake takes from LDFLAGS, so carry them over.
-  linker_flags="${linker_flags}${LDFLAGS:+ $LDFLAGS}"
+  # Not --as-needed though, which conda's clang passes: Torch-MLIR links
+  # libMLIRCastInterfaces before the archive that needs it, and --as-needed
+  # drops a library that nothing needs *yet*, leaving undefined references to
+  # mlir::impl::foldCastInterfaceOp and friends.
+  linker_flags="${linker_flags}${LDFLAGS:+ ${LDFLAGS//-Wl,--as-needed/-Wl,--no-as-needed}}"
+  export LDFLAGS="${LDFLAGS//-Wl,--as-needed/-Wl,--no-as-needed}"
 
   extra_opts=()
   if [[ -n "${TORCH_MLIR_CMAKE_OPTIONS:-}" ]]; then
