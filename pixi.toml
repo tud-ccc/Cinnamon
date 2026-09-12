@@ -57,6 +57,9 @@ doit = "*"
 [feature.toolchain.dependencies]
 clang_linux-64 = "22.*"
 clangxx_linux-64 = "22.*"
+# Clang has no OpenMP runtime of its own (GCC bundles libgomp), and the cost
+# model predictor needs one.
+llvm-openmp = "22.*"
 # LLVM's optional dependencies; without them CMake falls back to /usr
 zlib = "*"
 libxml2-devel = "*"

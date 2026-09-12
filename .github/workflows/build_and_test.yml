@@ -103,7 +103,11 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ~/.conan2
-          key: cinnamon-conan-${{ runner.os }}-${{ hashFiles('conanfile.txt', 'third-party/conan-recipes/**', 'pixi.lock') }}
+          # Saved under a key of its own per run, so that a run which built
+          # only some of the packages still contributes them, and the next run
+          # can add the rest. Restoring takes the newest of them.
+          key: cinnamon-conan-${{ runner.os }}-${{ hashFiles('conanfile.txt', 'third-party/conan-recipes/**', 'pixi.lock') }}-${{ github.run_id }}
+          restore-keys: cinnamon-conan-${{ runner.os }}-${{ hashFiles('conanfile.txt', 'third-party/conan-recipes/**', 'pixi.lock') }}-
 
       # The UPMEM SDK is no longer publicly downloadable, so the UPMEM runtime
       # library is not built here.
@@ -120,8 +124,7 @@ jobs:
 
       - name: Save conan cache
         uses: actions/cache/save@v6
-        if: always() && steps.build-cinnamon.outcome == 'success'
-          && steps.conan-cache-restore.outputs.cache-hit != 'true'
+        if: always()
         with:
           path: ~/.conan2
           key: ${{ steps.conan-cache-restore.outputs.cache-primary-key }}
