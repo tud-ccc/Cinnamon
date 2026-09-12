@@ -155,6 +155,7 @@ std::string describeNode(const ConstraintNode &node) {
   case Kind::Implies:
     return joinOperands(" => ");
   }
+  llvm_unreachable("unhandled ConstraintNode kind");
 }
 
 } // namespace mlir::cinm::constraints

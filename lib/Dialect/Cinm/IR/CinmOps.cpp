@@ -1040,4 +1040,5 @@ arith::AtomicRMWKind cinm::getArithConstant(ReduceMethod r, Type ty) {
   case mlir::cinm::ReduceMethod::MINNUMF:
     return mlir::arith::AtomicRMWKind::minnumf;
   }
+  llvm_unreachable("unhandled ReduceMethod");
 }

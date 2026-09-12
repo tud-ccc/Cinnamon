@@ -117,7 +117,8 @@ struct CppEmitter {
   /// - emits void for an empty array;
   /// - emits the type of the only element for arrays of size one;
   /// - emits a std::tuple otherwise;
-  LogicalResult emitTypes(Location loc, ArrayRef<Type> types);
+  [[maybe_unused]] LogicalResult emitTypes(Location loc,
+                                          ArrayRef<Type> types);
 
   /// Emits array of types as a std::tuple of the emitted types independently of
   /// the array size.
@@ -1038,13 +1039,13 @@ static LogicalResult printOperation(CppEmitter &emitter, arith::MulIOp op) {
   return printBinaryOperation(emitter, op.getOperation(), "*");
 }
 
-static LogicalResult printOperation(CppEmitter &emitter,
-                                    arith::MulSIExtendedOp op) {
+static LogicalResult printOperation(CppEmitter &/*emitter*/,
+                                    arith::MulSIExtendedOp /*op*/) {
   assert(false && "todo: implement op printer");
 }
 
-static LogicalResult printOperation(CppEmitter &emitter,
-                                    arith::MulUIExtendedOp op) {
+static LogicalResult printOperation(CppEmitter &/*emitter*/,
+                                    arith::MulUIExtendedOp /*op*/) {
   assert(false && "todo: implement op printer");
 }
 
@@ -1111,15 +1112,15 @@ static LogicalResult printOperation(CppEmitter &emitter, arith::SubIOp op) {
   return printBinaryOperation(emitter, op.getOperation(), "-");
 }
 
-static LogicalResult printOperation(CppEmitter &emitter, arith::TruncFOp op) {
+static LogicalResult printOperation(CppEmitter &/*emitter*/, arith::TruncFOp /*op*/) {
   assert(false && "todo: implement op printer");
 }
 
-static LogicalResult printOperation(CppEmitter &emitter, arith::TruncIOp op) {
+static LogicalResult printOperation(CppEmitter &/*emitter*/, arith::TruncIOp /*op*/) {
   assert(false && "todo: implement op printer");
 }
 
-static LogicalResult printOperation(CppEmitter &emitter, arith::UIToFPOp op) {
+static LogicalResult printOperation(CppEmitter &/*emitter*/, arith::UIToFPOp /*op*/) {
   assert(false && "todo: implement op printer");
 }
 
@@ -1219,13 +1220,6 @@ static LogicalResult printOperation(CppEmitter &emitter, func::CallOp callOp) {
   if (failed(emitter.emitOperands(*callOp.getOperation())))
     return failure();
   os << ")";
-  return success();
-}
-
-static LogicalResult printDPUReset(CppEmitter &emitter) {
-  raw_ostream &os = emitter.ostream();
-
-  os << "dpu_reset();\n";
   return success();
 }
 
@@ -1680,8 +1674,8 @@ static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
   return success();
 }
 
-static LogicalResult printOperation(CppEmitter &emitter,
-                                    func::FuncOp functionOp) {
+static LogicalResult printOperation(CppEmitter & /*emitter*/,
+                                    func::FuncOp /*functionOp*/) {
   return success();
 }
 

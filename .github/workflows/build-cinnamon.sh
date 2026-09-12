@@ -44,7 +44,7 @@ fi
 # ---- If a venv is active, make CMake use its Python ----
 python_opts=()
 if [[ -n "${VIRTUAL_ENV:-}" ]]; then
-  python_opts=( -DPython3_EXECUTABLE="$PYBIN" -DPython3_FIND_VIRTUALENV=ONLY )
+  python_opts=( -DPython3_EXECUTABLE="$PYBIN" )
 fi
 
 # ---- Decide whether we need to configure ----
@@ -138,6 +138,7 @@ EOF
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     -DLLVM_ENABLE_EH=ON \
     -DLLVM_ENABLE_RTTI=ON \
+    -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON \
     "${dep_opts[@]}" \
     ${ccache_opts[@]+"${ccache_opts[@]}"} \
     ${python_opts[@]+"${python_opts[@]}"} \

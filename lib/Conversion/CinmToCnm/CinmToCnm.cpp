@@ -384,7 +384,6 @@ LogicalResult convertCinmToCnm(
   llvm::SmallVector<AffineMap, 3> gatherMaps;
   llvm::SmallVector<Type, 3> mappedArgTypes;
 
-  auto cnmAccelerator = workgroup.getType().getAccelerator();
   // Is there a way to generically know and where to place a buffer in
   // accelerator memory?
   // TODO for now we assume all levels of the accelerator memory are used.

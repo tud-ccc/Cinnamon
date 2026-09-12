@@ -125,12 +125,6 @@ LogicalResult ProcessOp::verify() {
   return success();
 }
 
-static bool isF32MemRef(Type t) {
-  if (auto mem = dyn_cast<MemRefType>(t))
-    return mem.getElementType().isF32();
-  return false;
-}
-
 static LogicalResult verifySameRankAndShape(Operation *op, MemRefType a,
                                             MemRefType b, StringRef aName,
                                             StringRef bName) {
