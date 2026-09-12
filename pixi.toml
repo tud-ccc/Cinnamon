@@ -49,13 +49,14 @@ plotly = "*"
 tqdm = "*"
 doit = "*"
 
-# conda-forge's GCC with its own libstdc++, built against an old glibc
+# conda-forge's Clang with its own libstdc++, built against an old glibc
 # baseline, so every machine builds with the same compiler. LLVM has to be
 # built with it too; the `host` environment is for an LLVM built with the
-# system compiler (see the README).
+# system compiler (see the README). Keep the version in sync with
+# cinnamon/pixi.toml in tud-ccc/cinnamon-llvm.
 [feature.toolchain.dependencies]
-c-compiler = "*"
-cxx-compiler = "*"
+clang_linux-64 = "22.*"
+clangxx_linux-64 = "22.*"
 # LLVM's optional dependencies; without them CMake falls back to /usr
 zlib = "*"
 libxml2-devel = "*"
@@ -63,8 +64,8 @@ libxml2-devel = "*"
 # The compiler packages set no CC/CXX; without these the build scripts would
 # prefer a versioned system compiler (g++-13, clang-18, ...) found on PATH.
 [feature.toolchain.activation.env]
-CC = "$CONDA_PREFIX/bin/gcc"
-CXX = "$CONDA_PREFIX/bin/g++"
+CC = "$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-clang"
+CXX = "$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-clang++"
 # Make CMake prefer this environment's libraries (Vulkan, zlib, ...) over the
 # system's, which are built against a newer glibc than this compiler targets.
 CMAKE_PREFIX_PATH = "$CONDA_PREFIX"

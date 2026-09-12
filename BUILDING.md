@@ -5,10 +5,11 @@
 The easiest way to get everything the build needs is [pixi](https://pixi.sh),
 a single binary that installs without root. It puts the whole toolchain into
 `.pixi/` in the repository, at the versions pinned in `pixi.lock`: the C++
-compiler (GCC 15 with its own libstdc++), CMake, Ninja, `just`, ccache, mold,
-clang-format, pre-commit, Conan, the Vulkan headers and loader, and Python 3.12
-with PyTorch and MLIR's Python dependencies. The compiler builds against glibc
-2.28, so the same toolchain works on any distribution with glibc 2.28 or newer.
+compiler (Clang 22 with conda-forge's libstdc++), CMake, Ninja, `just`,
+ccache, mold, clang-format, pre-commit, Conan, the Vulkan headers and loader,
+and Python 3.12 with PyTorch and MLIR's Python dependencies. The compiler
+builds against glibc 2.28, so the same toolchain works on any distribution
+with glibc 2.28 or newer.
 
 Without pixi, you need:
 
@@ -29,9 +30,9 @@ Everything else — LLVM/MLIR, Torch-MLIR, the cost model, and (without pixi)
 the Python environment — is set up by the build scripts.
 
 LLVM, Torch-MLIR, the Conan packages and Cinnamon must all be built with one
-compiler and one standard library (libstdc++). With pixi, that is pixi's GCC.
-Without pixi, the build picks a host compiler itself and exports it to every
-sub-build; set `CC` and `CXX` to override the choice.
+compiler and one standard library (libstdc++). With pixi, that is pixi's
+Clang. Without pixi, the build picks a host compiler itself and exports it to
+every sub-build; set `CC` and `CXX` to override the choice.
 
 
 ### Dependencies and submodules
@@ -188,7 +189,7 @@ after moving the LLVM submodule.
 #### Using the host compiler
 
 The default pixi environment builds everything, LLVM included, with pixi's
-GCC. LLVM and everything linked against it must come from the same compiler
+Clang. LLVM and everything linked against it must come from the same compiler
 and glibc baseline, so an LLVM built with your system compiler cannot be used
 there. To use one anyway, for instance an LLVM you share with other projects,
 switch to the `host` environment: the same tools and Python, but no compiler
