@@ -29,18 +29,9 @@ import matplotlib.colors as mcolors
 from matplotlib.cm import ScalarMappable
 from tqdm import tqdm
 
-
-META_COLS = {
-    "visited",
-    "valid",
-    "cost",
-    "eval_iter",
-    "eval_time_ms",
-    "cpu_time_ms",
-    "mu",
-    "sigma",
-    "acq",
-}
+# Which columns of a pool are metrics rather than configuration parameters is
+# the pool format's business, so it is stated once, in the library.
+from cinm_experiments.pools import NON_PARAM_COLS as META_COLS  # noqa: E402
 
 
 def choose_axes(columns) -> tuple[str, str, str]:

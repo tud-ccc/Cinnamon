@@ -182,3 +182,11 @@ def log2_ticks(values) -> list[float]:
     k_min = int(np.floor(np.log2(values.min())))
     k_max = int(np.ceil(np.log2(values.max())))
     return [2**k for k in range(k_min, k_max + 1)]
+
+
+def save_fig(fig, out_dir: pathlib.Path, name: str) -> None:
+    """Write a figure into out_dir, creating it, and say where it went."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / name
+    fig.savefig(path, bbox_inches="tight")
+    print(f"wrote {path}")

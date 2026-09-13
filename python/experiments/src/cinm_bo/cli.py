@@ -5,8 +5,8 @@ builds each function's configuration space and evaluates nothing, `sample`
 prices a uniform draw from it, `search` runs the Bayesian optimiser, and
 `exhaustive` prices every feasible configuration. Four more read one back:
 `plot` for search quality, `diag` for what the search was doing per round,
-`analyze` for the shape of the landscape, and `view` for the interactive pool
-browser.
+`profiles` for the graph allocator's per-class curves, `analyze` for the
+shape of the landscape, and `view` for the interactive pool browser.
 
 The cinm-opt invocations are cinm_experiments.cinmopt's, so this and the
 experiment pipelines drive the compiler through one set of wrappers rather
@@ -190,6 +190,23 @@ def cmd_diag(args: argparse.Namespace) -> int:
     ).returncode
 
 
+def cmd_profiles(args: argparse.Namespace) -> int:
+    """Per-class cost profiles and what the allocator did with them
+    (cinm_bo.plot_profiles)."""
+    if not any(args.dump.rglob("profiles.csv")):
+        print(
+            f"[profiles] no profiles.csv under {args.dump} -- these are the "
+            "graph allocator's dumps, written with graph-allocation=true",
+            file=sys.stderr,
+        )
+        return 1
+    return subprocess.run(
+        _module_cmd(
+            "plot_profiles", str(args.dump), "--out", str(args.out_dir), *args.rest
+        )
+    ).returncode
+
+
 def cmd_analyze(args: argparse.Namespace) -> int:
     """Landscape analysis (cinm_bo.analyze_landscape)."""
     return subprocess.run(
@@ -235,11 +252,9 @@ def _add_reader_args(p: argparse.ArgumentParser, *, out_default: str) -> None:
         type=pathlib.Path,
         help=f"where to write (default: <dump>/{out_default})",
     )
-    p.add_argument(
-        "rest",
-        nargs=argparse.REMAINDER,
-        help="further arguments, passed through unchanged",
-    )
+    # Anything this parser does not know is forwarded to the module the
+    # command drives (see main); declaring it as a REMAINDER positional
+    # instead would swallow --out-dir whenever it followed the dump.
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -294,6 +309,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_reader_args(p, out_default="diag")
     p.set_defaults(func=cmd_diag, out_default="diag")
 
+    p = sub.add_parser("profiles", help="per-class cost profiles and allocation")
+    _add_reader_args(p, out_default="profiles")
+    p.set_defaults(func=cmd_profiles, out_default="profiles")
+
     p = sub.add_parser("analyze", help="landscape analysis of a pool")
     _add_reader_args(p, out_default="landscape")
     p.set_defaults(func=cmd_analyze, out_default="landscape")
@@ -301,14 +320,17 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("view", help="interactive pool browser")
     p.add_argument("csv", type=pathlib.Path, help="a pool.csv")
     p.add_argument("--scale", default="log10")
-    p.add_argument("rest", nargs=argparse.REMAINDER)
     p.set_defaults(func=cmd_view)
 
     return root
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    # Options this CLI does not define belong to the module the command
+    # drives -- plot_bo's --axes, plot_search_diag's --q -- and are handed
+    # over untouched rather than redeclared here.
+    args, rest = build_parser().parse_known_args(argv)
+    args.rest = rest
     if getattr(args, "out_dir", None) is None and hasattr(args, "out_default"):
         args.out_dir = args.dump / args.out_default
     try:
