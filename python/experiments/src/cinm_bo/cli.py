@@ -1,366 +1,244 @@
-"""Drive cinm-opt's accelerator search over a benchmark, and look at the result.
+"""Drive cinm-opt's accelerator search over a module, and look at what it did.
 
-Subcommands
------------
-  run          Run cinm-opt for a single seed, then plot.
-  seeds        Run cinm-opt for N seeds in parallel (ProcessPoolExecutor), then plot.
-  exhaustive   Run cinm-opt with exhaustive search (oracle / ground truth).
-  plot         Plot an already-populated data directory.
-  view         Interactive pool viewer.
-  analyze      Landscape analysis.
+Four commands produce a dump directory, in rising order of cost: `space`
+builds each function's configuration space and evaluates nothing, `sample`
+prices a uniform draw from it, `search` runs the Bayesian optimiser, and
+`exhaustive` prices every feasible configuration. Four more read one back:
+`plot` for search quality, `diag` for what the search was doing per round,
+`analyze` for the shape of the landscape, and `view` for the interactive pool
+browser.
 
-Common pattern:
-  python -m cinm_bo run gemv --scale log10
-  python -m cinm_bo seeds gemv --n 10 --workers 4 --oracle data/gemv_oracle
-  python -m cinm_bo exhaustive gemv
-  python -m cinm_bo plot gemv --oracle data/gemv_oracle -- --objective-scale log10
+The cinm-opt invocations are cinm_experiments.cinmopt's, so this and the
+experiment pipelines drive the compiler through one set of wrappers rather
+than each assembling --upmem-infer-accelerator strings of its own.
+
+    python -m cinm_bo space  benchmarks/prim/gemv.mlir out/
+    python -m cinm_bo search benchmarks/prim/gemv.mlir out/ --seeds 8
+    python -m cinm_bo plot   out/ --out-dir out/plots
+    python -m cinm_bo diag   out/ -o out/diag
 """
 
 from __future__ import annotations
 
 import argparse
-import os
+import pathlib
 import subprocess
 import sys
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from pathlib import Path
-from tqdm import tqdm
 
-# ── Subcommands that are themselves modules ───────────────────────────────────
-#
-# plot/view/analyze are separate programs with their own option sets, and this
-# forwards the caller's extra arguments to them verbatim, so they stay separate
-# processes rather than being called in-process. `-m` rather than a file path:
-# they are modules of this package, wherever it happens to be installed.
+from cinm_experiments import cinmopt
+from cinm_experiments.paths import DEFAULT_CINM_OPT
 
 
-def _module_cmd(module: str) -> list[str]:
-    return [sys.executable, "-m", f"cinm_bo.{module}"]
+# ── helpers ───────────────────────────────────────────────────────────────────
 
 
-# ── cinm-opt invocation helpers ────────────────────────────────────────────────
+def _opt_pair(text: str) -> tuple[str, str]:
+    """A `key=value` pass option, as accepted by --upmem-infer-accelerator."""
+    if "=" not in text:
+        raise argparse.ArgumentTypeError(
+            f"expected key=value, got {text!r} "
+            "(a flag-like option is key=true, e.g. -O dump-full-pool=true)"
+        )
+    key, value = text.split("=", 1)
+    return key, value
 
 
-def _infer_opts(
-    *,
-    scale: str,
-    dump_dir: str,
-    seed: int,
-    extra: list[str],
-) -> str:
-    parts = list(extra) + [
-        f"objective-scale={scale}",
-        f"dump-dir={dump_dir}",
-        f"rng-seed={seed}",
-    ]
-    return " ".join(parts)
+def _infer_opts(args: argparse.Namespace) -> dict:
+    return dict(args.opt or [])
 
 
-def _cinm_opt_cmd(
-    file: str,
-    infer_opts: str,
-    *,
-    cinm_opt: str = "cinm-opt",
-    extra_mlir_flags: list[str] | None = None,
-    out_file=None,
-) -> list[str]:
-    cmd = [
-        cinm_opt,
-        str(file),
-        "--cinm-assign-platforms",
-        "--cinm-isolate-compute-blocks",
-        f"--upmem-infer-accelerator={infer_opts}",
-        "--mlir-print-ir-after-failure",
-        "--dump-pass-pipeline",
-        "--split-input-file",
-        "--mlir-disable-threading",
-        "--debug-only=cinm-inference",
-    ]
-    if out_file:
-        cmd.extend(("-o", str(out_file)))
-    if extra_mlir_flags:
-        cmd.extend(extra_mlir_flags)
-    # print(" ".join(cmd))
-    return cmd
+def _module_cmd(module: str, *rest: str) -> list[str]:
+    """Run a sibling module as its own process.
+
+    The dump readers are separate programs with their own option sets, and
+    this forwards the caller's extra arguments to them verbatim rather than
+    re-declaring them. `-m` rather than a file path: they are modules of this
+    package, wherever it happens to be installed.
+    """
+    return [sys.executable, "-m", f"cinm_bo.{module}", *rest]
 
 
-# ── seed worker (top-level so ProcessPoolExecutor can pickle it) ───────────────
+def _pool_csvs(dump: pathlib.Path) -> list[pathlib.Path]:
+    """Every pool.csv under a dump directory.
+
+    A multi-seed search writes infer_<fn>/seed_<k>/pool.csv; `sample` and
+    `exhaustive` write infer_<fn>/pool.csv. Both are worth plotting, so look
+    for the seeded layout and fall back to the flat one.
+    """
+    seeded = sorted(dump.glob("*/seed_*/pool.csv"))
+    return seeded or sorted(dump.glob("*/pool.csv"))
 
 
-def _run_seed(args: tuple) -> tuple[int, int]:
-    """Run one cinm-opt seed. Returns (seed, returncode)."""
-    seed, file, dump_dir, scale, extra, cinm_opt = args
-    infer_opts = _infer_opts(scale=scale, dump_dir=dump_dir, seed=seed, extra=extra)
-    cmd = _cinm_opt_cmd(file, infer_opts, cinm_opt=cinm_opt)
-    log_path = Path(dump_dir) / f"seed{seed}.log"
-    out_path = Path(dump_dir) / f"seed{seed}_out.mlir"
-    with open(log_path, "w") as log_f, open(out_path, "w") as out_f:
-        result = subprocess.run(cmd, stderr=log_f, stdout=out_f)
-    return seed, result.returncode
+def _run_dirs(dump: pathlib.Path) -> list[pathlib.Path]:
+    """The directories holding per-round diagnostics (rounds.csv)."""
+    return sorted(p.parent for p in dump.glob("**/rounds.csv"))
 
 
-# ── subcommands ────────────────────────────────────────────────────────────────
+# ── commands that run cinm-opt ────────────────────────────────────────────────
 
 
-def cmd_run(args: argparse.Namespace) -> int:
-    """Single-seed run followed by plot."""
-    data_dir = Path(args.out_dir)
-    data_dir.mkdir(parents=True, exist_ok=True)
+def cmd_space(args: argparse.Namespace) -> int:
+    cinmopt.dump_space(
+        args.src, args.out, infer_opts=_infer_opts(args), cinm_opt=args.cinm_opt
+    )
+    print(f"[space] {args.out}")
+    return 0
 
-    infer_opts = _infer_opts(
-        scale=args.scale,
-        dump_dir=str(data_dir),
+
+def cmd_search(args: argparse.Namespace) -> int:
+    cinmopt.bo_multiseed(
+        args.src,
+        args.out,
+        n_seeds=args.seeds,
+        offset=args.offset,
+        workers=args.workers,
+        infer_opts=_infer_opts(args),
+        cinm_opt=args.cinm_opt,
+        debug=args.debug,
+    )
+    print(f"[search] {args.seeds} seed(s) -> {args.out}")
+    return 0
+
+
+def cmd_sample(args: argparse.Namespace) -> int:
+    cinmopt.random_sample(
+        args.src,
+        args.out,
+        n_samples=args.n,
         seed=args.seed,
-        extra=args.extra,
+        workers=args.workers,
+        infer_opts=_infer_opts(args),
+        cinm_opt=args.cinm_opt,
     )
-    cmd = _cinm_opt_cmd(args.file, infer_opts, cinm_opt=args.cinm_opt)
-
-    log_path = data_dir / f"{args.file}_seed{args.seed}.log"
-    out_path = data_dir / "out.mlir"
-
-    print(f"[run] seed: {args.seed}  log: {log_path}")
-    with open(log_path, "w") as log_f, open(out_path, "w") as out_f:
-        rc = subprocess.run(cmd, stderr=log_f, stdout=out_f).returncode
-
-    if rc != 0:
-        print(f"[run] cinm-opt exited {rc} — see {log_path}", file=sys.stderr)
-
-    args.in_dir = args.out_dir
-    return cmd_plot(args) or rc
-
-
-def cmd_seeds(args: argparse.Namespace) -> int:
-    """Run N seeds in parallel, then plot."""
-    data_dir = Path(args.out_dir)
-    data_dir.mkdir(parents=True, exist_ok=True)
-
-    seeds = [i * 31 + args.offset for i in range(1, args.n + 1)]
-    worker_args = [
-        (seed, args.file, str(data_dir), args.scale, args.extra, args.cinm_opt)
-        for seed in seeds
-    ]
-
-    workers = args.workers or max(1, (os.cpu_count() or 2) - 2)
-    print(f"[seeds] {args.n} seeds, {workers} workers, dir={args.out_dir}")
-
-    failed = 0
-    with ProcessPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_run_seed, wa): wa[0] for wa in worker_args}
-        for fut in tqdm(as_completed(futures), total=len(futures)):
-            seed = futures[fut]
-            try:
-                _, rc = fut.result()
-            except Exception as exc:
-                print(f"[seeds] seed: {seed} raised: {exc}", file=sys.stderr)
-                failed += 1
-                continue
-            status = "ok" if rc == 0 else f"FAILED (exit {rc})"
-            tqdm.write(f"[seeds] seed: {seed}  {status}")
-            if rc != 0:
-                failed += 1
-
-    if failed:
-        print(f"[seeds] WARNING: {failed}/{args.n} seed(s) failed", file=sys.stderr)
-
-    code = 1 if failed else 0
-    if args.no_plots:
-        return code
-    args.in_dir = args.out_dir
-    return cmd_plot(args)
-
-
-def cmd_multiseed(args: argparse.Namespace) -> int:
-    """Run N seeds in a single cinm-opt process (C++ multi-seed engine), then
-    plot. Unlike `seeds` (process-per-seed), this shares the config space, the
-    valid-config scan, and the validation set across seeds and runs them
-    concurrently in-process. Produces the same seed_<value>/ dump layout."""
-    data_dir = Path(args.out_dir)
-    data_dir.mkdir(parents=True, exist_ok=True)
-
-    extra = list(args.extra) + [f"n-seeds={args.n}"]
-    if args.workers:
-        extra.append(f"n-workers={args.workers}")
-    # rng-seed acts as the seed offset: seed k (1..n) uses k*31 + offset, matching
-    # the `seeds` command's scheme so the two engines produce comparable seeds.
-    infer_opts = _infer_opts(
-        scale=args.scale, dump_dir=str(data_dir), seed=args.offset, extra=extra
-    )
-    out_path = data_dir / "out.mlir"
-    cmd = _cinm_opt_cmd(
-        args.file, infer_opts, cinm_opt=args.cinm_opt, out_file=out_path
-    )
-
-    print(
-        f"[multiseed] {args.n} seeds, workers={args.workers or 'auto'}, "
-        f"dir={args.out_dir}"
-    )
-
-    rc = subprocess.run(cmd).returncode
-    if rc != 0:
-        print(f"[multiseed] cinm-opt exited {rc}", file=sys.stderr)
-
-    if args.no_plots:
-        return rc
-    args.in_dir = args.out_dir
-    return cmd_plot(args) or rc
+    print(f"[sample] {args.n} configs -> {args.out}")
+    return 0
 
 
 def cmd_exhaustive(args: argparse.Namespace) -> int:
-    """Run exhaustive search (oracle / ground truth)."""
-    data_dir = Path(args.out_dir)
-    data_dir.mkdir(parents=True, exist_ok=True)
+    cinmopt.exhaustive_search(
+        args.src,
+        args.out,
+        workers=args.workers,
+        infer_opts=_infer_opts(args),
+        cinm_opt=args.cinm_opt,
+    )
+    print(f"[exhaustive] {args.out}")
+    return 0
 
-    infer_opts = f"dump-dir={data_dir} exhaustive-search {' '.join(args.extra)}"
-    cmd = _cinm_opt_cmd(args.file, infer_opts, cinm_opt=args.cinm_opt)
 
-    log_path = data_dir / f"{args.file}.log"
-    out_path = data_dir / "out.mlir"
-
-    print(f"[exhaustive] log={log_path}")
-    with open(out_path, "w") as out_f:
-        return subprocess.run(cmd, stdout=out_f).returncode
+# ── commands that read a dump ─────────────────────────────────────────────────
 
 
 def cmd_plot(args: argparse.Namespace) -> int:
-    """Call plot_bo.py on the data directory."""
-    in_dir = Path(args.in_dir)
-    out_dir = str(args.out_dir)
-    oracle = getattr(args, "oracle", None) or ""
-    scale = getattr(args, "scale", "log10")
-    extra = getattr(args, "plot_extra", [])
-    no_per_seed = getattr(args, "no_per_seed", False)
-    plots_filter = getattr(args, "plots", None) or []
+    """Search-quality plots over a dump directory (cinm_bo.plot_bo)."""
+    pools = _pool_csvs(args.dump)
+    if not pools:
+        print(f"[plot] no pool.csv under {args.dump}", file=sys.stderr)
+        return 1
 
-    if oracle:
-        # Build --oracle <oracle_subdir/pool.csv> <seed_csvs...> pairs per subdir
-        oracle_path = Path(oracle)
-        plot_args: list[str] = []
-        for subdir in sorted(oracle_path.iterdir()):
-            if not subdir.is_dir():
-                continue
-            name = subdir.name
-            oracle_csv = subdir / "pool.csv"
-            seed_csvs = sorted((in_dir / name).glob("seed_*/pool.csv"))
+    plot_args: list[str] = []
+    if args.oracle:
+        # plot_bo pairs each --oracle CSV with the seed CSVs that follow it,
+        # matched by the problem directory's name.
+        for oracle_dir in sorted(p for p in args.oracle.iterdir() if p.is_dir()):
+            oracle_csv = oracle_dir / "pool.csv"
+            seed_csvs = sorted((args.dump / oracle_dir.name).glob("seed_*/pool.csv"))
             if oracle_csv.exists() and seed_csvs:
                 plot_args += ["--oracle", str(oracle_csv)]
                 plot_args += [str(p) for p in seed_csvs]
+        if not plot_args:
+            print(
+                f"[plot] no problem in {args.dump} matches {args.oracle}",
+                file=sys.stderr,
+            )
+            return 1
     else:
-        plot_args = [str(p) for p in sorted(in_dir.glob("*/seed_*/pool.csv"))]
+        plot_args = [str(p) for p in pools]
 
-    cmd = [
-        *_module_cmd("plot_bo"),
-        "--objective-scale",
-        scale,
-        "--out-dir",
-        out_dir,
-        *(["--no-per-seed"] if no_per_seed else []),
-        *plot_args,
-        *extra,
-        *(["--plots", *plots_filter] if plots_filter else []),
-    ]
-    code = subprocess.run(cmd).returncode
-    if code != 0:
-        print("FAILED" + " ".join(cmd))
-    return code
+    return subprocess.run(
+        _module_cmd(
+            "plot_bo",
+            "--out-dir",
+            str(args.out_dir),
+            "--objective-scale",
+            args.scale,
+            *(["--no-per-seed"] if args.no_per_seed else []),
+            *plot_args,
+            *args.rest,
+        )
+    ).returncode
 
 
-def cmd_view(args: argparse.Namespace) -> int:
-    """Launch the interactive pool viewer."""
-    pool_csv = Path("data") / args.name / "pool.csv"
-    cmd = [
-        *_module_cmd("view_pool"),
-        str(pool_csv),
-        "--scale",
-        args.scale,
-    ]
-    return subprocess.run(cmd).returncode
+def cmd_diag(args: argparse.Namespace) -> int:
+    """Per-round search diagnostics (cinm_bo.plot_search_diag)."""
+    rundirs = _run_dirs(args.dump)
+    if not rundirs:
+        print(
+            f"[diag] no rounds.csv under {args.dump} -- per-round diagnostics "
+            "are only written by a search, not by sample or exhaustive",
+            file=sys.stderr,
+        )
+        return 1
+    return subprocess.run(
+        _module_cmd(
+            "plot_search_diag",
+            "-o",
+            str(args.out_dir),
+            *[str(d) for d in rundirs],
+            *args.rest,
+        )
+    ).returncode
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
-    """Run landscape analysis (single problem dir or parent dir of many problems)."""
-    cmd = [
-        *_module_cmd("analyze_landscape"),
-        "--in-dir",
-        args.in_dir,
+    """Landscape analysis (cinm_bo.analyze_landscape)."""
+    return subprocess.run(
+        _module_cmd(
+            "analyze_landscape",
+            "--in-dir",
+            str(args.dump),
+            "--out-dir",
+            str(args.out_dir),
+            *args.rest,
+        )
+    ).returncode
+
+
+def cmd_view(args: argparse.Namespace) -> int:
+    """Interactive pool browser (cinm_bo.view_pool)."""
+    return subprocess.run(
+        _module_cmd("view_pool", str(args.csv), "--scale", args.scale, *args.rest)
+    ).returncode
+
+
+# ── argument parsing ──────────────────────────────────────────────────────────
+
+
+def _add_compile_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("src", type=pathlib.Path, help="the module to search over")
+    p.add_argument("out", type=pathlib.Path, help="dump directory to write")
+    p.add_argument(
+        "-O",
+        "--opt",
+        type=_opt_pair,
+        action="append",
+        metavar="KEY=VALUE",
+        help="an --upmem-infer-accelerator option; repeatable",
+    )
+    p.add_argument("--cinm-opt", type=pathlib.Path, default=DEFAULT_CINM_OPT)
+
+
+def _add_reader_args(p: argparse.ArgumentParser, *, out_default: str) -> None:
+    p.add_argument("dump", type=pathlib.Path, help="a dump directory to read")
+    p.add_argument(
         "--out-dir",
-        args.out_dir,
-        *args.extra,
-    ]
-    return subprocess.run(cmd).returncode
-
-
-# ── Argument parsing ───────────────────────────────────────────────────────────
-
-
-def _add_common(p: argparse.ArgumentParser) -> None:
-    """Add args shared by run / seeds / exhaustive."""
-    p.add_argument(
-        "file", metavar="FILE", help="Input file stem (without .mlir extension)"
+        type=pathlib.Path,
+        help=f"where to write (default: <dump>/{out_default})",
     )
     p.add_argument(
-        "--out-dir",
-        dest="out_dir",
-        required=True,
-        metavar="DIR",
-        help="Output directory",
-    )
-    p.add_argument(
-        "--cinm-opt", default="cinm-opt", metavar="PATH", help="Path to cinm-opt binary"
-    )
-
-
-def _add_scale(p: argparse.ArgumentParser) -> None:
-    p.add_argument(
-        "--scale",
-        default="log10",
-        choices=["linear", "log2", "log10", "ln", "sqrt", "cbrt"],
-        help="Objective scale (default: log10)",
-    )
-
-
-def _add_oracle(p: argparse.ArgumentParser) -> None:
-    p.add_argument(
-        "--oracle",
-        metavar="DIR",
-        default="",
-        help="Path to exhaustive-search data dir for plot overlay",
-    )
-
-
-def _add_extra(
-    p: argparse.ArgumentParser,
-    dest: str = "extra",
-    help: str = "Extra options forwarded to --upmem-infer-accelerator",
-) -> None:
-    p.add_argument(
-        "--infer-opts",
-        dest="extra",
-        nargs="*",
-        default=[],
-        metavar="KEY=VAL",
-        help=help,
-    )
-
-
-def _add_plot_extra(p: argparse.ArgumentParser) -> None:
-    p.add_argument(
-        "--",
-        dest="plot_extra",
-        nargs="*",
-        default=[],
-        metavar="ARG",
-        help="Extra args forwarded to plot_bo.py",
-    )
-
-
-def _add_plots_filter(p: argparse.ArgumentParser) -> None:
-    p.add_argument(
-        "--plots",
-        nargs="+",
-        default=None,
-        metavar="NAME",
-        help="Only generate plots whose tag contains one of these substrings "
-        "(forwarded to plot_bo.py --plots)",
+        "rest",
+        nargs=argparse.REMAINDER,
+        help="further arguments, passed through unchanged",
     )
 
 
@@ -370,174 +248,76 @@ def build_parser() -> argparse.ArgumentParser:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    sub = root.add_subparsers(dest="cmd", metavar="SUBCOMMAND", required=True)
+    sub = root.add_subparsers(dest="command", metavar="COMMAND", required=True)
 
-    # ── run ──────────────────────────────────────────────────────────────────
-    p_run = sub.add_parser("run", help="Single-seed run + plot")
-    _add_common(p_run)
-    _add_scale(p_run)
-    _add_oracle(p_run)
-    p_run.add_argument("--seed", type=int, default=42, help="RNG seed (default: 42)")
-    p_run.add_argument(
-        "--no-per-seed",
-        action="store_true",
-        dest="no_per_seed",
-        help="Pass --no-per-seed to plot_bo.py",
-    )
-    _add_plots_filter(p_run)
-    _add_extra(p_run)
-    p_run.set_defaults(func=cmd_run)
+    p = sub.add_parser("space", help="dump each function's config space")
+    _add_compile_args(p)
+    p.set_defaults(func=cmd_space)
 
-    # ── seeds ────────────────────────────────────────────────────────────────
-    p_seeds = sub.add_parser(
-        "seeds", help="Run N seeds in parallel (ProcessPoolExecutor) + plot"
-    )
-    _add_common(p_seeds)
-    _add_scale(p_seeds)
-    _add_oracle(p_seeds)
-    p_seeds.add_argument(
-        "-n", "--n", type=int, default=5, help="Number of seeds (default: 5)"
-    )
-    p_seeds.add_argument(
-        "-j",
-        "--workers",
-        type=int,
-        default=None,
-        help="Worker processes (default: ncpu-2)",
-    )
-    p_seeds.add_argument(
+    p = sub.add_parser("search", help="run the Bayesian search")
+    _add_compile_args(p)
+    p.add_argument("--seeds", type=int, default=1, help="independent searches")
+    p.add_argument(
         "--offset",
         type=int,
         default=67,
-        help="Offset to use to make generated seeds different from another run of the command",
+        help="rng offset; seed k uses offset + k*31",
     )
-    p_seeds.add_argument(
-        "--no-plots",
-        action="store_true",
-        dest="no_plots",
-        help="Don't run the plotting code",
-    )
-    p_seeds.add_argument(
-        "--no-per-seed",
-        action="store_true",
-        dest="no_per_seed",
-        help="Pass --no-per-seed to plot_bo.py",
-    )
-    _add_plots_filter(p_seeds)
-    _add_extra(p_seeds)
-    p_seeds.set_defaults(func=cmd_seeds)
+    p.add_argument("--workers", type=int, default=None)
+    p.add_argument("--debug", action="store_true", help="-debug-only=cinm-inference")
+    p.set_defaults(func=cmd_search)
 
-    # ── multiseed ────────────────────────────────────────────────────────────
-    p_ms = sub.add_parser(
-        "multiseed",
-        help="Run N seeds concurrently in one cinm-opt process (shared init) + plot",
-    )
-    _add_common(p_ms)
-    _add_scale(p_ms)
-    _add_oracle(p_ms)
-    p_ms.add_argument(
-        "-n", "--n", type=int, default=5, help="Number of seeds (default: 5)"
-    )
-    p_ms.add_argument(
-        "-j",
-        "--workers",
-        type=int,
-        default=None,
-        help="Max concurrent seeds / n-workers (default: auto = hw threads)",
-    )
-    p_ms.add_argument(
-        "--offset",
-        type=int,
-        default=67,
-        help="Seed offset (seed k uses k*31 + offset); forwarded as rng-seed",
-    )
-    p_ms.add_argument(
-        "--no-plots",
-        action="store_true",
-        dest="no_plots",
-        help="Don't run the plotting code",
-    )
-    p_ms.add_argument(
-        "--no-per-seed",
-        action="store_true",
-        dest="no_per_seed",
-        help="Pass --no-per-seed to plot_bo.py",
-    )
-    _add_plots_filter(p_ms)
-    _add_extra(p_ms)
-    p_ms.set_defaults(func=cmd_multiseed)
+    p = sub.add_parser("sample", help="price a uniform draw of feasible configs")
+    _add_compile_args(p)
+    p.add_argument("-n", type=int, required=True, help="configs to draw")
+    p.add_argument("--seed", type=int, default=None, help="draw seed")
+    p.add_argument("--workers", type=int, default=None)
+    p.set_defaults(func=cmd_sample)
 
-    # ── exhaustive ───────────────────────────────────────────────────────────
-    p_ex = sub.add_parser("exhaustive", help="Exhaustive search (oracle)")
-    _add_common(p_ex)
-    _add_extra(p_ex)
-    p_ex.set_defaults(func=cmd_exhaustive)
+    p = sub.add_parser("exhaustive", help="price every feasible config")
+    _add_compile_args(p)
+    p.add_argument("--workers", type=int, default=None)
+    p.set_defaults(func=cmd_exhaustive)
 
-    # ── plot ─────────────────────────────────────────────────────────────────
-    p_plot = sub.add_parser("plot", help="Plot an existing data directory")
-    p_plot.add_argument(
-        "--in-dir",
-        dest="in_dir",
-        required=True,
-        metavar="DIR",
-        help="Input directory containing pool.csv files",
+    p = sub.add_parser("plot", help="search-quality plots")
+    _add_reader_args(p, out_default="plots")
+    p.add_argument(
+        "--oracle",
+        type=pathlib.Path,
+        help="a dump directory of ground truth to compare against",
     )
-    p_plot.add_argument(
-        "--out-dir",
-        dest="out_dir",
-        required=True,
-        metavar="DIR",
-        help="Output directory for plots",
-    )
-    _add_scale(p_plot)
-    _add_oracle(p_plot)
-    p_plot.add_argument(
-        "--no-per-seed",
-        action="store_true",
-        dest="no_per_seed",
-        help="Pass --no-per-seed to plot_bo.py",
-    )
-    _add_plots_filter(p_plot)
-    p_plot.add_argument(
-        "plot_extra",
-        nargs="*",
-        metavar="ARG",
-        help="Extra args forwarded to plot_bo.py",
-    )
-    p_plot.set_defaults(func=cmd_plot, file=None)
+    p.add_argument("--scale", default="log10")
+    p.add_argument("--no-per-seed", action="store_true")
+    p.set_defaults(func=cmd_plot, out_default="plots")
 
-    # ── view ─────────────────────────────────────────────────────────────────
-    p_view = sub.add_parser("view", help="Interactive pool viewer")
-    p_view.add_argument("name", metavar="NAME", help="Subdirectory under data/")
-    _add_scale(p_view)
-    p_view.set_defaults(func=cmd_view)
+    p = sub.add_parser("diag", help="per-round search diagnostics")
+    _add_reader_args(p, out_default="diag")
+    p.set_defaults(func=cmd_diag, out_default="diag")
 
-    # ── analyze ──────────────────────────────────────────────────────────────
-    p_an = sub.add_parser("analyze", help="Landscape analysis")
-    p_an.add_argument(
-        "--in-dir",
-        dest="in_dir",
-        required=True,
-        metavar="DIR",
-        help="Input: pool.csv, problem dir, or parent dir of problems",
-    )
-    p_an.add_argument(
-        "--out-dir",
-        dest="out_dir",
-        required=True,
-        metavar="DIR",
-        help="Output directory for analysis plots and README",
-    )
-    _add_extra(p_an, help="Extra args forwarded to analyze_landscape.py")
-    p_an.set_defaults(func=cmd_analyze)
+    p = sub.add_parser("analyze", help="landscape analysis of a pool")
+    _add_reader_args(p, out_default="landscape")
+    p.set_defaults(func=cmd_analyze, out_default="landscape")
+
+    p = sub.add_parser("view", help="interactive pool browser")
+    p.add_argument("csv", type=pathlib.Path, help="a pool.csv")
+    p.add_argument("--scale", default="log10")
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p.set_defaults(func=cmd_view)
 
     return root
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    return args.func(args) or 0
+    args = build_parser().parse_args(argv)
+    if getattr(args, "out_dir", None) is None and hasattr(args, "out_default"):
+        args.out_dir = args.dump / args.out_default
+    try:
+        return args.func(args) or 0
+    except RuntimeError as exc:
+        # What cinmopt raises when cinm-opt exits non-zero; its message names
+        # the log file, which is where the actual error is.
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
