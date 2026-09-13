@@ -15,7 +15,8 @@ IR_PREFIX=$(OUT_DIR)/irs/$(BENCH_NAME)
 BUILD_PREFIX=$(OUT_DIR)/out
 
 CLANG_18_BASE=../third-party/llvm/build/bin
-CINM_OPT=../build/bin/cinm-opt
+CINM_BIN=../build/bin
+CINM_OPT=$(CINM_BIN)/cinm-opt
 
 $(IR_PREFIX).1.tiled.mlir: $(BENCH_NAME).mlir
 	@mkdir -p $(@D)
@@ -86,7 +87,7 @@ $(IR_PREFIX).6a3b.host.o: $(IR_PREFIX).6a3.host.opt.ll
 
 # Compile all DPU kernel executables
 $(BENCH_NAME)-kernel-compile: $(IR_PREFIX).6b.dpu.c
-	lib/compile_dpu.sh $< $(OUT_DIR)/bin
+	$(CINM_BIN)/cinm-compile-dpu $< $(OUT_DIR)/bin
 
 # HOST executable
 $(OUT_DIR)/bin/host: $(IR_PREFIX).6a3b.host.o apps/$(BENCH_NAME).cpp
