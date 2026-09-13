@@ -6,6 +6,8 @@
 .pixi/
 .vscode/
 testbench/gen
+# setuptools metadata, left behind by an editable install of cinm_experiments
+*.egg-info/
 
 
 # Created by https://www.toptal.com/developers/gitignore/api/cmake
