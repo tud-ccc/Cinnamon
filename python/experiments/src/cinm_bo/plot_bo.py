@@ -41,6 +41,42 @@ META_COLS = {
     "sigma",
     "acq",
 }
+
+
+def choose_axes(columns) -> tuple[str, str, str]:
+    """Three parameter columns to pivot the heatmaps on.
+
+    Anything that is not a metric is a configuration parameter, and which
+    parameters a pool has depends on the benchmark and on what the pass
+    currently emits -- so there is no fixed default that stays correct. (The
+    previous one, wramCol/wramRow/tasklets, outlived those column names by a
+    long way and turned every heatmap into a KeyError.) Prefer the WRAM tile
+    extents, which is what these heatmaps were built to show, then fill up
+    from whatever else the pool carries.
+    """
+    params = [c for c in columns if c not in META_COLS]
+    preferred = [c for c in params if c.endswith(".wram")]
+    chosen = preferred + [c for c in params if c not in preferred]
+    if len(chosen) < 3:
+        raise SystemExit(
+            f"error: need three parameter columns to pivot on, and this pool "
+            f"has {len(chosen)}: {', '.join(chosen) or '(none)'}.\n"
+            f"Pass --axes X,Y,FACET explicitly if some of them are metrics."
+        )
+    return chosen[0], chosen[1], chosen[2]
+
+
+def check_axes(axes: tuple[str, str, str], columns) -> None:
+    """Fail with the available names rather than a KeyError from pandas."""
+    missing = [a for a in axes if a not in columns]
+    if missing:
+        params = sorted(c for c in columns if c not in META_COLS)
+        raise SystemExit(
+            f"error: --axes names {', '.join(missing)}, which this pool does "
+            f"not have.\nIts parameters are: {', '.join(params) or '(none)'}."
+        )
+
+
 _SENTINEL_ITER = 2**63
 _SEED_TEMPLATE_PATH = Path(__file__).parent / "README_seed_synopsis.md"
 _PROBLEM_TEMPLATE_PATH = Path(__file__).parent / "README_problem_synopsis.md"
@@ -1355,10 +1391,10 @@ def main():
     )
     ap.add_argument(
         "--axes",
-        default="wramCol,wramRow,tasklets",
+        default=None,
         metavar="X,Y,FACET",
         help="Comma-separated pivot x,y,facet column names for heatmaps "
-        "(default: wramCol,wramRow,tasklets)",
+        "(default: inferred from the pool's own parameter columns)",
     )
     ap.add_argument(
         "--pcts",
@@ -1396,7 +1432,6 @@ def main():
     args = ap.parse_args()
 
     scale = args.objective_scale
-    ax_x, ax_y, ax_f = args.axes.split(",", 2)
 
     oracle_groups = []
     if args.oracle:
@@ -1428,6 +1463,17 @@ def main():
     if not all_groups:
         ap.print_help()
         sys.exit(0)
+
+    # The axes name columns, so they can only be settled once a pool is in
+    # hand. Every pool of a run comes from the same pass over the same
+    # function, so the first one's parameters are all of them.
+    columns = list(pd.read_csv(all_groups[0].seeds[0][1], nrows=0).columns)
+    if args.axes:
+        ax_x, ax_y, ax_f = args.axes.split(",", 2)
+        check_axes((ax_x, ax_y, ax_f), columns)
+    else:
+        ax_x, ax_y, ax_f = choose_axes(columns)
+        print(f"axes: {ax_x}, {ax_y}, {ax_f}  (use --axes to override)")
 
     out_dir = Path(args.out_dir)
     # Give each group its own per-problem subdirectory so aggregate plots from
