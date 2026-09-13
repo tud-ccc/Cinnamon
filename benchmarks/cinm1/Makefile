@@ -95,7 +95,12 @@ $(BENCH_NAME)-kernel-compile: $(IR_PREFIX).6b.dpu.c
 # HOST executable
 $(OUT_DIR)/bin/host: $(IR_PREFIX).6a3b.host.o apps/$(BENCH_NAME).cpp
 	@mkdir -p $(@D)
-	clang++ -g $^ -lUpmemDialectRuntime -fPIE -ldpu -ldpuverbose -L${UPMEM_HOME}/lib -L$(ROOT)/build/lib -I${UPMEM_HOME}/include/dpu -o $@
+	# openblas backs common.hpp's golden references and numa its output
+	# buffers; BENCH_FN only names the stats files common.hpp can write,
+	# which these drivers do not use, so the module name will do.
+	clang++ -g -std=c++17 -DBENCH_FN=$(BENCH_NAME) $^ -lUpmemDialectRuntime -fPIE -ldpu -ldpuverbose \
+	    -lopenblas -lnuma -L${UPMEM_HOME}/lib -L$(ROOT)/build/lib \
+	    -I${UPMEM_HOME}/include/dpu -o $@
 
 $(BENCH_NAME): $(IR_PREFIX).6a3.host.opt.ll $(IR_PREFIX).6b.dpu.c
 

@@ -64,6 +64,12 @@ namespace bench {
 /// than leaving it to be assumed.
 inline constexpr int kOperandRange = 50;
 
+/// Timed and untimed repetitions for drivers that run several kernels in one
+/// process and so do not go through run<Op>(), which takes its iteration
+/// count from the command line.
+inline constexpr int kReps = 3;
+inline constexpr int kWarmup = 1;
+
 inline DTY next_operand() { return (DTY)(rand() % kOperandRange); }
 
 inline std::vector<DTY> random_vector(size_t n) {
@@ -264,8 +270,8 @@ inline bool check_representable(const std::vector<double> &want) {
 
 /// Compares kernel output against the golden result, reporting the first few
 /// differences. Exact equality: both sides are integers held exactly.
-inline bool check(const std::vector<DTY> &got,
-                  const std::vector<double> &want) {
+inline bool check(const std::vector<DTY> &got, const std::vector<double> &want,
+                  const char *label = TOSTR(BENCH_FN)) {
   assert(got.size() == want.size() && "reference length mismatch");
   if (!check_representable(want))
     return false;
@@ -279,12 +285,12 @@ inline bool check(const std::vector<DTY> &got,
               want[i]);
   }
   if (bad == 0) {
-    printf("%s: verified %zu element(s) against reference\n", TOSTR(BENCH_FN),
+    printf("%s: verified %zu element(s) against reference\n", label,
            got.size());
     return true;
   }
-  fprintf(stderr, "\n%s: MISMATCH -- %zu of %zu elements differ\n",
-          TOSTR(BENCH_FN), bad, got.size());
+  fprintf(stderr, "\n%s: MISMATCH -- %zu of %zu elements differ\n", label, bad,
+          got.size());
   return false;
 }
 
@@ -294,6 +300,23 @@ inline uint64_t now_ns() {
   struct timespec t;
   clock_gettime(CLOCK_MONOTONIC, &t);
   return (uint64_t)t.tv_sec * 1000000000ULL + (uint64_t)t.tv_nsec;
+}
+
+/// Time `run` over `reps` iterations, after `warmup` untimed ones, and report
+/// the mean in milliseconds.
+///
+/// run<Op>() below is one kernel per process by construction -- BENCH_FN is a
+/// compile-time name -- which suits the prim and multiop suites, where the
+/// pipelines compile a binary per configuration. The cinm1 suite is built the
+/// other way, one binary per source module running each of its kernels, so it
+/// drives the loop itself and shares only this.
+template <class F> inline double time_mean_ms(int reps, int warmup, F &&run) {
+  for (int i = 0; i < warmup; i++)
+    run();
+  uint64_t t0 = now_ns();
+  for (int i = 0; i < reps; i++)
+    run();
+  return (now_ns() - t0) / 1e6 / reps;
 }
 
 inline void write_totals(const char *out_dir,
