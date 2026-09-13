@@ -1,0 +1,43 @@
+# The shared experiment library: the reader side of every format cinm-opt
+# dumps, plus the compile/run driver the pipelines share. Packaged so that a
+# pipeline living in another repository (the artifact) can depend on it by
+# path rather than reaching into this tree with sys.path.
+#
+# A separate distribution from python/cinnamon deliberately. That one declares
+# torch and torch-mlir and is wired to a completed build (build-cinnamon.sh
+# symlinks cinm-opt and friends beside it); torch-mlir is not on PyPI at all.
+# Folding this into it would mean no analysis without a compiler, and the
+# artifact's environment is meant to resolve on a laptop with nothing built.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cinm-experiments"
+version = "0.1.0"
+description = "Shared library for the Cinnamon experiment pipelines"
+requires-python = ">=3.10"
+
+# Only what this package itself imports. doit is deliberately absent: the
+# modules here return plain task dictionaries and never import it, which is
+# what lets a non-doit caller use them.
+dependencies = [
+    "matplotlib",
+    "numpy>=1.26",
+    # <3 deliberately: the paper's numbers were assembled on pandas 2, and 3.0
+    # changes defaults this code has never been run against (copy-on-write,
+    # the string dtype). Lift it when the assemble/plot stages have been
+    # re-run and compared, not before.
+    "pandas>=2.0,<3",
+    "scipy",
+    "tqdm",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# The makefile compile_run.py shells out to is part of the package, not
+# something it looks up in the repository -- see paths.COMPILE_MAKEFILE_DIR.
+[tool.setuptools.package-data]
+cinm_experiments = ["Makefile"]

@@ -83,7 +83,7 @@ BUILD_TYPE="${CMAKE_BUILD_TYPE:-RelWithDebInfo}"
 
 if [[ "$need_config" -eq 1 ]]; then
   status "Configuring Cinnamon (Ninja): $reason"
-  ln -s "$project_root/LICENSE" "$cinnamon_path/python/" 2>/dev/null || true
+  ln -s "$project_root/LICENSE" "$cinnamon_path/python/cinnamon/" 2>/dev/null || true
 
   # ---- Conan: install C++ dependencies into the build dir ----
   if ! command -v conan >/dev/null 2>&1; then
@@ -183,7 +183,7 @@ print_and_run cmake --build "$cinnamon_build_dir" --target all $CINNAMON_BUILD_O
 if [[ "$setup_python_venv" -eq 1 ]]; then
   status "Building Cinnamon Python package"
   site_packages_dir="$(python -c 'import sysconfig; p=sysconfig.get_paths(); print(p.get("platlib") or p.get("purelib"))')"
-  cinnamon_python_package_dir_src="$project_root/python/src/cinnamon"
+  cinnamon_python_package_dir_src="$project_root/python/cinnamon/src/cinnamon"
   cinnamon_python_package_resource_dir="$site_packages_dir/_resources"
 
   cinnamon_python_resources=(
@@ -204,7 +204,7 @@ if [[ "$setup_python_venv" -eq 1 ]]; then
   done
 
   if [[ "$build_cinnamon_wheel" -eq 1 ]]; then
-    pushd "$cinnamon_path/python" >/dev/null
+    pushd "$cinnamon_path/python/cinnamon" >/dev/null
     PYTHONWARNINGS=ignore verbose_cmd python -m build
     popd >/dev/null
   fi
