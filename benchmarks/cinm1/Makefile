@@ -15,7 +15,9 @@ IR_PREFIX=$(OUT_DIR)/irs/$(BENCH_NAME)
 BUILD_PREFIX=$(OUT_DIR)/out
 
 ROOT=../..
-CLANG_18_BASE=$(ROOT)/third-party/llvm/build/bin
+# opt and llc come from here too: the build symlinks the LLVM tools next to
+# its own, from the LLVM it was built against. clang++ below is the
+# environment's -- it compiles the host driver, it does not read our IR.
 CINM_BIN=$(ROOT)/build/bin
 CINM_OPT=$(CINM_BIN)/cinm-opt
 
@@ -78,13 +80,13 @@ $(IR_PREFIX).6a2.host.ll: $(IR_PREFIX).6a1.llvm.mlir
 	$(CINM_BIN)/cinm-translate --allow-unregistered-dialect --mlir-to-llvmir $< > $@
 
 $(IR_PREFIX).6a3.host.opt.ll: $(IR_PREFIX).6a2.host.ll
-	$(CLANG_18_BASE)/opt -O3 -S $< > $@
+	$(CINM_BIN)/opt -O3 -S $< > $@
 
 $(IR_PREFIX).6a3a.host.dbg.o: $(IR_PREFIX).6a2.host.ll
-	$(CLANG_18_BASE)/llc $< -o $@ -filetype=obj -relocation-model=pic
+	$(CINM_BIN)/llc $< -o $@ -filetype=obj -relocation-model=pic
 
 $(IR_PREFIX).6a3b.host.o: $(IR_PREFIX).6a3.host.opt.ll
-	$(CLANG_18_BASE)/llc -O3 $< -o $@ -filetype=obj -relocation-model=pic
+	$(CINM_BIN)/llc -O3 $< -o $@ -filetype=obj -relocation-model=pic
 
 # Compile all DPU kernel executables
 $(BENCH_NAME)-kernel-compile: $(IR_PREFIX).6b.dpu.c
