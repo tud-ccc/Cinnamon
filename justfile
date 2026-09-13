@@ -4,9 +4,6 @@
 # Load environment vars from .env file
 # Write LLVM_BUILD_DIR="path" into that file or set this env var in your shell.
 set dotenv-load := true
-# Allows running eg `just experiments run gemv`
-mod experiments
-
 # LLVM is the third-party/llvm submodule
 # (https://github.com/tud-ccc/cinnamon-llvm, branch `cinnamon`), which is
 # usually downloaded prebuilt rather than built. To build against an LLVM you

@@ -37,7 +37,9 @@ dependencies = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# The makefile compile_run.py shells out to is part of the package, not
-# something it looks up in the repository -- see paths.COMPILE_MAKEFILE_DIR.
+# Files these packages read relative to themselves: the makefile compile_run.py
+# shells out to (see paths.COMPILE_MAKEFILE_DIR), the viewer page view_pool
+# serves, and the report templates plot_bo and analyze_landscape fill in.
 [tool.setuptools.package-data]
 cinm_experiments = ["Makefile"]
+cinm_bo = ["pool_viewer.html", "README_*.md"]
