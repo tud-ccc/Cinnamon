@@ -61,7 +61,7 @@ The current cost model in `UpmemSimulator.cpp` uses rough estimates. It needs to
 
 ## Cleanups
 
-- Do we still need the LinalgCleanup pass? I improved the bufferization pipeline for CINM->CNM a lot and do not need it at least for the benchmarks in ./testbench
+- Do we still need the LinalgCleanup pass? I improved the bufferization pipeline for CINM->CNM a lot and do not need it at least for the benchmarks in ./benchmarks/cinm1
 -
 
 ### Parallel work

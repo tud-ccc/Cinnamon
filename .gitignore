@@ -5,7 +5,7 @@
 .venv/
 .pixi/
 .vscode/
-testbench/gen
+benchmarks/cinm1/gen
 # setuptools metadata, left behind by an editable install of cinm_experiments
 *.egg-info/
 

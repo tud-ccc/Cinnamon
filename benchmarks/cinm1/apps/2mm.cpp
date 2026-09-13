@@ -1,4 +1,4 @@
-#include "../lib/bench/testbench.hpp"
+#include "../testbench.hpp"
 #include <cstdint>
 
 extern "C" {

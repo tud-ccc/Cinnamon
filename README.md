@@ -32,17 +32,19 @@ just test
 
 <!-- USAGE EXAMPLES -->
 ## Usage
-All benchmarks at the `cinm` abstraction are in this repository under
-`testbench/`. Compiling and running one goes through `just`, and needs the
-UPMEM SDK (for the last step at least):
+Benchmarks at the `cinm` abstraction live under `benchmarks/`, one directory
+per suite: `cinm1/` is the CINM 1.0 flow driven by its own makefile, while
+`prim/` and `multiop/` are compiled by the experiment pipelines. Compiling
+and running a `cinm1` benchmark goes through `just`, and needs the UPMEM SDK
+(for the last step at least):
 
 ```sh
-just genBench gemv   # compile only; output lands in testbench/gen/gemv/
+just genBench gemv   # compile only; output lands in benchmarks/cinm1/gen/gemv/
 just bench gemv      # compile and run
 ```
 
 The generated code and the intermediate IRs for each bench are written to
-`testbench/gen/`. You can also lower a benchmark by hand: each benchmark file
+`benchmarks/cinm1/gen/`. You can also lower a benchmark by hand: each benchmark file
 has a comment at the top giving the command that lowers it to the UPMEM IR.
 `just cinm-opt` runs the compiler from the build tree without putting it on
 your `PATH`.

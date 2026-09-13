@@ -72,12 +72,12 @@ genBench NAME: (doNinja "cinm-opt" "cinm-translate")
     #!/bin/bash
     source "{{upmem_dir}}/upmem_env.sh"
     export BENCH_NAME="{{NAME}}"
-    make -Ctestbench clean && make -Ctestbench {{NAME}}-exe
+    make -Cbenchmarks/cinm1 clean && make -Cbenchmarks/cinm1 {{NAME}}-exe
 
 runBench NAME:
     #!/bin/bash
     source "{{upmem_dir}}/upmem_env.sh"
-    cd testbench/gen/{{NAME}}/bin
+    cd benchmarks/cinm1/gen/{{NAME}}/bin
     ./host
 
 bench NAME: (doNinja "cinm-opt")
@@ -85,6 +85,6 @@ bench NAME: (doNinja "cinm-opt")
     set -e
     source "{{upmem_dir}}/upmem_env.sh"
     export BENCH_NAME="{{NAME}}"
-    make -Ctestbench clean && make -Ctestbench {{NAME}}-exe
-    cd testbench/gen/{{NAME}}/bin
+    make -Cbenchmarks/cinm1 clean && make -Cbenchmarks/cinm1 {{NAME}}-exe
+    cd benchmarks/cinm1/gen/{{NAME}}/bin
     ./host

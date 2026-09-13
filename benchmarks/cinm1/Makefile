@@ -14,8 +14,9 @@ OUT_DIR_DPU=$(OUT_DIR)/dpu
 IR_PREFIX=$(OUT_DIR)/irs/$(BENCH_NAME)
 BUILD_PREFIX=$(OUT_DIR)/out
 
-CLANG_18_BASE=../third-party/llvm/build/bin
-CINM_BIN=../build/bin
+ROOT=../..
+CLANG_18_BASE=$(ROOT)/third-party/llvm/build/bin
+CINM_BIN=$(ROOT)/build/bin
 CINM_OPT=$(CINM_BIN)/cinm-opt
 
 $(IR_PREFIX).1.tiled.mlir: $(BENCH_NAME).mlir
@@ -71,10 +72,10 @@ $(IR_PREFIX).6a1.llvm.mlir: $(IR_PREFIX).6.upmem.mlir
 # --fold-memref-alias-ops \
 
 $(IR_PREFIX).6b.dpu.c: $(IR_PREFIX).6.upmem.mlir
-	../build/bin/cinm-translate --allow-unregistered-dialect --mlir-to-upmem-cpp $< > $@
+	$(CINM_BIN)/cinm-translate --allow-unregistered-dialect --mlir-to-upmem-cpp $< > $@
 
 $(IR_PREFIX).6a2.host.ll: $(IR_PREFIX).6a1.llvm.mlir
-	../build/bin/cinm-translate --allow-unregistered-dialect --mlir-to-llvmir $< > $@
+	$(CINM_BIN)/cinm-translate --allow-unregistered-dialect --mlir-to-llvmir $< > $@
 
 $(IR_PREFIX).6a3.host.opt.ll: $(IR_PREFIX).6a2.host.ll
 	$(CLANG_18_BASE)/opt -O3 -S $< > $@
@@ -92,7 +93,7 @@ $(BENCH_NAME)-kernel-compile: $(IR_PREFIX).6b.dpu.c
 # HOST executable
 $(OUT_DIR)/bin/host: $(IR_PREFIX).6a3b.host.o apps/$(BENCH_NAME).cpp
 	@mkdir -p $(@D)
-	clang++ -g $^ -lUpmemDialectRuntime -fPIE -ldpu -ldpuverbose -L${UPMEM_HOME}/lib -L../build/lib -I${UPMEM_HOME}/include/dpu -o $@
+	clang++ -g $^ -lUpmemDialectRuntime -fPIE -ldpu -ldpuverbose -L${UPMEM_HOME}/lib -L$(ROOT)/build/lib -I${UPMEM_HOME}/include/dpu -o $@
 
 $(BENCH_NAME): $(IR_PREFIX).6a3.host.opt.ll $(IR_PREFIX).6b.dpu.c
 

@@ -1,14 +1,13 @@
-#include "../lib/bench/testbench.hpp"
+#include "../testbench.hpp"
 #include <cstdint>
 
-// linked with LLVM module
 extern "C" {
-int32_t *mm_dimm1_nopt(int32_t *, int32_t *);
-int32_t *mm_dimm1_opt(int32_t *, int32_t *);
-int32_t *mm_dimm2_nopt(int32_t *, int32_t *);
-int32_t *mm_dimm2_opt(int32_t *, int32_t *);
-int32_t *mm_dimm4_nopt(int32_t *, int32_t *);
-int32_t *mm_dimm4_opt(int32_t *, int32_t *);
+void *mm_dimm4_nopt(int32_t *, int32_t *);
+void *mm_dimm4_opt(int32_t *, int32_t *);
+void *mm_dimm8_nopt(int32_t *, int32_t *);
+void *mm_dimm8_opt(int32_t *, int32_t *);
+void *mm_dimm16_nopt(int32_t *, int32_t *);
+void *mm_dimm16_opt(int32_t *, int32_t *);
 }
 
 #define BENCH_MM(ty, M, K, N, fun_name)                                        \
@@ -23,14 +22,14 @@ int32_t *mm_dimm4_opt(int32_t *, int32_t *);
 int main(void) {
   srand(0);
 
-  BENCH_MM(int32_t, 1, 1024, 512, mm_dimm1_nopt);
-  BENCH_MM(int32_t, 16, 64, 512, mm_dimm1_opt);
+  BENCH_MM(int32_t, 8, 1024, 256, mm_dimm4_nopt);
+  BENCH_MM(int32_t, 16, 1024, 128, mm_dimm4_opt);
 
-  BENCH_MM(int32_t, 1, 1024, 256, mm_dimm2_nopt);
-  BENCH_MM(int32_t, 16, 64, 256, mm_dimm2_opt);
+  BENCH_MM(int32_t, 8, 1024, 128, mm_dimm8_nopt);
+  // BENCH_MM(int32_t, 16, 1024, 64, mm_dimm8_opt);
 
-  // BENCH_MM(int32_t, 1, 1024, 128, mm_dimm4_nopt);
-  BENCH_MM(int32_t, 16, 64, 128, mm_dimm4_opt);
+  // BENCH_MM(int32_t, 8, 1024, 64, mm_dimm16_nopt);
+  // BENCH_MM(int32_t, 16, 1024, 32, mm_dimm16_opt);
 
   return 0;
 }
