@@ -6,9 +6,13 @@ on:
   pull_request:
       types: [opened, reopened]
 
-# A new push supersedes the run of the previous commit.
+# A new push supersedes the run of the previous commit. Keyed on the branch
+# rather than on github.ref, which differs between the push and pull_request
+# events of the same branch (refs/heads/x vs refs/pull/N/merge) and so let the
+# two run concurrently -- building the same submodules and racing each other to
+# save the same caches.
 concurrency:
-  group: build-and-test-${{ github.ref }}
+  group: build-and-test-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -103,9 +107,13 @@ jobs:
       - name: Build Torch-MLIR
         run: .github/workflows/build-torch.sh -no-python-venv -verbose
 
+      # Not always(): that includes cancellation, so a run superseded by the
+      # next push would still reach this and race the run that replaced it for
+      # the same key. A *failed* build still has something worth keeping, which
+      # is what this is for, so the condition is everything except cancelled.
       - name: Save torch-mlir cache
         uses: actions/cache/save@v6
-        if: always() && steps.torch-mlir-cache-restore.outputs.cache-hit != 'true'
+        if: ${{ !cancelled() && steps.torch-mlir-cache-restore.outputs.cache-hit != 'true' }}
         with:
           path: |
             third-party/torch-mlir
@@ -151,9 +159,10 @@ jobs:
         if: always()
         run: ccache --show-stats
 
+      # See the torch-mlir save above for why this is not always().
       - name: Save ccache
         uses: actions/cache/save@v6
-        if: always()
+        if: ${{ !cancelled() }}
         with:
           path: .ccache
           key: ${{ steps.ccache.outputs.cache-primary-key }}
@@ -163,9 +172,10 @@ jobs:
         if: always()
         run: conan cache clean "*" --source --build --temp || true
 
+      # See the torch-mlir save above for why this is not always().
       - name: Save conan cache
         uses: actions/cache/save@v6
-        if: always()
+        if: ${{ !cancelled() }}
         with:
           path: ~/.conan2
           key: ${{ steps.conan-cache-restore.outputs.cache-primary-key }}
