@@ -1,9 +1,15 @@
 #!/bin/bash
+
 set -euo pipefail
 
 script_dir="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
 # shellcheck source=/dev/null
 source "$script_dir/common.sh"
+
+if [[ -f /.dockerenv ]]; then
+  info "Running inside a Docker container; skipping ALPINE build."
+  exit 0
+fi
 
 alpine_repo_url="${ALPINE_REPO_URL:-https://github.com/gem5-X/ALPINE.git}"
 alpine_revision="${ALPINE_REV:-master}"
