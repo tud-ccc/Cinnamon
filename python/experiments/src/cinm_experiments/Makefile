@@ -9,12 +9,17 @@ SHELL := /bin/bash
 .SHELLFLAGS := -o pipefail -c
 .DELETE_ON_ERROR:
 
-ROOT         = ../..
+# The repository this makefile compiles against. compile_run.py passes it, and
+# must: this file ships inside the package, whose depth below the repository
+# differs between an editable install and a wheel, so counting ".." here would
+# be right in one case and silently wrong in the other. The default is the
+# editable layout, for running make by hand from this directory.
+ROOT        ?= ../../../..
 # opt and llc among them: the build symlinks the LLVM tools next to its own,
 # from whichever LLVM it was built against, because IR emitted by
-# cinm-translate is not necessarily readable by another LLVM's tools. clang++
-# below is the environment's, which is a different question -- it compiles the
-# driver, it does not read our IR.
+# cinm-translate is not necessarily readable by another LLVM's tools. The host
+# driver's compiler is a separate question -- it compiles C++, it does not read
+# our IR -- and is settled at BENCH_CXX below.
 CINM_BIN     = $(ROOT)/build/bin
 CINM_OPT     = $(CINM_BIN)/cinm-opt
 CINM_TRANS   = $(CINM_BIN)/cinm-translate
@@ -39,9 +44,41 @@ BENCH_FN ?= $(error BENCH_FN is not set)
 IR_DIR  ?= ir
 BIN_DIR ?= bin
 
+# The host driver's compiler: the system's, named explicitly.
+#
+# Not a bare `clang++`, because UPMEM_HOME/bin is on PATH whenever this runs
+# and the SDK ships a clang 12 under that name -- a bare name hands the
+# binaries whose timings are the results to whatever PATH happens to put
+# first (common.sh refuses a bare clang for the same reason).
+#
+# And deliberately not $(CXX), which inside the pixi environment is conda's
+# clang. That one cannot link this binary at all: it drags in its own sysroot,
+# while the SDK's libdpu.so resolves against the system's libelf and glibc, so
+# the link fails on elf_begin@ELFUTILS_1.0 and dlopen@GLIBC_2.34. The host
+# driver has to be built with the toolchain the SDK was.
+BENCH_CXX   ?= c++
+ifneq ($(UPMEM_HOME),)
+  ifneq ($(findstring $(UPMEM_HOME),$(BENCH_CXX)),)
+    $(error BENCH_CXX is $(BENCH_CXX), inside the UPMEM SDK -- that is its \
+            clang 12, not a host compiler. Set BENCH_CXX.)
+  endif
+endif
+
+# openblas and numa come from the environment when there is one -- they are
+# declared in pixi.toml -- and from the system otherwise. Without the explicit
+# -I/-L the system copies win even inside the environment, since nothing else
+# puts these on the search path. These are plain C libraries loaded alongside
+# the SDK's, not a toolchain, so taking them from the environment is fine
+# where taking the compiler from it is not (see BENCH_CXX).
+ifneq ($(CONDA_PREFIX),)
+  CONDA_CXXFLAGS = -isystem $(CONDA_PREFIX)/include
+  CONDA_LDFLAGS  = -L$(CONDA_PREFIX)/lib -Wl,-rpath,$(CONDA_PREFIX)/lib
+endif
+
 CXXFLAGS = -O3 -std=c++17 \
            -I$(ROOT)/runtime/Upmem \
-           -I$(UPMEM_HOME)/include/dpu
+           -I$(UPMEM_HOME)/include/dpu \
+           $(CONDA_CXXFLAGS)
 
 # openblas backs the bench drivers' golden references (benchmarks/common.hpp):
 # a run checks its output against an independent implementation before its
@@ -51,7 +88,8 @@ CXXFLAGS = -O3 -std=c++17 \
 # of single-node page placement (see the comment on output_vector).
 LDFLAGS = -lUpmemDialectRuntime -ldpu -ldpuverbose -lopenblas -lnuma -Wl,-s \
           -L$(UPMEM_HOME)/lib \
-          -L$(ROOT)/build/lib
+          -L$(ROOT)/build/lib \
+          $(CONDA_LDFLAGS)
 
 # Passes to lower a upmem-level module to host LLVM IR.
 # Bufferize function boundaries first, then the standard lowering sequence.
@@ -151,7 +189,7 @@ $(BIN_DIR)/$(BENCH_FN): $(IR_DIR)/$(BENCH_FN).dpu.c | $(BIN_DIR)
 # ─── Final host binary ───────────────────────────────────────────────────────
 
 define LINK_BENCH
-	clang++ $(CXXFLAGS) -DBENCH_FN=$(BENCH_FN) $(BENCH_DRIVER) \
+	$(BENCH_CXX) $(CXXFLAGS) -DBENCH_FN=$(BENCH_FN) $(BENCH_DRIVER) \
 	    $(IR_DIR)/$(BENCH_FN).o $(LDFLAGS) \
 	    -o $(BIN_DIR)/bench_$(BENCH_FN)
 endef

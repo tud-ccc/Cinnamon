@@ -23,6 +23,10 @@ clang-format = "==22.1.8"
 # For -enable-gpu (cinm-vulkan-runner); the GPU driver itself comes from the system
 libvulkan-headers = "*"
 libvulkan-loader = "*"
+# What benchmarks/common.hpp includes: openblas for the golden references it
+# checks every run against, numactl for the interleaved gather buffer.
+openblas = "*"
+numactl = "*"
 
 [pypi-dependencies]
 # pixi doesn't add pip to Python like conda does; build-torch.sh installs torch-mlir with it

@@ -18,7 +18,7 @@ from typing import Callable
 from tqdm import tqdm
 
 from . import parallel
-from .paths import COMPILE_MAKEFILE_DIR, DEFAULT_CINM_OPT
+from .paths import COMPILE_MAKEFILE_DIR, DEFAULT_CINM_OPT, ROOT
 
 
 @dataclasses.dataclass
@@ -112,6 +112,7 @@ def _run_make(
         "-C",
         str(COMPILE_MAKEFILE_DIR),
         *(["-B"] if force else []),
+        f"ROOT={ROOT}",
         f"SRC_MLIR={lowered.resolve()}",
         f"IR_DIR={ir_dir.resolve()}",
         f"BENCH_FN={fn_name}",

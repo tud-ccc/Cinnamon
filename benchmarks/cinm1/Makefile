@@ -16,10 +16,29 @@ BUILD_PREFIX=$(OUT_DIR)/out
 
 ROOT=../..
 # opt and llc come from here too: the build symlinks the LLVM tools next to
-# its own, from the LLVM it was built against. clang++ below is the
-# environment's -- it compiles the host driver, it does not read our IR.
+# its own, from the LLVM it was built against.
 CINM_BIN=$(ROOT)/build/bin
 CINM_OPT=$(CINM_BIN)/cinm-opt
+
+# The host driver's compiler, settled the same way as in
+# cinm_experiments/Makefile and for the same two reasons: a bare `clang++`
+# would find the SDK's clang 12, since UPMEM_HOME/bin is on PATH, and $(CXX)
+# inside the pixi environment is conda's clang, whose sysroot cannot link the
+# SDK's libdpu.so. The system's, overridable.
+BENCH_CXX ?= c++
+ifneq ($(UPMEM_HOME),)
+  ifneq ($(findstring $(UPMEM_HOME),$(BENCH_CXX)),)
+    $(error BENCH_CXX is $(BENCH_CXX), inside the UPMEM SDK -- that is its \
+            clang 12, not a host compiler. Set BENCH_CXX.)
+  endif
+endif
+
+# openblas and numa are declared in pixi.toml; without the explicit -I/-L the
+# system copies win even inside the environment.
+ifneq ($(CONDA_PREFIX),)
+  CONDA_CXXFLAGS = -isystem $(CONDA_PREFIX)/include
+  CONDA_LDFLAGS  = -L$(CONDA_PREFIX)/lib -Wl,-rpath,$(CONDA_PREFIX)/lib
+endif
 
 $(IR_PREFIX).1.tiled.mlir: $(BENCH_NAME).mlir
 	@mkdir -p $(@D)
@@ -98,9 +117,9 @@ $(OUT_DIR)/bin/host: $(IR_PREFIX).6a3b.host.o $(BENCH_NAME).cpp
 	# openblas backs common.hpp's golden references and numa its output
 	# buffers; BENCH_FN only names the stats files common.hpp can write,
 	# which these drivers do not use, so the module name will do.
-	clang++ -g -std=c++17 -DBENCH_FN=$(BENCH_NAME) $^ -lUpmemDialectRuntime -fPIE -ldpu -ldpuverbose \
+	$(BENCH_CXX) -g -std=c++17 -DBENCH_FN=$(BENCH_NAME) $^ -lUpmemDialectRuntime -fPIE -ldpu -ldpuverbose \
 	    -lopenblas -lnuma -L${UPMEM_HOME}/lib -L$(ROOT)/build/lib \
-	    -I${UPMEM_HOME}/include/dpu -o $@
+	    -I${UPMEM_HOME}/include/dpu $(CONDA_CXXFLAGS) $(CONDA_LDFLAGS) -o $@
 
 $(BENCH_NAME): $(IR_PREFIX).6a3.host.opt.ll $(IR_PREFIX).6b.dpu.c
 
