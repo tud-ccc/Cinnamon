@@ -359,7 +359,10 @@ fi
 
 if [[ -n "${VIRTUAL_ENV:-}" ]]; then
   PYBIN="$(command -v python)"
-  export LLVM_CMAKE_OPTIONS="${LLVM_CMAKE_OPTIONS:-} -DPython3_EXECUTABLE=${PYBIN} -DPython3_FIND_VIRTUALENV=ONLY"
+  # Python_ alongside Python3_: MLIR searches for the interpreter twice, the
+  # second time as Python, for nanobind's benefit. Leaving that one free lets
+  # CMake pick the highest version on the system for the Python bindings.
+  export LLVM_CMAKE_OPTIONS="${LLVM_CMAKE_OPTIONS:-} -DPython3_EXECUTABLE=${PYBIN} -DPython3_FIND_VIRTUALENV=ONLY -DPython_EXECUTABLE=${PYBIN} -DPython_FIND_VIRTUALENV=ONLY"
 fi
 
 fi

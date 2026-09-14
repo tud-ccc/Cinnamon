@@ -60,6 +60,9 @@ cache_file="$torch_mlir_build_dir/CMakeCache.txt"
 need_config=0
 cached_llvm_dir="$(grep -E '^LLVM_DIR:[A-Z]+=' "$cache_file" 2>/dev/null | sed 's/.*=//' || true)"
 cached_cxx="$(grep -E '^CMAKE_CXX_COMPILER:[A-Z]+=' "$cache_file" 2>/dev/null | sed 's/.*=//' || true)"
+# _Python_EXECUTABLE, not Python_EXECUTABLE: the internal entry is what the
+# search settled on, which is the one the extension modules are named after.
+cached_python="$(grep -E '^_Python_EXECUTABLE:INTERNAL=' "$cache_file" 2>/dev/null | sed 's/.*=//' || true)"
 
 if [[ ! -f "$cache_file" ]]; then
   need_config=1
@@ -77,6 +80,12 @@ elif [[ -n "$cached_cxx" && ! "$cached_cxx" -ef "$CXX" ]]; then
   status "Torch-MLIR was built with '$cached_cxx', not '$CXX' -> recreating its build dir"
   rm -rf "$torch_mlir_build_dir"
   need_config=1
+elif [[ -n "$cached_python" && -n "${PYBIN:-}" && ! "$cached_python" -ef "$PYBIN" ]]; then
+  # The extension modules carry that interpreter's ABI tag in their names, so
+  # the ones already built are invisible to ours and would not be rebuilt.
+  status "Torch-MLIR was built for '$cached_python', not '$PYBIN' -> recreating its build dir"
+  rm -rf "$torch_mlir_build_dir"
+  need_config=1
 elif [[ -n "$cached_llvm_dir" && ! "$cached_llvm_dir" -ef "$llvm_cmake_dir" ]]; then
   # Its binaries have the old LLVM's lib directory baked in as their RPATH.
   status "Torch-MLIR was built against the LLVM in '$cached_llvm_dir' -> recreating its build dir"
@@ -91,14 +100,21 @@ if [[ "$need_config" -eq 1 ]]; then
   dependency_paths=( -DLLVM_DIR="$llvm_cmake_dir" -DMLIR_DIR="$mlir_cmake_dir" )
 
   if [[ $setup_python_venv -eq 1 ]]; then
-    dependency_paths+=( -DPython3_FIND_VIRTUALENV=ONLY )
+    # Both, and identically: MLIR's mlir_configure_python_dev_packages warns
+    # when only one of them is set, since the two searches must agree.
+    dependency_paths+=( -DPython3_FIND_VIRTUALENV=ONLY -DPython_FIND_VIRTUALENV=ONLY )
   fi
-  # Without this, CMake takes the highest Python version it can find, which is
+  # Without these, CMake takes the highest Python version it can find, which is
   # the system one on a distribution that ships a newer Python than ours. Its
   # MLIR bindings and nanobind are then missing, and it does not match the
   # interpreter we install the package into below.
+  #
+  # Python_ as well as Python3_: MLIR looks the interpreter up twice, the second
+  # time as Python because that is what nanobind's CMake reads, and nanobind is
+  # what names the extension modules. Pinning only Python3_ leaves the
+  # extensions built for whatever Python the second search turns up.
   if [[ -n "${PYBIN:-}" ]]; then
-    dependency_paths+=( -DPython3_EXECUTABLE="$PYBIN" )
+    dependency_paths+=( -DPython3_EXECUTABLE="$PYBIN" -DPython_EXECUTABLE="$PYBIN" )
   fi
 
   llvm_lib_dir="$llvm_build_dir/lib"
@@ -106,6 +122,10 @@ if [[ "$need_config" -eq 1 ]]; then
     Darwin) linker_flags="-L${llvm_lib_dir} -Wl,-rpath,${llvm_lib_dir} -lMLIRParser" ;;
     *)      linker_flags="-Wl,--no-as-needed -L${llvm_lib_dir} -Wl,-rpath,${llvm_lib_dir} -lMLIRParser" ;;
   esac
+  # MODULE as well as SHARED: Python extension modules are MODULE libraries, and
+  # take neither the SHARED flags nor the RPATH properties MLIR gives them, so
+  # without this they cannot find an LLVM built as separate shared libraries.
+  #
   # These replace the flags CMake takes from LDFLAGS, so carry them over.
   # Not --as-needed though, which conda's clang passes: Torch-MLIR links
   # libMLIRCastInterfaces before the archive that needs it, and --as-needed
@@ -129,9 +149,10 @@ if [[ "$need_config" -eq 1 ]]; then
     -DTORCH_MLIR_OUT_OF_TREE_BUILD=ON \
     -DTORCH_MLIR_ENABLE_STABLEHLO=OFF \
     -DMLIR_BINDINGS_PYTHON_NB_DOMAIN=mlir \
-    -U CMAKE_EXE_LINKER_FLAGS -U CMAKE_SHARED_LINKER_FLAGS \
+    -U CMAKE_EXE_LINKER_FLAGS -U CMAKE_SHARED_LINKER_FLAGS -U CMAKE_MODULE_LINKER_FLAGS \
     "-DCMAKE_EXE_LINKER_FLAGS:STRING=${linker_flags}" \
     "-DCMAKE_SHARED_LINKER_FLAGS:STRING=${linker_flags}" \
+    "-DCMAKE_MODULE_LINKER_FLAGS:STRING=${linker_flags}" \
     "-DCMAKE_BUILD_RPATH:STRING=${llvm_lib_dir}" \
     "-DCMAKE_INSTALL_RPATH:STRING=${llvm_lib_dir}" \
     "${extra_opts[@]}"
@@ -141,6 +162,21 @@ status "Building Torch-MLIR (Ninja)"
 cmake --build "$torch_mlir_build_dir" --target all TorchMLIRPythonModules
 
 verbose_cmd cmake --install "$torch_mlir_build_dir" --prefix "$torch_mlir_install_dir"
+
+# What nanobind actually named the extension modules. Pinning the interpreter at
+# configure time should make this match, but a mismatch here is silent until an
+# import fails somewhere else entirely, so it is worth one check.
+built_ext="$(find "$torch_mlir_build_dir/python_packages" -name '_mlir.cpython-*.so' -print -quit 2>/dev/null || true)"
+if [[ -n "$built_ext" ]]; then
+  built_pytag="$(basename "$built_ext" | sed -n 's/.*\.\(cpython-[0-9]\+\)-.*/\1/p')"
+  install_pytag="$("$python_for_install" -c 'import sysconfig; print("-".join(sysconfig.get_config_var("SOABI").split("-")[:2]))' 2>/dev/null || true)"
+  if [[ -n "$built_pytag" && -n "$install_pytag" && "$built_pytag" != "$install_pytag" ]]; then
+    error "Torch-MLIR built its Python extensions for $built_pytag,"
+    error "but they are being installed into $install_pytag ($python_for_install)."
+    error "Delete '$torch_mlir_build_dir' and build again with that interpreter."
+    exit 1
+  fi
+fi
 
 status "Building and installing Torch-MLIR Python package for $python_for_install"
 
