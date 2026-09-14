@@ -1,7 +1,7 @@
 // Three independent gemms of the same operands, of which the module
 // yields the first -- so the reference is a single A*B. See apps/README.md for
 // how this suite's drivers differ from the prim and multiop ones.
-#include "../../common.hpp"
+#include "../common.hpp"
 
 #include <cstdint>
 

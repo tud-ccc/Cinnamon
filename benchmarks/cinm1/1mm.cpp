@@ -1,15 +1,16 @@
-// One MLP layer's gemm per DIMM count. See apps/README.md for how this suite's
-// drivers differ from the prim and multiop ones.
-#include "../../common.hpp"
+// One gemm per DIMM count. See apps/README.md for how this suite's drivers
+// differ from the prim and multiop ones.
+#include "../common.hpp"
 
 #include <cstdint>
 
 extern "C" {
-void mm_dimm1_nopt(int32_t *, int32_t *, int32_t *);
-void mm_dimm1_opt(int32_t *, int32_t *, int32_t *);
-void mm_dimm2_nopt(int32_t *, int32_t *, int32_t *);
-void mm_dimm2_opt(int32_t *, int32_t *, int32_t *);
+void mm_dimm4_nopt(int32_t *, int32_t *, int32_t *);
 void mm_dimm4_opt(int32_t *, int32_t *, int32_t *);
+void mm_dimm8_nopt(int32_t *, int32_t *, int32_t *);
+void mm_dimm8_opt(int32_t *, int32_t *, int32_t *);
+void mm_dimm16_nopt(int32_t *, int32_t *, int32_t *);
+void mm_dimm16_opt(int32_t *, int32_t *, int32_t *);
 }
 
 namespace {
@@ -37,10 +38,11 @@ bool bench_mm(const char *name, size_t m, size_t k, size_t n,
 int main() {
   srand(0);
   bool ok = true;
-  ok &= bench_mm("mm_dimm1_nopt", 1, 1024, 512, mm_dimm1_nopt);
-  ok &= bench_mm("mm_dimm1_opt", 16, 64, 512, mm_dimm1_opt);
-  ok &= bench_mm("mm_dimm2_nopt", 1, 1024, 256, mm_dimm2_nopt);
-  ok &= bench_mm("mm_dimm2_opt", 16, 64, 256, mm_dimm2_opt);
-  ok &= bench_mm("mm_dimm4_opt", 16, 64, 128, mm_dimm4_opt);
+  ok &= bench_mm("mm_dimm4_nopt", 8, 1024, 256, mm_dimm4_nopt);
+  ok &= bench_mm("mm_dimm4_opt", 16, 1024, 128, mm_dimm4_opt);
+  ok &= bench_mm("mm_dimm8_nopt", 8, 1024, 128, mm_dimm8_nopt);
+  ok &= bench_mm("mm_dimm8_opt", 16, 1024, 64, mm_dimm8_opt);
+  ok &= bench_mm("mm_dimm16_nopt", 8, 1024, 512, mm_dimm16_nopt);
+  ok &= bench_mm("mm_dimm16_opt", 16, 1024, 512, mm_dimm16_opt);
   return ok ? 0 : 1;
 }

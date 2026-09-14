@@ -1,6 +1,6 @@
 // Matrix-vector product, one kernel per DIMM count. See apps/README.md for how
 // this suite's drivers differ from the prim and multiop ones.
-#include "../../common.hpp"
+#include "../common.hpp"
 
 #include <cstdint>
 

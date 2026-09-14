@@ -1,6 +1,6 @@
-// One gemm per DIMM count. See apps/README.md for how this suite's drivers
-// differ from the prim and multiop ones.
-#include "../../common.hpp"
+// The im2col gemms of a convolution. See apps/README.md for how this suite's
+// drivers differ from the prim and multiop ones.
+#include "../common.hpp"
 
 #include <cstdint>
 
@@ -38,11 +38,11 @@ bool bench_mm(const char *name, size_t m, size_t k, size_t n,
 int main() {
   srand(0);
   bool ok = true;
-  ok &= bench_mm("mm_dimm4_nopt", 8, 1024, 256, mm_dimm4_nopt);
-  ok &= bench_mm("mm_dimm4_opt", 16, 1024, 128, mm_dimm4_opt);
-  ok &= bench_mm("mm_dimm8_nopt", 8, 1024, 128, mm_dimm8_nopt);
-  ok &= bench_mm("mm_dimm8_opt", 16, 1024, 64, mm_dimm8_opt);
-  ok &= bench_mm("mm_dimm16_nopt", 8, 1024, 512, mm_dimm16_nopt);
-  ok &= bench_mm("mm_dimm16_opt", 16, 1024, 512, mm_dimm16_opt);
+  ok &= bench_mm("mm_dimm4_nopt", 25088, 16, 256, mm_dimm4_nopt);
+  ok &= bench_mm("mm_dimm4_opt", 6272, 64, 256, mm_dimm4_opt);
+  ok &= bench_mm("mm_dimm8_nopt", 25088, 8, 256, mm_dimm8_nopt);
+  ok &= bench_mm("mm_dimm8_opt", 3136, 64, 256, mm_dimm8_opt);
+  ok &= bench_mm("mm_dimm16_nopt", 25088, 4, 256, mm_dimm16_nopt);
+  ok &= bench_mm("mm_dimm16_opt", 1568, 64, 256, mm_dimm16_opt);
   return ok ? 0 : 1;
 }

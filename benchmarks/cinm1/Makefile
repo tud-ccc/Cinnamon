@@ -93,7 +93,7 @@ $(BENCH_NAME)-kernel-compile: $(IR_PREFIX).6b.dpu.c
 	$(CINM_BIN)/cinm-compile-dpu $< $(OUT_DIR)/bin
 
 # HOST executable
-$(OUT_DIR)/bin/host: $(IR_PREFIX).6a3b.host.o apps/$(BENCH_NAME).cpp
+$(OUT_DIR)/bin/host: $(IR_PREFIX).6a3b.host.o $(BENCH_NAME).cpp
 	@mkdir -p $(@D)
 	# openblas backs common.hpp's golden references and numa its output
 	# buffers; BENCH_FN only names the stats files common.hpp can write,
