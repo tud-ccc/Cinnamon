@@ -66,7 +66,7 @@ def Cnm_Dialect : Dialect {
         /// equal the number of leaves in the workgroup.
         ///
         /// Note the unit: block sizes, like `cinm.tile_sizes`, *not* tile
-        /// counts. See docs/CnmMemoryLevelsDesign.md §G2.
+        /// counts.
         constexpr static StringRef TILE_SIZES_NAME = "cnm.tile_sizes";
 
         /// Discardable attributes on a linalg op, read by
@@ -86,8 +86,7 @@ def Cnm_Dialect : Dialect {
         /// Either overrides the pass's own `workgroup-dim-order` /
         /// `workgroup-dim-order-index` options for this op. Unlike
         /// `cnm.tile_sizes` these are *not* per-dimension lists, so splitting
-        /// a reduction carries them across unchanged. See
-        /// docs/CnmMemoryLevelsDesign.md §G3.
+        /// a reduction carries them across unchanged.
         constexpr static StringRef WORKGROUP_DIM_ORDER_NAME =
             "cnm.workgroup_dim_order";
         constexpr static StringRef WORKGROUP_DIM_ORDER_INDEX_NAME =

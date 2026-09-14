@@ -9,10 +9,10 @@
 
 // Pins the *grouping* a split reduction produces, not just its correctness.
 //
-// This is the gemv_64MB configuration an independent autotuner found optimal
-// (experiments/gemv_microbenchmark/dodo.py): dpus=2048, tasklets=8,
+// This is the gemv_64MB configuration an independent autotuner found optimal:
+// dpus=2048, tasklets=8,
 // taskletCols=1, mramRow=64, mramCol=128, wramRow=8, wramCol=64. Projected
-// onto this pass's parameters (design §G2):
+// onto this pass's parameters:
 //
 //   b_m = mramRow * taskletCols / tasklets = 64 * 1 / 8 = 8
 //   b_k = mramCol / taskletCols            = 128 / 1    = 128
@@ -25,7 +25,8 @@
 //
 // `taskletCols = 1` means the tasklets of one DPU split the *parallel*
 // dimension and share their slice of the vector. That is only reproducible
-// because §G3 orders the split dimension outermost; with it innermost the
+// because the default order puts the split dimension outermost; with it
+// innermost the
 // tasklets would split K instead, and the vector would be replicated eight
 // times in MRAM.
 

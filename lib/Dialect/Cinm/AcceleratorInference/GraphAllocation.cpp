@@ -202,10 +202,10 @@ struct LatencyGroup {
 /// `upmem.wait_for` blocks the host, so a block does not start until the
 /// previous one has finished even when they share no data and no device set.
 /// Without it this would price a concurrency the runtime does not provide,
-/// and the allocator would optimise for a machine we do not have (see
-/// docs/AsyncExecutionAndBaselines.md; the edge comes out again if the
-/// asynchronous lowering lands). With it the makespan is the sum of the
-/// blocks' costs, each priced at the device size its set was given -- so the
+/// and the allocator would optimise for a machine we do not have. The edge
+/// comes out again if an asynchronous lowering lands. With it the makespan is
+/// the sum of the blocks' costs, each priced at the device size its set was
+/// given -- so the
 /// objective is still a real choice over profile points, just "minimise
 /// total work" rather than "minimise the critical path".
 ///

@@ -2,20 +2,15 @@
 // RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=2048,tasklets=8,gemv.M.mram=8,gemv.K.mram=128,gemv.M.wram=8,gemv.K.wram=64,gemv.order[0]=2,gemv.order[1]=1" \
 // RUN: | FileCheck %s
 
-// The configuration that motivated the whole §G redesign, lowered end to end
-// by the plugin rather than by pass flags.
+// A configuration lowered end to end by the plugin rather than by pass flags.
 //
-// It is the gemv_64MB optimum an independent autotuner found
-// (experiments/gemv_microbenchmark/dodo.py), expressed in the generic space:
+// It is the gemv_64MB optimum an independent autotuner found, expressed in
+// the generic space:
 // its mramRow=64, mramCol=128, taskletCols=1, wramRow=8, wramCol=64 read as
 // gemv.M.mram = mramRow*taskletCols/tasklets = 8, gemv.K.mram = mramCol/taskletCols =
-// 128, and the leaf tile (level 1) straight from the WRAM tile (design §H5).
+// 128, and the leaf tile (level 1) straight from the WRAM tile.
 //
-// Before §G this failed in --convert-cinm-to-cnm with
-// "numParallelElts (64) % numWgItems (16384) != 0": the plugin fed per-DPU
-// block sizes where a per-workgroup tile was wanted, and even corrected, the
-// conversion could not split a reduction across the workgroup at all. Both are
-// now expressible, so what this test guards is that the projection in
+// What this test guards is that the projection in
 // handleGemv keeps agreeing with what --convert-linalg-to-cnm does.
 
 #upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>

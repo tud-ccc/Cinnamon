@@ -166,7 +166,7 @@ func.func @no_accelerator(%A: tensor<1024x512xi32>, %x: tensor<512xi32>) -> tens
 #pf = #upmem.platform<type = v1A, dpus = 64, tasklets = 24>
 #acc = #upmem.array<16x1, #pf>
 
-// The two forms of the workgroup dim order (design §G3) say the same thing, so
+// The two forms of the workgroup dim order say the same thing, so
 // an op carrying both has not been given a choice, it has been given two.
 func.func @order_stated_twice(%A: tensor<1024x512xi32>, %x: tensor<512xi32>, %y: tensor<1024xi32>) -> tensor<1024xi32> {
   %r = cinm.compute on accelerator #acc -> tensor<1024xi32> {

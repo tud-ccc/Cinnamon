@@ -1295,7 +1295,7 @@ void ValidationSet::dumpToCSV(std::filesystem::path path) const {
 /// Uniform random search: each round draws `batchSize` unvisited configs
 /// uniformly and evaluates them. No model, no candidate set -- the whole
 /// budget goes into evaluations. The floor every learned strategy has to
-/// beat at equal budget (see docs/SearchStrategyPlan.md).
+/// beat at equal budget.
 class RandomStrategy final : public SearchStrategy {
 public:
   explicit RandomStrategy(CandidatePool &pool) : pool(pool) {}

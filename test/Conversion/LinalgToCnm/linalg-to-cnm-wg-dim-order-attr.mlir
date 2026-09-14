@@ -10,7 +10,7 @@
 // The block sizes reach this pass per op, as `cnm.tile_sizes` stamped by the
 // search. The order is stamped the same way -- as `cnm.workgroup_dim_order` or
 // `cnm.workgroup_dim_order_index` -- so a compute block holding two ops can
-// give them different orders, which a pass option cannot do. See design §G3.
+// give them different orders, which a pass option cannot do.
 // The invalid combinations are in linalg-to-cnm-invalid.mlir.
 //
 // Both ops below are the split gemv of linalg-to-cnm-split-reduction.mlir, and

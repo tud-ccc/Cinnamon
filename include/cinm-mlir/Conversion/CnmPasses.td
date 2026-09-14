@@ -42,12 +42,12 @@ def ConvertLinalgToCnmPass : Pass<"convert-linalg-to-cnm"> {
       A block size smaller than the extent of a *reduction* dimension spreads
       that reduction across the workgroup: each leaf computes a partial
       result from the reduction identity, and a merge is left on the host.
-      See docs/CnmMemoryLevelsDesign.md §G4.
 
       The one thing the block sizes cannot state is which tile dimension
       varies fastest across the leaves, which decides what the leaves sharing
-      a hardware node share rather than replicate. That defaults to the rule
-      of §G3 and is otherwise given by `workgroup-dim-order` or
+      a hardware node share rather than replicate. That defaults to parallel
+      dimensions outer and reduction dimensions inner, op order within each
+      group, and is otherwise given by `workgroup-dim-order` or
       `workgroup-dim-order-index` — or, per op, by the `cnm.workgroup_dim_order`
       / `cnm.workgroup_dim_order_index` attributes, which take precedence over
       both options.

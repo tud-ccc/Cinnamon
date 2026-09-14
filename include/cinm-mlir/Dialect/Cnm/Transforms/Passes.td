@@ -73,7 +73,7 @@ def CnmFuseLaunchesPass : Pass<"cnm-fuse-launches"> {
     then run on one workgroup and are merged into one.
 
     Whether the two schedules line up that way is decided by whoever chose the
-    tile sizes -- see docs/LaunchFusionDesign.md. This pass only recognises
+    tile sizes. This pass only recognises
     that they did, syntactically, and leaves everything else alone. In
     particular a producer whose reduction was split across the workgroup
     gathers partial results and merges them on the host, so its map and buffer

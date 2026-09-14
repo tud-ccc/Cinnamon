@@ -6,7 +6,7 @@
 // RUN: | FileCheck %s --check-prefix=SPLIT
 
 // `gemv` then elementwise, end to end, on the two configurations that decide
-// whether the pair fuses. See docs/LaunchFusionDesign.md.
+// whether the pair fuses.
 //
 // Linalg fusion cannot help here: it fuses an elementwise *producer* into its
 // consumer, and the elementwise is the consumer. So the pair reaches

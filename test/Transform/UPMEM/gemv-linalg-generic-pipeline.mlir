@@ -8,15 +8,15 @@
 // RUN: | FileCheck %s
 
 // The generic path starting from a `linalg` op rather than a `cinm` op, which
-// is where the pipeline is headed (design §G8: distribute linalg, so that
-// fusion can run first). The companion test gemv-generic-mram-pipeline.mlir
+// is where the pipeline is headed: distribute linalg, so that fusion can run
+// first. The companion test gemv-generic-mram-pipeline.mlir
 // runs the same chain from `cinm.op.gemv` through `--convert-cinm-to-cnm`;
 // both must reach the same DPU program.
 //
 // Two attributes drive the whole thing and nothing else does:
 //   cnm.tile_sizes         -- block size per iteration dim, for the workgroup
 //   upmem.leaf_tile_sizes  -- block size per iteration dim, for WRAM
-// Note they are in the same unit (block sizes), which is the point of §G2.
+// Note they are in the same unit: block sizes.
 
 #m = affine_map<(m, k) -> (m, k)>
 #v = affine_map<(m, k) -> (k)>

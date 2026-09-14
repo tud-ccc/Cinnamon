@@ -1,6 +1,6 @@
 //===- FuseLaunches.cpp - Fuse a launch into its consumer ---------------===//
 //
-// Implements `--cnm-fuse-launches`, described in docs/LaunchFusionDesign.md.
+// Implements `--cnm-fuse-launches`.
 //
 // When a distributed op's consumer is distributed the same way, the value
 // travels leaf -> host -> leaf and comes back to the leaf it left. That shows
@@ -9,8 +9,8 @@
 // `i` is about to be handed again. Both transfers are then dead, and the two
 // launches can run as one.
 //
-// Whether the schedules line up that way is the search's business (design
-// §C3); this pass only recognises that they did. The test is syntactic, so
+// Whether the schedules line up that way is the search's business; this pass
+// only recognises that they did. The test is syntactic, so
 // nothing here has to reason about tiling factors, and a configuration whose
 // schedules do not agree is simply left alone.
 //

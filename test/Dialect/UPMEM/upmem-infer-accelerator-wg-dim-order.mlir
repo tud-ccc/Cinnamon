@@ -14,8 +14,8 @@
 // `<op>.order` reaching the device program, on the configuration of
 // upmem-infer-accelerator-generic-split.mlir.
 //
-// This is the parameter design §G3 argued for and then declined to add: which
-// tile dimension varies fastest across the leaves. It is not a speed knob. The
+// The parameter is which tile dimension varies fastest across the leaves. It
+// is not a speed knob. The
 // leaves of one DPU are its tasklets, MRAM is per-DPU, and
 // --convert-cnm-to-upmem decides syntactically -- from whether the scatter map
 // mentions the tasklet dimension -- whether a buffer is stored once per DPU or

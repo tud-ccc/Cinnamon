@@ -1,7 +1,6 @@
 //===- LinalgToCnm.cpp - Distribute a linalg op onto a cnm workgroup -----===//
 //
-// Implements `--convert-linalg-to-cnm`, described in
-// docs/CnmMemoryLevelsDesign.md §G.
+// Implements `--convert-linalg-to-cnm`.
 //
 // The model: treat the op as a loop nest over its iteration space. Tiling
 // every dimension yields outer loops over tiles and inner loops within a
@@ -280,13 +279,13 @@ static LogicalResult shapeHostMerge(RewriterBase &rewriter,
 
 /// Spread across the workgroup every reduction dimension whose block size asks
 /// for it, by rewriting the op into a partial-reduction op plus a host-side
-/// merge (design §G4).
+/// merge.
 ///
 /// Upstream's `splitReduction` performs exactly this rewrite, and it also
-/// covers §G5: it seeds the partial result with the combiner's neutral
-/// element, so every leaf starts from the reduction identity, and its merge op
-/// accumulates into the *original* `outs`, so an incoming accumulator is
-/// folded in exactly once rather than once per leaf.
+/// gets the accumulator right: it seeds the partial result with the combiner's
+/// neutral element, so every leaf starts from the reduction identity, and its
+/// merge op accumulates into the *original* `outs`, so an incoming accumulator
+/// is folded in exactly once rather than once per leaf.
 ///
 /// The split dimension is inserted *before* the parallel dimensions, so under
 /// the default order of `getWorkgroupAxisOrder` it is the outermost one and the
@@ -294,9 +293,10 @@ static LogicalResult shapeHostMerge(RewriterBase &rewriter,
 /// one node of the workgroup (tasklets within a DPU, on UPMEM) then differ in
 /// their parallel tile and share their reduction tile, which is what lets a
 /// broadcast operand indexed only by reduction dimensions -- gemv's vector --
-/// be stored once per node instead of replicated per leaf. See §G3 for the
-/// evidence and for what it costs; the order is a parameter, so the opposite
-/// trade is reachable without touching this rewrite.
+/// be stored once per node instead of replicated per leaf. The order is a
+/// parameter, so the opposite trade -- sharing the parallel tile and
+/// replicating the reduction one -- is reachable without touching this
+/// rewrite.
 ///
 /// `blocks` is updated to describe the rewritten op.
 static FailureOr<linalg::LinalgOp>
@@ -329,7 +329,7 @@ splitDistributedReductions(RewriterBase &rewriter, linalg::LinalgOp op,
     int64_t ratio = (*extents)[*target] / blocks[*target];
 
     // Reassociating a float reduction changes the result, so it is opt-in
-    // rather than something the search does behind the user's back (§G6).
+    // rather than something the search does behind the user's back.
     Type elementType = asShaped(op.getDpsInits()[0].getType()).getElementType();
     if (isa<FloatType>(elementType) && !options.allowFloatReassociation)
       return op->emitOpError("splitting reduction dimension ")
@@ -481,8 +481,8 @@ getOrderRequest(linalg::LinalgOp op, const DistributionOptions &options) {
 /// Which iteration dimension occupies which workgroup axis, outermost (that
 /// is, slowest-varying across leaves) first.
 ///
-/// The default is the rule of design §G3: parallel dimensions outer, reduction
-/// dimensions inner, op order within each group. It is only a default now --
+/// The default rule is parallel dimensions outer, reduction dimensions inner,
+/// op order within each group. It is only a default --
 /// which dimension varies fastest decides which operands the leaves sharing a
 /// hardware node replicate rather than share, and that is worth searching.
 ///
@@ -654,8 +654,8 @@ LogicalResult distribute(RewriterBase &rewriter, linalg::LinalgOp op,
   ArrayRef<int64_t> wgShape = accelerator.getWorkgroupShape();
 
   // Tile-space -> workgroup mapping. Both sides are linearized; the tile-side
-  // order defaults to the rule of design §G3 and is otherwise whatever the
-  // options ask for. It is a real choice: the dimension that varies fastest
+  // order defaults to getWorkgroupAxisOrder's rule and is otherwise whatever
+  // the options ask for. It is a real choice: the dimension that varies fastest
   // across leaves is the one the leaves sharing a hardware node differ in.
   FailureOr<SmallVector<unsigned>> order =
       getWorkgroupAxisOrder(op, counts, options);

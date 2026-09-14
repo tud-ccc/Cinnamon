@@ -8,7 +8,7 @@
 // The shapes here are what --convert-linalg-to-cnm produces for `gemv` then
 // elementwise on the 4MB prim_gemv case, with the gemv's K not split: M blocked
 // 64 over a 16-leaf workgroup, so both ops tile the 1024-element result the
-// same way. See docs/LaunchFusionDesign.md §A.
+// same way.
 
 #map = affine_map<(d0, d1, d2) -> (d0 * 64 + d2)>
 // The same distribution over a rank-2 buffer, so one more dimension.

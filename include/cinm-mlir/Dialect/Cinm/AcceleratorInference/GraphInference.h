@@ -72,8 +72,9 @@ struct ComputeGraph {
   /// The classes, ordered by first appearance of a member.
   SmallVector<BlockClass> classes;
   /// Every block of the graph in walk order, with its dependency edges. The
-  /// throughput objective ignores these (see the design note); the latency
-  /// objective is a longest path over them.
+  /// throughput objective ignores these -- a steady-state bottleneck does not
+  /// depend on the order work arrives in -- while the latency objective is a
+  /// longest path over them.
   SmallVector<BlockNode> nodes;
 
   unsigned numBlocks() const { return nodes.size(); }

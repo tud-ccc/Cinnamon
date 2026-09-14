@@ -1,6 +1,6 @@
 // RUN: cinm-opt %s --split-input-file --convert-linalg-to-cnm=allow-float-reassociation=true | FileCheck %s
 
-// Spreading a reduction dimension across the workgroup (design §G4). This is
+// Spreading a reduction dimension across the workgroup. This is
 // the configuration class the template flow expresses as dpuCols/taskletCols
 // and that the old --convert-cinm-to-cnm could not represent at all: it only
 // ever mapped *parallel* dimensions onto workgroup elements and gave every
@@ -26,9 +26,9 @@ func.func @gemv_split_k(%A: tensor<1024x512xi32>, %x: tensor<512xi32>, %y: tenso
   // CHECK: %[[EX:.*]] = tensor.expand_shape %{{.*}} {{\[}}[0, 1]] output_shape [4, 128]
 
   // Every leaf starts from the combiner's neutral element, not from %y --
-  // otherwise the incoming accumulator would be added once per leaf (§G5).
+  // otherwise the incoming accumulator would be added once per leaf.
   // The split dimension goes *first*, which is what makes the parallel
-  // dimension vary fastest across leaves (§G3).
+  // dimension vary fastest across leaves.
   // CHECK: %[[P:.*]] = tensor.empty() : tensor<4x1024xi32>
   // CHECK: %[[Z:.*]] = arith.constant 0 : i32
   // CHECK: linalg.fill ins(%[[Z]] : i32) outs(%[[P]] : tensor<4x1024xi32>)

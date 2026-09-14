@@ -1,4 +1,4 @@
-// The default rule of design §G3, and the two ways of overriding it.
+// The default order rule, and the two ways of overriding it.
 // RUN: cinm-opt %s --convert-linalg-to-cnm | FileCheck %s --check-prefixes=CHECK,RULE
 // RUN: cinm-opt %s --convert-linalg-to-cnm=workgroup-dim-order-index=0 | FileCheck %s --check-prefixes=CHECK,RULE
 // RUN: cinm-opt %s --convert-linalg-to-cnm=workgroup-dim-order=0,1,2 | FileCheck %s --check-prefixes=CHECK,RULE
@@ -20,7 +20,7 @@
 
 // Which tile dimension varies fastest across the leaves is a choice, not a
 // consequence: it decides which operands the leaves sharing a hardware node
-// share rather than replicate (design §G3). The default rule puts the
+// share rather than replicate. The default rule puts the
 // reduction-derived dimension outermost; `workgroup-dim-order` states an order
 // outright, and `workgroup-dim-order-index` names one by its rank in
 // lexicographic order, which is the form a search can enumerate.

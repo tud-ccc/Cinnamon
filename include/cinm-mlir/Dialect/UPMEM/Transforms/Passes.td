@@ -259,14 +259,14 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
     Option<"neighborDepth", "neighbor-depth", "unsigned", "2",
            "Number of discrete steps away from observed points to include as "
            "candidates (1 = immediate neighbors only)">,
-    Option<"nRandCandidates", "n-random-candidates", "size_t", "4096",
+    Option<"nRandCandidates", "n-random-candidates", "size_t", "16384",
            "When > 0, each BANANAS round draws this many random candidates in "
-           "addition to the neighbour set; the default follows the strategy "
-           "campaign's K-sweep (docs/SearchStrategyPlan.md). When 0, random "
-           "draws only top the candidate set up to the internal nCandidates "
-           "cap, which adds none once the neighbour set alone exceeds it (the "
-           "search then degenerates to a local hill climb from the init "
-           "sample -- the pre-campaign behaviour)">,
+           "addition to the neighbour set. The default is what a sweep over "
+           "this value settled on for the largest measured space. When 0, "
+           "random draws only top the candidate set up to the internal "
+           "nCandidates cap, which adds none once the neighbour set alone "
+           "exceeds it -- the search then degenerates to a local hill climb "
+           "from the init sample">,
     Option<"neighborFrontierOnly", "neighbor-frontier-only", "bool", "false",
            "When true, only add candidates at exactly neighbor-depth steps away; "
            "otherwise add all points within that distance">,
@@ -526,7 +526,7 @@ def UpmemCheckOccupancyPass
     with buffer hoisting, kernel deduplication, and even with how well the
     affine simplifier folds a delinearized index. So it can only be known
     after every memory optimization has run, which is where this pass belongs
-    -- last. See docs/CnmMemoryLevelsDesign.md §H3.
+    -- last.
 
     The capacities come from the accelerator of the `cinm.compute_block` whose
     `upmem.alloc_dpus` loads the program, unless `mram-size`/`wram-size`

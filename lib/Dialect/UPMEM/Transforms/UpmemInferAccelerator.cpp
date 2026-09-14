@@ -454,7 +454,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   /// because its result does not depend on the configuration: the space is
   /// stated in terms of an *iteration space*, and only linalg carries one, so
   /// the search has to see the converted form anyway. This is also where
-  /// fusion happens (design §G8), which is what makes the iteration spaces the
+  /// fusion happens, which is what makes the iteration spaces the
   /// space is built from the ones the pipeline will actually distribute.
   static std::unique_ptr<PassManager> buildConvertPipeline(MLIRContext *ctx,
                                                            bool debug) {
@@ -527,7 +527,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // Two ops the configuration distributes the same way send the value
     // between them through the host and back to the leaf it came from. Cancel
     // that round trip and run the two as one launch, which is also what makes
-    // the leaf level able to fuse them later (docs/LaunchFusionDesign.md).
+    // the leaf level able to fuse them later (--cnm-fuse-launches).
     // Opportunistic: a configuration whose schedules do not agree -- one that
     // splits the producer's reduction across the workgroup, in particular --
     // presents no round trip and is left alone. Before bufferization, so that
@@ -707,7 +707,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(createCSEPass());
     // Last, deliberately: what a configuration occupies is a property of the
     // program every pass above has finished optimizing, not of the
-    // configuration itself (design §H3). A trial that does not fit fails here
+    // configuration itself. A trial that does not fit fails here
     // and the search moves on, rather than being discovered when the DPU
     // binary fails to link.
     pm->addPass(createUpmemCheckOccupancyPass());
@@ -737,7 +737,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   void printStats() const override { simulator->printStats(); }
 
   /// The search space for one op, stated in the parameters the passes
-  /// actually consume (design §G2, §H5): one block size per iteration
+  /// actually consume: one block size per iteration
   /// dimension for the workgroup distribution, and one for the leaf level.
   /// Also stamps the parameter names on `op` itself, see
   /// kOuterTileParamsAttr.
@@ -1296,7 +1296,7 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
     }
   }
 
-  // Which tile dimension varies fastest across the leaves (design §G3). The
+  // Which tile dimension varies fastest across the leaves. The
   // one parameter here that is not a size: it decides what the leaves sharing
   // a hardware node share rather than replicate, which the block sizes cannot
   // state. Its type is what stops the DSL doing arithmetic on it.

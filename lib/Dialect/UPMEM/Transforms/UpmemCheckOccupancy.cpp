@@ -3,7 +3,7 @@
 // Measures what each DPU program allocates and fails if it does not fit the
 // device. Runs last, after every memory optimization: how much a program needs
 // is a property of the lowered code, not of the configuration it was lowered
-// from. See docs/CnmMemoryLevelsDesign.md §H3.
+// from.
 //
 //===----------------------------------------------------------------------===//
 

@@ -608,8 +608,7 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
     // buys it essentially nothing at all -- the conjunction keeps
     // compute-bound classes that merely scale poorly (attention-shaped
     // matmuls) on the device. This is a heuristic in lieu of a host cost
-    // model (future work); the evidence behind it is the profile shape
-    // itself, see docs/SearchStrategyPlan.md.
+    // model; the evidence behind it is the profile shape itself.
     if (opts.hostTransferBoundShare > 0) {
       SmallVector<ProfilePoint> &pts = *results[ci].points;
       const ProfilePoint *bestPt =
