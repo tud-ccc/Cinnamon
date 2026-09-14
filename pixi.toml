@@ -41,7 +41,7 @@ pyyaml = ">=5.4.0, <=6.0.1"
 typing-extensions = ">=4.12.2"
 numpy = ">=2.1.0, <=2.1.2"
 ml-dtypes = ">=0.5.0, <=0.6.0"
-# From experiments/requirements.txt
+# The analysis stack the in-tree python/experiments project needs.
 pandas = "*"
 scipy = "*"
 matplotlib = "*"

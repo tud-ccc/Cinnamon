@@ -1,7 +1,7 @@
 """Merge per-config output into per-source summary CSVs, for experiments
 that sweep many (function, seed) configs and need one combined view per
 measurement type instead of thousands of tiny per-config files -- e.g.
-experiments/paperplots, which runs O(1000) (function, seed) configs per
+the paperplots campaign, which ran O(1000) (function, seed) configs per
 source."""
 
 from __future__ import annotations

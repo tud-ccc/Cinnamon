@@ -2,15 +2,16 @@
 shares: for each one, the multi-function source module holding its kernels
 and the problem dimensions of each of those functions.
 
-One Prim per experiments/bench/prim/<name>.{mlir,cpp} pair; one `dimensions` entry per function in that module, keyed by the
-function's size suffix ("4MB", "64MB", ...) so fn_names() can reconstruct
+One Prim per benchmarks/prim/<name>.{mlir,cpp} pair; one `dimensions` entry
+per function in that module, keyed by the
+function's size suffix ("4MB", "64MB", ...), so fn_names() can reconstruct
 the MLIR function names. The dimension names are the same ones the kernels'
 tensor shapes use -- M rows, K the contiguous/reduced innermost extent, B
 the batch -- so a config's problem size can be talked about without
 re-parsing the MLIR.
 
-Adding a benchmark = one more PRIMS entry, plus the bench/prim/<name>.mlir
-and bench/prim/<name>.cpp it names; no pipeline code needs to change.
+Adding a benchmark = one more PRIMS entry, plus the benchmarks/prim/<name>.mlir
+and benchmarks/prim/<name>.cpp it names; no pipeline code needs to change.
 """
 
 from __future__ import annotations
@@ -32,9 +33,9 @@ from .split_source import list_functions
 @dataclasses.dataclass(frozen=True, eq=False)
 class Prim:
     """One benchmark primitive. `name` is both the bench driver's op name
-    (bench/prim/<name>.cpp, i.e. compile_run.Config.prim) and the
-    bench/prim/<name>.mlir stem -- everything else is derived from it, so a Prim is just a name plus
-    its per-function problem sizes.
+    (benchmarks/prim/<name>.cpp, i.e. compile_run.Config.prim) and the
+    benchmarks/prim/<name>.mlir stem -- everything else is derived from it,
+    so a Prim is just a name plus its per-function problem sizes.
 
     `parallel_dims` names which of `dimensions` the workgroup is spread over,
     as opposed to the ones a single worker walks by itself -- for a gemv, its

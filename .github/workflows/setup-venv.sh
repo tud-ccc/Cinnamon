@@ -64,7 +64,9 @@ if [[ "$reconfigure" -eq 1 || "$reconfigure_python_venv" -eq 1 ]]; then
     warning "Set LLVM_SOURCE_DIR to your LLVM checkout if the bindings fail to import."
   fi
 
-  verbose_cmd python -m pip install -r "$project_root/experiments/requirements.txt"
+  # The analysis library and the search CLI, from the in-tree project. Its
+  # dependencies are declared in its pyproject rather than a requirements file.
+  verbose_cmd python -m pip install -e "$project_root/python/experiments"
 
   # Neither package has an upstream Conan recipe; ours live in-tree.
   verbose_cmd conan export "$project_root/third-party/conan-recipes/mlpack" --name mlpack --version 4.8.0

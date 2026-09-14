@@ -1,7 +1,7 @@
 """Reusable doit building blocks for compile-and-bench pipelines.
 
 Factored out of cinm1comparison/dodo.py so that every experiment dodo (the
-CINM1 comparison, the paper evaluation in experiments/evaluation/) drives
+CINM1 comparison, the paper evaluation -- both in the artifact repository) drives
 the same compile/bench/retry machinery instead of copying it. This module
 holds the pieces that are the same whatever the experiment measures:
 
