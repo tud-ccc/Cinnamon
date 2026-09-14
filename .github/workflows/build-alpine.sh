@@ -11,8 +11,6 @@ if [[ -f /.dockerenv ]]; then
   exit 0
 fi
 
-alpine_repo_url="${ALPINE_REPO_URL:-https://github.com/gem5-X/ALPINE.git}"
-alpine_revision="${ALPINE_REV:-master}"
 alpine_src_dir="$project_root/third-party/ALPINE"
 alpine_docker_dir="$project_root/third-party/alpine"
 docker_image_tag="${ALPINE_DOCKER_TAG:-alpine-gem5:latest}"
@@ -34,13 +32,13 @@ for arg in "$@"; do
   esac
 done
 
-status "Preparing ALPINE checkout in: $alpine_src_dir"
-if [[ ! -d "$alpine_src_dir" ]]; then
-  git_clone_revision "$alpine_repo_url" "$alpine_revision" "$alpine_src_dir"
-else
-  info "ALPINE already present; skipping clone (set ALPINE_REV or delete dir to re-clone)"
-fi
+# Upstream gem5-X/ALPINE is dormant since December 2022; the pinned revision is
+# its final state. It is a gem5 from before v20.0 -- its build_opts still list
+# ALPHA and it needs Python 2.7 -- which is what the old image below provides.
+ensure_submodule third-party/ALPINE
 
+# Patched in place, so the submodule carries a local modification. The patch is
+# idempotent and says so when it has already been applied.
 util_py="$alpine_src_dir/gem5-X-ALPINE/src/python/m5/util/__init__.py"
 if [[ -f "$util_py" ]]; then
   pybin="$(command -v python3 || command -v python || true)"

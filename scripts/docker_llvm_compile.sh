@@ -7,7 +7,7 @@ Usage: ${0##*/} <driver.c> <kernel.ll> [output-binary]
 
   driver.c        Path to the C driver source (compiled inside the container).
   kernel.ll       Path to the LLVM IR (.ll) file (compiled to .o on the host).
-  output-binary   Optional output path (defaults to third-party/ALPINE/working_test/<kernel>.out).
+  output-binary   Optional output path (defaults to tutorial/artifacts/bin/<kernel>.out).
 
 All paths must reside within the repository so they are visible inside the Docker container.
 
@@ -46,7 +46,13 @@ repo_root="$(cd "$script_dir/.." && pwd)"
 # Basic tool checks
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
 command -v docker  >/dev/null 2>&1 || { echo "docker is required"  >&2; exit 1; }
-command -v clang   >/dev/null 2>&1 || { echo "clang (host) is required" >&2; exit 1; }
+# The pixi environment exports CC; conda-forge's clang is not on PATH as plain
+# "clang", so looking only for that would pick the system one, or nothing.
+host_clang="${CC:-clang}"
+command -v "$host_clang" >/dev/null 2>&1 || {
+  echo "No host clang ('$host_clang'); enter the pixi environment or set CC" >&2
+  exit 1
+}
 
 # Inputs
 abs_driver=$(abs_path "$1")
@@ -65,14 +71,15 @@ esac
 
 # Names/paths
 kernel_base="$(basename "${abs_llvm%.ll}")"
-build_root="$repo_root/runtime/Alpine/llvm_build"
+build_root="$repo_root/tutorial/artifacts/llvm_build"
 build_dir="$build_root/$kernel_base"
 llvm_obj="$build_dir/${kernel_base}.o"
 
 if [[ $# -eq 3 ]]; then
   abs_output=$(abs_path "$3")
 else
-  abs_output="$repo_root/third-party/ALPINE/working_test/${kernel_base}.out"
+  # Outside third-party/ALPINE, which is a submodule.
+  abs_output="$repo_root/tutorial/artifacts/bin/${kernel_base}.out"
 fi
 
 # Ensure paths live inside repo (so Docker can see them via -v mount)
@@ -92,7 +99,7 @@ if ! build_rel=$(rel_to_repo "$build_dir"); then
 fi
 
 # Compile LLVM IR to object on host
-clang -target aarch64-linux-gnu -O3 -ffreestanding -fno-exceptions -fno-rtti -fno-pic \
+"$host_clang" -target aarch64-linux-gnu -O3 -ffreestanding -fno-exceptions -fno-rtti -fno-pic \
   -c "$abs_llvm" -o "$llvm_obj"
 
 # Relative path for Docker envs

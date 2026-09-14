@@ -25,6 +25,10 @@ ignore = ["E741"]
 "runtime/Alpine/se_alpine.py" = ["F403", "F405", "E402"]
 # doit task files insert onto sys.path before importing sibling packages.
 "**/dodo.py" = ["E402"]
+# Notebooks import after putting the repository on sys.path, re-import in later
+# cells so that each cell can be run on its own, and leave imports in place for
+# the reader even where the cell no longer uses them.
+"tutorial/notebooks/*.ipynb" = ["E401", "E402", "F401", "F811"]
 
 [format]
 quote-style = "double"

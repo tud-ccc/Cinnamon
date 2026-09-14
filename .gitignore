@@ -48,12 +48,17 @@ sandbox
 # scaffolding, and scratch checkouts.
 /third-party/upmem
 /third-party/upmem-src
-/third-party/ALPINE/
+# The Dockerfile build-alpine.sh generates for the gem5 image; the ALPINE
+# sources themselves are a submodule.
 /third-party/alpine/
 /third-party/.venv/
 # Unpacked by build-llvm.sh
 /third-party/llvm-prebuilt/
 /third-party/.llvm-prebuilt.*/
+
+# Everything the tutorial notebooks generate: IR at each step, objects,
+# cross-compiled binaries and gem5 output.
+/tutorial/artifacts/
 
 python/cinnamon/_resources
 .env
