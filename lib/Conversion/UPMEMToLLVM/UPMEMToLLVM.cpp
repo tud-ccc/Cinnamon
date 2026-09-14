@@ -330,14 +330,14 @@ static LogicalResult strideDescriptionOf(AffineMap map, MemRefType srcTy,
   int64_t srcOffset = 0;
   if (failed(srcTy.getStridesAndOffset(srcStrides, srcOffset)))
     return failure();
-  if (ShapedType::isDynamic(srcOffset) ||
-      llvm::any_of(srcStrides, ShapedType::isDynamic))
+  // Only the strides have to be constant
+  if (llvm::any_of(srcStrides, ShapedType::isDynamic))
     return failure();
 
   // Linearize the map's results against the source's own strides: one
   // expression in the target's indices giving a flat element index.
   MLIRContext *ctx = map.getContext();
-  AffineExpr flat = getAffineConstantExpr(srcOffset, ctx);
+  AffineExpr flat = getAffineConstantExpr(0, ctx);
   for (auto [result, stride] : llvm::zip_equal(map.getResults(), srcStrides))
     flat = flat + result * stride;
   flat = simplifyAffineExpr(flat, map.getNumDims(), map.getNumSymbols());
@@ -444,12 +444,17 @@ public:
     if (failed(sizesPtr) || failed(stridesPtr))
       return failure();
 
-    // The map's constant term is folded into the source pointer, so the
-    // runtime only ever walks from a base with per-dimension strides.
+    // The source's base offset and the map's constant term are both folded
+    // into the pointer, so the runtime only ever walks from a base with
+    // per-dimension strides. The base comes from the descriptor rather than
+    // the type, which is what lets the source be a subview whose offset is
+    // only known at run time.
     MemRefDescriptor srcDesc(adaptor.getSource());
     Value srcPtr = srcDesc.alignedPtr(rewriter, loc);
-    Value elemOffsetVal = LLVM::ConstantOp::create(
-        rewriter, loc, i64, rewriter.getI64IntegerAttr(elemOffset));
+    Value elemOffsetVal = LLVM::AddOp::create(
+        rewriter, loc, srcDesc.offset(rewriter, loc),
+        LLVM::ConstantOp::create(rewriter, loc, i64,
+                                 rewriter.getI64IntegerAttr(elemOffset)));
     srcPtr = LLVM::GEPOp::create(rewriter, loc, ptrTy, srcTy.getElementType(),
                                  srcPtr, ValueRange{elemOffsetVal});
     Value dstPtr =
@@ -516,12 +521,14 @@ public:
     if (failed(sizesPtr) || failed(stridesPtr))
       return failure();
 
-    // As in the compact lowering, the map's constant term is folded into the
-    // pointer the map addresses -- here the target's.
-    Value dstPtr =
-        MemRefDescriptor(adaptor.getTarget()).alignedPtr(rewriter, loc);
-    Value elemOffsetVal = LLVM::ConstantOp::create(
-        rewriter, loc, i64, rewriter.getI64IntegerAttr(elemOffset));
+    // As in the compact lowering, the base offset and the map's constant term
+    // are folded into the pointer the map addresses -- here the target's.
+    MemRefDescriptor dstDesc(adaptor.getTarget());
+    Value dstPtr = dstDesc.alignedPtr(rewriter, loc);
+    Value elemOffsetVal = LLVM::AddOp::create(
+        rewriter, loc, dstDesc.offset(rewriter, loc),
+        LLVM::ConstantOp::create(rewriter, loc, i64,
+                                 rewriter.getI64IntegerAttr(elemOffset)));
     dstPtr = LLVM::GEPOp::create(rewriter, loc, ptrTy, dstTy.getElementType(),
                                  dstPtr, ValueRange{elemOffsetVal});
     Value srcPtr =
@@ -1187,10 +1194,7 @@ struct ConvertUPMEMToLLVMPass
 
     ConversionTarget target(getContext());
     target.addIllegalDialect<upmem::UPMEMDialect>();
-    // A repack survives cnm-to-upmem conversion untouched -- it is host-side
-    // data movement, not a device op -- so this is where the UPMEM backend
-    // gets to choose the runtime entry point that makes it measurable.
-    target.addIllegalOp<cnm::CompactBufferOp>();
+    target.addIllegalOp<cnm::CompactBufferOp, cnm::ExpandBufferOp>();
 
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
