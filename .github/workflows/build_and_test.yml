@@ -91,11 +91,18 @@ jobs:
       - name: Fetch the prebuilt LLVM
         run: LLVM_PREBUILT=always .github/workflows/build-llvm.sh -no-python-venv -verbose
 
+      # `path` must match the save step's exactly, excludes included: the cache
+      # is addressed by (key, version), and the version is derived from this
+      # list. A restore asking for a different list than the save wrote looks
+      # for an entry that is not there, misses every time, and then cannot
+      # create its own -- the key is taken, by the entry it failed to find.
       - name: Restore torch-mlir cache
         id: torch-mlir-cache-restore
         uses: actions/cache/restore@v6
         with:
-          path: third-party/torch-mlir
+          path: |
+            third-party/torch-mlir
+            !third-party/torch-mlir/.git
           key: cinnamon-torch-mlir-${{ runner.os }}-${{ steps.revs.outputs.torch-mlir }}-llvm-${{ steps.revs.outputs.llvm }}
 
       # The cached tree carries the submodule's .git file, but not the
