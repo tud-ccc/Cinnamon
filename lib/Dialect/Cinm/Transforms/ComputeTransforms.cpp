@@ -65,7 +65,7 @@ void cinm::unwrapComputeBlockOp(cinm::ComputeOp op, RewriterBase &rewriter) {
   auto term = op.getBody().front().getTerminator();
   for (auto [result, termOperand] :
        llvm::zip(op->getResults(), term->getOperands())) {
-    rewriter.replaceAllUsesWith(result, mapper.lookup(termOperand));
+    rewriter.replaceAllUsesWith(result, mapper.lookupOrDefault(termOperand));
   }
   rewriter.eraseOp(op);
 }
