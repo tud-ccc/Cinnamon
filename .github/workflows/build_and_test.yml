@@ -131,8 +131,18 @@ jobs:
           # Saved under a key of its own per run, so that a run which built
           # only some of the packages still contributes them, and the next run
           # can add the rest. Restoring takes the newest of them.
-          key: cinnamon-conan-${{ runner.os }}-${{ hashFiles('conanfile.txt', 'third-party/conan-recipes/**', 'pixi.lock') }}-${{ github.run_id }}
-          restore-keys: cinnamon-conan-${{ runner.os }}-${{ hashFiles('conanfile.txt', 'third-party/conan-recipes/**', 'pixi.lock') }}-
+          #
+          # Keyed on what decides *which* packages are wanted, and nothing
+          # else. Not pixi.lock: it changes whenever any dependency does, and
+          # every such change then cost a full OpenBLAS-and-mlpack build from
+          # source. The compiler it pins does not need to be here either --
+          # build-cinnamon.sh writes it into the conan profile as compiler,
+          # compiler.version and compiler.libcxx, so it is part of every
+          # package id. A cache from a run with a different compiler is
+          # therefore inert rather than wrong: conan asks for ids that are not
+          # in it and rebuilds exactly those.
+          key: cinnamon-conan-${{ runner.os }}-${{ hashFiles('conanfile.txt', 'third-party/conan-recipes/**') }}-${{ github.run_id }}
+          restore-keys: cinnamon-conan-${{ runner.os }}-${{ hashFiles('conanfile.txt', 'third-party/conan-recipes/**') }}-
 
       # build-cinnamon.sh compiles through ccache whenever it finds one, which
       # is only worth anything if the cache outlives the run. Keyed per run so
