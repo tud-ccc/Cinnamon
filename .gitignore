@@ -9,6 +9,14 @@ benchmarks/cinm1/gen
 # setuptools metadata, left behind by an editable install of cinm_experiments
 *.egg-info/
 
+# docs/ holds working notes and plan documents, which stay local. Ignored by
+# default so a new one cannot be committed by reflex; the committed few are
+# listed back in. Anything meant for the repository has to be named here.
+docs/*
+!docs/CinmDialect.md
+!docs/MainTodos.md
+!docs/MlirLexer.py
+
 
 # Created by https://www.toptal.com/developers/gitignore/api/cmake
 # Edit at https://www.toptal.com/developers/gitignore?templates=cmake
