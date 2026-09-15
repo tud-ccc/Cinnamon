@@ -47,7 +47,12 @@ set(CMAKE_CXX_STANDARD 20 CACHE STRING "C++ standard to conform to")
 # macros already do this for the dialect libraries; a plain add_executable
 # gets only the global value, which is why it is set here rather than on each
 # tool. CMake drops the build-tree rpath on install, so this is what is left.
-list(APPEND CMAKE_INSTALL_RPATH "\$ORIGIN/../lib")
+#
+# The second entry is for the C++ runtime. `just install` puts this prefix in
+# libexec/cinnamon of an environment, two levels down, and the environment's
+# own lib/ is where a conda or pixi libstdc++ lives -- newer than the system
+# one, and what these binaries were built against.
+list(APPEND CMAKE_INSTALL_RPATH "\$ORIGIN/../lib" "\$ORIGIN/../../../lib")
 
 # Detect if this is a stand-alone build.
 if (${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_CURRENT_SOURCE_DIR})
