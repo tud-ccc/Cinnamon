@@ -52,8 +52,15 @@ matplotlib = "*"
 plotly = "*"
 tqdm = "*"
 doit = "*"
-# The project itself, as setup-venv.sh installs it. Not python/cinnamon: it
-# depends on torch-mlir, which is not on PyPI, so build-cinnamon.sh installs it.
+# The two in-tree projects. Both by path, and cinnamon by path *especially*:
+# cinm-experiments requires it by name, and there is an unrelated `cinnamon`
+# on PyPI that a resolver picks up happily -- version 0.2.1, which arrives
+# with catboost, xgboost and a CUDA nccl. Naming the source here is what makes
+# the requirement resolve to ours.
+#
+# build-cinnamon.sh installs cinnamon again, editable, after a build; that is
+# the same path, so it is the same install.
+cinnamon = { path = "python/cinnamon", editable = true }
 cinm-experiments = { path = "python/experiments", editable = true }
 
 # conda-forge's Clang with its own libstdc++, built against an old glibc
