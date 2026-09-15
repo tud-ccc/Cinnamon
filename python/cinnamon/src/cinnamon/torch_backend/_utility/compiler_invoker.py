@@ -102,11 +102,14 @@ class CompilerInvoker:
     def link(self, obj: bytes) -> bytes:
         # The linker's driver rather than ld/mold directly, so that libc and its
         # crt bits come from whatever sysroot this clang was built for.
-        with tempfile.NamedTemporaryFile(
-            prefix="cinnamon_compiled_model.", suffix=".o"
-        ) as obj_file, tempfile.NamedTemporaryFile(
-            prefix="cinnamon_compiled_model.", suffix=".so"
-        ) as so_file:
+        with (
+            tempfile.NamedTemporaryFile(
+                prefix="cinnamon_compiled_model.", suffix=".o"
+            ) as obj_file,
+            tempfile.NamedTemporaryFile(
+                prefix="cinnamon_compiled_model.", suffix=".so"
+            ) as so_file,
+        ):
             obj_file.write(obj)
             obj_file.flush()
             self._invoke(
