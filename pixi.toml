@@ -52,15 +52,15 @@ matplotlib = "*"
 plotly = "*"
 tqdm = "*"
 doit = "*"
-# The two in-tree projects. Both by path, and cinnamon by path *especially*:
-# cinm-experiments requires it by name, and there is an unrelated `cinnamon`
-# on PyPI that a resolver picks up happily -- version 0.2.1, which arrives
-# with catboost, xgboost and a CUDA nccl. Naming the source here is what makes
-# the requirement resolve to ours.
+# The two in-tree projects, by path because neither is published. The
+# distribution is cinnamon-mlir while the package it installs is `cinnamon`:
+# PyPI's `cinnamon` is somebody else's, and under the old name a manifest that
+# forgot this line resolved to theirs and installed it, silently, under the
+# same import name.
 #
-# build-cinnamon.sh installs cinnamon again, editable, after a build; that is
-# the same path, so it is the same install.
-cinnamon = { path = "python/cinnamon", editable = true }
+# build-cinnamon.sh installs cinnamon-mlir again, editable, after a build;
+# that is the same path, so it is the same install.
+cinnamon-mlir = { path = "python/cinnamon", editable = true }
 cinm-experiments = { path = "python/experiments", editable = true }
 
 # conda-forge's Clang with its own libstdc++, built against an old glibc

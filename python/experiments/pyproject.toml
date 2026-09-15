@@ -20,7 +20,6 @@ version = "0.1.0"
 description = "Shared library for the Cinnamon experiment pipelines"
 requires-python = ">=3.10"
 license = "MIT"
-# A symlink to the repository's LICENSE, dereferenced when building.
 license-files = ["LICENSE"]
 
 # Only what this package itself imports. doit is deliberately absent: the
@@ -32,7 +31,7 @@ dependencies = [
     # this costs an analysis-only environment nothing; paths.py imports it
     # only when something actually needs a build, so reading a campaign's
     # results still works where none is installed.
-    "cinnamon",
+    "cinnamon-mlir",
     "matplotlib",
     "numpy>=1.26",
     # <3 deliberately: the paper's numbers were assembled on pandas 2, and 3.0

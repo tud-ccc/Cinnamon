@@ -1684,7 +1684,7 @@ packages:
   size: 118849
   timestamp: 1784250406640
 - pypi: ./python/cinnamon
-  name: cinnamon
+  name: cinnamon-mlir
   requires_dist:
   - torch ; extra == 'torch'
   - torch-mlir ; extra == 'torch'
@@ -1692,7 +1692,7 @@ packages:
 - pypi: ./python/experiments
   name: cinm-experiments
   requires_dist:
-  - cinnamon
+  - cinnamon-mlir
   - matplotlib
   - numpy>=1.26
   - pandas>=2.0,<3

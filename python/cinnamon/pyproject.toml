@@ -3,12 +3,17 @@ requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cinnamon"
+# The distribution, not the import name -- `import cinnamon` is unchanged.
+# PyPI already has an unrelated `cinnamon`, and this one is never published,
+# so a consumer that requires it without naming a path source would resolve to
+# that one and get it silently, under the same import name. A distribution
+# name nobody else holds turns that into a resolution error.
+name = "cinnamon-mlir"
 version = "0.1.0"
 license = "MIT"
 license-files = ["LICENSE"]
 description = "Python bindings for the Cinnamon compiler"
-authors = [{name = "Felix Reißmann"}]
+authors = [{name = "Felix Reißmann"}, {name = "Clément Fournier"}]
 requires-python = ">=3.10"
 # Nothing beyond the standard library: locating an installed build is what
 # this package does for everyone, and it has to resolve in an environment that
