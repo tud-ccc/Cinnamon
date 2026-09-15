@@ -89,16 +89,34 @@ class CompilerInvoker:
 
         return llvm_mlir
 
-    def clang(self, llvm_ir: bytes) -> bytes:
-        with tempfile.NamedTemporaryFile(
-            prefix="cinnamon_compiled_model", suffix=".so"
-        ) as f:
+    def llc(self, llvm_ir: bytes) -> bytes:
+        # llc pairs with mlir-translate from the same LLVM: the IR they exchange
+        # is that LLVM's, and no other version is guaranteed to read it.
+        obj = self._invoke(
+            [ResourcePaths.llc(), "-filetype=obj", "-relocation-model=pic", "-o", "-"],
+            input=llvm_ir,
+        )
+        self._dump("model.o", obj)
+        return obj
+
+    def link(self, obj: bytes) -> bytes:
+        # The linker's driver rather than ld/mold directly, so that libc and its
+        # crt bits come from whatever sysroot this clang was built for.
+        with (
+            tempfile.NamedTemporaryFile(
+                prefix="cinnamon_compiled_model.", suffix=".o"
+            ) as obj_file,
+            tempfile.NamedTemporaryFile(
+                prefix="cinnamon_compiled_model.", suffix=".so"
+            ) as so_file,
+        ):
+            obj_file.write(obj)
+            obj_file.flush()
             self._invoke(
-                [ResourcePaths.clang(), "-x", "ir", "-shared", "-o", f.name, "-"],
-                input=llvm_ir,
+                [ResourcePaths.clang(), "-shared", "-o", so_file.name, obj_file.name]
             )
-            f.seek(0)
-            shared_object = f.read()
+            so_file.seek(0)
+            shared_object = so_file.read()
 
         self._dump("model.so", shared_object)
 

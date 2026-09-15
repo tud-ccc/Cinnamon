@@ -60,8 +60,6 @@ cache_file="$torch_mlir_build_dir/CMakeCache.txt"
 need_config=0
 cached_llvm_dir="$(grep -E '^LLVM_DIR:[A-Z]+=' "$cache_file" 2>/dev/null | sed 's/.*=//' || true)"
 cached_cxx="$(grep -E '^CMAKE_CXX_COMPILER:[A-Z]+=' "$cache_file" 2>/dev/null | sed 's/.*=//' || true)"
-# _Python_EXECUTABLE, not Python_EXECUTABLE: the internal entry is what the
-# search settled on, which is the one the extension modules are named after.
 cached_python="$(grep -E '^_Python_EXECUTABLE:INTERNAL=' "$cache_file" 2>/dev/null | sed 's/.*=//' || true)"
 
 if [[ ! -f "$cache_file" ]]; then
@@ -91,6 +89,17 @@ elif [[ -n "$cached_llvm_dir" && ! "$cached_llvm_dir" -ef "$llvm_cmake_dir" ]]; 
   status "Torch-MLIR was built against the LLVM in '$cached_llvm_dir' -> recreating its build dir"
   rm -rf "$torch_mlir_build_dir"
   need_config=1
+elif [[ -n "${PYBIN:-}" && -n "$cached_python" && ! "$cached_python" -ef "$PYBIN" ]]; then
+  # Its Python extensions only load in the interpreter they were built for, and
+  # FindPython keeps the one it found in the cache across reconfigures.
+  status "Torch-MLIR's Python extensions were built for '$cached_python', not '$PYBIN' -> recreating its build dir"
+  rm -rf "$torch_mlir_build_dir"
+  need_config=1
+elif ! grep -E '^CMAKE_MODULE_LINKER_FLAGS:' "$cache_file" | grep -qF -- "-Wl,-rpath,$llvm_build_dir/lib"; then
+  # The Python extensions are modules, which got LLVM's lib directory in their
+  # RPATH only once CMAKE_MODULE_LINKER_FLAGS was passed below, as well.
+  status "Torch-MLIR's Python extensions cannot find LLVM's libraries -> reconfiguring"
+  need_config=1
 elif [[ "$reconfigure" -eq 1 ]]; then
   need_config=1
 fi
@@ -99,9 +108,9 @@ if [[ "$need_config" -eq 1 ]]; then
   status "Configuring Torch-MLIR (Ninja)"
   dependency_paths=( -DLLVM_DIR="$llvm_cmake_dir" -DMLIR_DIR="$mlir_cmake_dir" )
 
+  # Both spellings: MLIR's CMake looks for Python with find_package(Python),
+  # which ignores the Python3_* variables, and nanobind relies on that lookup.
   if [[ $setup_python_venv -eq 1 ]]; then
-    # Both, and identically: MLIR's mlir_configure_python_dev_packages warns
-    # when only one of them is set, since the two searches must agree.
     dependency_paths+=( -DPython3_FIND_VIRTUALENV=ONLY -DPython_FIND_VIRTUALENV=ONLY )
   fi
   # Without these, CMake takes the highest Python version it can find, which is

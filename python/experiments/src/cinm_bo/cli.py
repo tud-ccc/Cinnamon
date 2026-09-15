@@ -26,7 +26,6 @@ import subprocess
 import sys
 
 from cinm_experiments import cinmopt
-from cinm_experiments.paths import DEFAULT_CINM_OPT
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -242,7 +241,15 @@ def _add_compile_args(p: argparse.ArgumentParser) -> None:
         metavar="KEY=VALUE",
         help="an --upmem-infer-accelerator option; repeatable",
     )
-    p.add_argument("--cinm-opt", type=pathlib.Path, default=DEFAULT_CINM_OPT)
+    # No default: None reaches cinmopt, which resolves whichever build the
+    # environment holds. Resolving it here would need an installed compiler
+    # just to print --help.
+    p.add_argument(
+        "--cinm-opt",
+        type=pathlib.Path,
+        default=None,
+        help="the cinm-opt to drive (default: the environment's)",
+    )
 
 
 def _add_reader_args(p: argparse.ArgumentParser, *, out_default: str) -> None:

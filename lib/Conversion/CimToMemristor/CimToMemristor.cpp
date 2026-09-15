@@ -43,9 +43,12 @@ static Value toMemrefLike(ConversionPatternRewriter &rewriter, Location loc,
   return bufferization::ToBufferOp::create(rewriter, loc, memTy, v);
 }
 
-/// Replace any direct `cim.barrier` users of `cimRes` with `replacementTensor`,
-/// and also insert a `memristor.barrier` using `tileId` at the barrier’s loc.
-static void rewriteImmediateBarriers(Value cimRes, Value replacementTensor,
+/// Replace any direct `cim.barrier` users of `cimRes` with `outBuffer`, the
+/// buffer the memristor op writes its result into, and also insert a
+/// `memristor.barrier` using `tileId` at the barrier's loc. A barrier resolves
+/// a future to a memref, so the replacement has to be the buffer rather than
+/// the tensor it was allocated through.
+static void rewriteImmediateBarriers(Value cimRes, Value outBuffer,
                                      Value tileId,
                                      ConversionPatternRewriter &rewriter) {
   SmallVector<Operation *> toErase;
@@ -53,7 +56,7 @@ static void rewriteImmediateBarriers(Value cimRes, Value replacementTensor,
     if (auto bar = dyn_cast<cim::BarrierOp>(user)) {
       rewriter.setInsertionPoint(bar);
       memristor::BarrierOp::create(rewriter, bar.getLoc(), tileId);
-      bar.getResult().replaceAllUsesWith(replacementTensor);
+      bar.getResult().replaceAllUsesWith(outBuffer);
       toErase.push_back(bar);
     }
   }
@@ -99,7 +102,7 @@ struct ConvertCimGemvToMemristor : OpConversionPattern<cim::GemvOp> {
     memristor::GevmOp::create(rewriter, loc, tileId, X, Y);
 
     // Rewrite any immediate barriers and erase the CIM op.
-    rewriteImmediateBarriers(op.getResult(), outTensor, tileId, rewriter);
+    rewriteImmediateBarriers(op.getResult(), Y, tileId, rewriter);
     rewriter.eraseOp(op);
     return success();
   }
@@ -141,7 +144,7 @@ struct ConvertCimGemmToMemristor : OpConversionPattern<cim::GemmOp> {
     memristor::WriteToCrossbarOp::create(rewriter, loc, tileId, Bm);
     memristor::GemmOp::create(rewriter, loc, tileId, Am, C);
 
-    rewriteImmediateBarriers(op.getResult(), outTensor, tileId, rewriter);
+    rewriteImmediateBarriers(op.getResult(), C, tileId, rewriter);
     rewriter.eraseOp(op);
     return success();
   }

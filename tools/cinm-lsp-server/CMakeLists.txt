@@ -24,3 +24,5 @@ target_link_libraries(${PROJECT_NAME}
         MLIRRegisterAllDialects
         MLIRRegisterAllExtensions
 )
+
+install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)

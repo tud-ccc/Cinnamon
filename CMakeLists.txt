@@ -6,7 +6,7 @@
 cmake_minimum_required(VERSION 3.28)
 
 # Add custom modules to the search path.
-list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 
 project(cinm-mlir
     VERSION     0.2.0
@@ -42,6 +42,18 @@ endif()
 # Set global language standard to C++20.
 set(CMAKE_CXX_STANDARD 20 CACHE STRING "C++ standard to conform to")
 
+# Installed binaries look for their libraries next to themselves, so the
+# prefix can be moved or recreated elsewhere without relinking. MLIR's library
+# macros already do this for the dialect libraries; a plain add_executable
+# gets only the global value, which is why it is set here rather than on each
+# tool. CMake drops the build-tree rpath on install, so this is what is left.
+#
+# The second entry is for the C++ runtime. `just install` puts this prefix in
+# libexec/cinnamon of an environment, two levels down, and the environment's
+# own lib/ is where a conda or pixi libstdc++ lives -- newer than the system
+# one, and what these binaries were built against.
+list(APPEND CMAKE_INSTALL_RPATH "\$ORIGIN/../lib" "\$ORIGIN/../../../lib")
+
 # Detect if this is a stand-alone build.
 if (${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_CURRENT_SOURCE_DIR})
     # Set shared output directories.
@@ -54,7 +66,14 @@ endif()
 
 
 # Find MLIR.
+# The Conan toolchain turns on CMAKE_FIND_PACKAGE_PREFER_CONFIG, which makes
+# LLVMConfig's find_package(ZLIB) skip the zlib in CMAKE_PREFIX_PATH (it ships
+# no CMake config) and pick up the system's ZLIBConfig instead, whose static
+# target may point at a libz.a that is not installed.
+set(_saved_prefer_config ${CMAKE_FIND_PACKAGE_PREFER_CONFIG})
+set(CMAKE_FIND_PACKAGE_PREFER_CONFIG OFF)
 find_package(MLIR REQUIRED CONFIG)
+set(CMAKE_FIND_PACKAGE_PREFER_CONFIG ${_saved_prefer_config})
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 
@@ -197,3 +216,19 @@ add_subdirectory(test)
 add_subdirectory(tools)
 
 add_subdirectory(runtime/Memristor)
+
+# The benchmark suites travel with the compiler that lowers them: a suite and
+# the tools are one version of one thing, and the experiment pipelines resolve
+# both through the same prefix rather than through a path into a checkout.
+# cinm1/gen/ holds what its own makefile produces and is not part of the suite.
+install(DIRECTORY benchmarks/
+        DESTINATION share/cinnamon/benchmarks
+        PATTERN "gen" EXCLUDE)
+
+# The analytical reference model the evaluation prices programs against. Half
+# a megabyte of Python that is run as a subprocess, so it installs like the
+# benchmarks do, and for the same reason: a comparison and the compiler whose
+# output it judges have to be the same version of each other.
+install(DIRECTORY third-party/cnm-cost-model/Predictor
+        DESTINATION share/cinnamon/cnm-cost-model
+        PATTERN "__pycache__" EXCLUDE)

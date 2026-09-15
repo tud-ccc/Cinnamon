@@ -51,6 +51,7 @@ fi
 need_config=0
 reason=""
 cached_llvm_dir="$(grep -E '^LLVM_DIR:[A-Z]+=' "$cache_file" 2>/dev/null | sed 's/.*=//' || true)"
+cached_torch_mlir_dir="$(grep -E '^TORCH_MLIR_DIR:[A-Z]+=' "$cache_file" 2>/dev/null | sed 's/.*=//' || true)"
 if [[ ! -f "$cache_file" ]]; then
   reason="no CMake cache in '$cinnamon_build_dir'"
 elif ! grep -q 'CMAKE_GENERATOR:INTERNAL=Ninja' "$cache_file"; then
@@ -59,6 +60,9 @@ elif [[ ! -f "$cinnamon_build_dir/build.ninja" ]]; then
   reason="build.ninja missing"
 elif [[ -n "$cached_llvm_dir" && ! "$cached_llvm_dir" -ef "$llvm_cmake_dir" ]]; then
   reason="LLVM moved from '$cached_llvm_dir' to '$llvm_cmake_dir'"
+elif [[ -d "$torch_mlir_install_dir" && ! "$cached_torch_mlir_dir" -ef "$torch_mlir_install_dir" ]]; then
+  # Including a tree configured before there was one to find
+  reason="the Torch-MLIR installation is now '$torch_mlir_install_dir'"
 elif [[ "$reconfigure" -eq 1 ]]; then
   reason="forced reconfigure (reconfigure=1)"
 elif [[ -n "${PYBIN:-}" ]]; then
@@ -74,7 +78,11 @@ if [[ -n "$cached_cxx" && ! "$cached_cxx" -ef "$CXX" ]]; then
   # CMake will not change the compiler of a build tree, so this one has to go.
   warning "Cinnamon was built with '$cached_cxx', now building with '$CXX'"
   warning "Recreating '$cinnamon_build_dir'"
-  rm -rf "$cinnamon_build_dir"
+  # Except for the Torch-MLIR installation, which build-torch.sh has just
+  # refreshed in there and which the configure below is pointed at.
+  for entry in "$cinnamon_build_dir"/{*,.[!.]*}; do
+    [[ "$entry" -ef "$torch_mlir_install_dir" ]] || rm -rf "$entry"
+  done
   reason="the compiler changed"
   need_config=1
 fi
@@ -83,7 +91,6 @@ BUILD_TYPE="${CMAKE_BUILD_TYPE:-RelWithDebInfo}"
 
 if [[ "$need_config" -eq 1 ]]; then
   status "Configuring Cinnamon (Ninja): $reason"
-  ln -s "$project_root/LICENSE" "$cinnamon_path/python/cinnamon/" 2>/dev/null || true
 
   # ---- Conan: install C++ dependencies into the build dir ----
   if ! command -v conan >/dev/null 2>&1; then
@@ -180,35 +187,56 @@ status "Building Cinnamon (Ninja)"
 print_and_run cmake --build "$cinnamon_build_dir" --target all $CINNAMON_BUILD_OPTIONS
 
 # ---- Python package wiring ----
-if [[ "$setup_python_venv" -eq 1 ]]; then
-  status "Building Cinnamon Python package"
-  site_packages_dir="$(python -c 'import sysconfig; p=sysconfig.get_paths(); print(p.get("platlib") or p.get("purelib"))')"
-  cinnamon_python_package_dir_src="$project_root/python/cinnamon/src/cinnamon"
-  cinnamon_python_package_resource_dir="$site_packages_dir/_resources"
+# Into whichever environment is active: the venv, or pixi's, which sets
+# VIRTUAL_ENV to itself.
+if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+  status "Installing Cinnamon into $VIRTUAL_ENV"
+  cinnamon_python_package_dir="$project_root/python/cinnamon"
 
-  cinnamon_python_resources=(
-    "$cinnamon_build_dir/bin/cinm-opt"
-    "$cinnamon_build_dir/lib/libMemristorDialectRuntime.so"
-    "$torch_mlir_build_dir/bin/torch-mlir-opt"
-    "$llvm_build_dir/bin/mlir-translate"
-    "$llvm_build_dir/bin/clang"
-  )
+  # Everything the Python package resolves -- the tools, the libraries they
+  # load, the UPMEM runtime and its headers, the benchmark suites -- goes into
+  # a subtree of the environment, which is what cinnamon.paths looks in. Under
+  # libexec rather than in bin/ and lib/ directly, because our LLVM is a whole
+  # toolchain and the environment is shared with conda packages carrying one
+  # of their own. Keep in step with the justfile's `install_dir`.
+  cinnamon_install_dir="$VIRTUAL_ENV/libexec/cinnamon"
+  print_and_run cmake --install "$cinnamon_build_dir" --prefix "$cinnamon_install_dir"
 
-  if [[ ! -e "$site_packages_dir" ]]; then
-    ln -s "$cinnamon_python_package_dir_src" "$site_packages_dir"
+  # The tools load some 350 MLIR shared libraries and resolve them next to
+  # themselves, so LLVM goes into the same subtree. Keyed on the revision, in
+  # the stamp file a prebuilt LLVM already carries: this is about a gigabyte
+  # and only changes when the submodule moves.
+  if [[ "$(cat "$cinnamon_install_dir/$llvm_prebuilt_stamp" 2>/dev/null)" != "$llvm_revision" ]]; then
+    status "Installing LLVM ${llvm_revision:0:12} into $cinnamon_install_dir"
+    if [[ -f "$llvm_build_dir/CMakeCache.txt" ]]; then
+      print_and_run cmake --install "$llvm_build_dir" --prefix "$cinnamon_install_dir"
+    else
+      # A prebuilt LLVM was unpacked as an install tree already.
+      mkdir -p "$cinnamon_install_dir"
+      print_and_run cp -a "$llvm_build_dir/." "$cinnamon_install_dir/"
+    fi
+    printf '%s\n' "$llvm_revision" > "$cinnamon_install_dir/$llvm_prebuilt_stamp"
   fi
 
-  mkdir -p "$cinnamon_python_package_resource_dir" || true
-  for resource in "${cinnamon_python_resources[@]}"; do
-    ln -s "$resource" "$cinnamon_python_package_resource_dir" 2>/dev/null || true
-  done
+  # torch-mlir-opt is the torch backend's, and torch-mlir has an install tree
+  # of its own; only that one tool is wanted here.
+  if [[ -x "$torch_mlir_build_dir/bin/torch-mlir-opt" ]]; then
+    print_and_run cp -a "$torch_mlir_build_dir/bin/torch-mlir-opt" \
+                        "$cinnamon_install_dir/bin/torch-mlir-opt"
+  else
+    warning "No torch-mlir-opt; the torch backend will not find it"
+  fi
 
-  if [[ "$build_cinnamon_wheel" -eq 1 ]]; then
-    pushd "$cinnamon_path/python/cinnamon" >/dev/null
+  # Editable, so that edits to its sources need no reinstall. Without its
+  # dependencies: the torch extra names torch-mlir, which is not on PyPI --
+  # build-torch.sh installed it.
+  PYTHONWARNINGS=ignore verbose_cmd python -m pip install --no-deps --no-build-isolation -e "$cinnamon_python_package_dir"
+
+  if [[ "$setup_python_venv" -eq 1 && "$build_cinnamon_wheel" -eq 1 ]]; then
+    pushd "$cinnamon_python_package_dir" >/dev/null
     PYTHONWARNINGS=ignore verbose_cmd python -m build
     popd >/dev/null
   fi
 else
-  warning "Skipping Cinnamon Python package build"
-  warning "Ensure your Python env is set up if you need it."
+  warning "No active Python environment; skipping the Cinnamon Python package"
 fi

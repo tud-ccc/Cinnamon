@@ -10,10 +10,12 @@ class CinmBackend:
     CINM_PIPELINE = [
         # Convert supported torch ops to cinm dialect
         "func.func(convert-torch-to-cinm)",
-        "func.func(convert-cinm-to-cim)",
-        "func.func(cim-schedule-asap)",
-        "func.func(convert-cim-to-memristor)",
-        "func.func(convert-memristor-to-func)",
+        # cim is a memref-only dialect, so the cinm ops have to be bufferized
+        # before they can be lowered to it. Unknown ops are let through because
+        # the torch ops this backend does not claim are still here, and are
+        # bufferized by the linalg pipeline further down.
+        "one-shot-bufferize{allow-unknown-ops}",
+        "func.func(convert-cinm-to-cim,cim-schedule-asap,convert-cim-to-memristor,convert-memristor-to-func)",
         "convert-func-to-llvm",
     ]
     LINALG_PIPELINE = (
@@ -30,7 +32,7 @@ class CinmBackend:
         mlir = invoker.cinm_opt(CinmBackend.CINM_PIPELINE, mlir)
         llvm_mlir = invoker.cinm_opt(CinmBackend.LINALG_PIPELINE, mlir)
         ll_ir = invoker.mlir_translate(llvm_mlir)
-        shared_object = invoker.clang(ll_ir)
+        shared_object = invoker.link(invoker.llc(ll_ir))
 
         signatures = SignatureExtractor.extract(mlir)
 

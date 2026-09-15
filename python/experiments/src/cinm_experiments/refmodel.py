@@ -28,10 +28,7 @@ import pathlib
 import re
 import subprocess
 
-from .paths import ROOT, python_bin
-
-PREDICTOR_DIR = ROOT / "third-party" / "cnm-cost-model" / "Predictor"
-CNMPROG = PREDICTOR_DIR / "cnmprog.py"
+from .paths import python_bin, reference_model_dir
 
 # cnmprog.py's one line of output: "<kernel>: 5.621308 ms  (extrapolated)".
 _MS_RE = re.compile(r":\s*([0-9.eE+-]+)\s*ms")
@@ -81,7 +78,12 @@ def price(
     for small programs."""
     json_path = pathlib.Path(json_path)
     kernel = json_path.name.removesuffix(DUMP_SUFFIX)
-    cmd = [python or python_bin(), str(CNMPROG), str(json_path.resolve())]
+    predictor_dir = reference_model_dir()
+    cmd = [
+        python or python_bin(),
+        str(predictor_dir / "cnmprog.py"),
+        str(json_path.resolve()),
+    ]
     if exact:
         cmd.append("--exact")
     try:
@@ -89,7 +91,7 @@ def price(
         # paths are absolute (derived from __file__), so only the imports care.
         r = subprocess.run(
             cmd,
-            cwd=str(PREDICTOR_DIR),
+            cwd=str(predictor_dir),
             capture_output=True,
             text=True,
             timeout=timeout_s,

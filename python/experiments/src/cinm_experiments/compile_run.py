@@ -17,8 +17,8 @@ from typing import Callable
 
 from tqdm import tqdm
 
-from . import parallel
-from .paths import COMPILE_MAKEFILE_DIR, DEFAULT_CINM_OPT, ROOT
+from . import parallel, paths
+from .paths import COMPILE_MAKEFILE_DIR
 
 
 @dataclasses.dataclass
@@ -107,12 +107,16 @@ def _run_make(
     """`force` passes -B, for the callers whose inputs did not change but
     whose *compiler* did; `write_script` off keeps make.sh describing how the
     config was built rather than the last thing that touched its ir/."""
+    # The makefile is told where the tools and the suites are rather than
+    # deriving them from a checkout root, so that what it compiles against is
+    # the build the pipeline is already driving.
     cmd = [
         "make",
         "-C",
         str(COMPILE_MAKEFILE_DIR),
         *(["-B"] if force else []),
-        f"ROOT={ROOT}",
+        f"CINM_BIN={paths.bin_dir()}",
+        f"BENCH_DIR={paths.benchmarks_dir()}",
         f"SRC_MLIR={lowered.resolve()}",
         f"IR_DIR={ir_dir.resolve()}",
         f"BENCH_FN={fn_name}",
@@ -211,7 +215,7 @@ def recompute_cost(config_dir: pathlib.Path, *, prim: str) -> str | None:
         config_dir / "ir",
         lowered,
         target="costs-only",
-        extra_vars={"CINM_OPT": str(DEFAULT_CINM_OPT)},
+        extra_vars={"CINM_OPT": str(paths.cinm_opt())},
         force=True,
         write_script=False,
     )
