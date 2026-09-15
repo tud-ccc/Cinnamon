@@ -125,6 +125,10 @@ CMAKE_GENERATOR=Ninja
 CC=/usr/bin/gcc-13
 CXX=/usr/bin/g++-13
 
+# Which pixi environment direnv activates in this checkout. `default` (the
+# default) builds with pixi's Clang, `host` with the CC and CXX above.
+PIXI_ENV=host
+
 # Building LLVM uses a lot of memory, so it is worth limiting the number of
 # parallel compile, link and tablegen jobs. These values suit 32 GiB of RAM.
 LLVM_CMAKE_OPTIONS='-DLLVM_CCACHE_BUILD=ON -DLLVM_PARALLEL_COMPILE_JOBS=16 -DLLVM_PARALLEL_LINK_JOBS=2 -DLLVM_PARALLEL_TABLEGEN_JOBS=8'
@@ -150,6 +154,28 @@ leaves the matching submodule uninitialized.
 | `TORCH_MLIR_INSTALL_DIR` | Use a Torch-MLIR you have already installed |
 | `UPMEM_HOME` | Location of the UPMEM SDK |
 | `CINNAMON_BUILD_DIR` | Where to build Cinnamon itself (default `build/`); Torch-MLIR is installed into its `torch-mlir-install/` |
+
+#### direnv
+
+With [direnv](https://direnv.net), the checked-in `.envrc` loads `.env` and
+activates the pixi environment on entry, so that `just` and the installed
+tools work in the directory without a `pixi shell`. Allow it once:
+
+```sh
+direnv allow
+```
+
+`.envrc` is the same on every machine and names no paths of its own;
+everything machine-specific lives in files beside it that git ignores:
+
+| File | Holds |
+|---|---|
+| `.env` | The build configuration above, `PIXI_ENV` included |
+| `.upmem_env` | `UPMEM_HOME`, and the SDK's runtime knobs |
+| `.envrc.local` | Any other direnv the machine needs; sourced last, so it can override the rest |
+
+`PIXI_ENV` only steers direnv. `pixi run` and `pixi shell` take their own
+`-e`, and default to `default` whatever `.env` says.
 
 ### Build
 
@@ -252,6 +278,10 @@ of its own.
    pixi run -e host configure
    pixi shell -e host        # then `just build`, `just test` as usual
    ```
+
+   Every command, `just build` and `just test` included, has to run in that
+   environment: the default one now refuses this LLVM. With direnv, put
+   `PIXI_ENV=host` in `.env` and it is the environment you are already in.
 
 `CC` and `CXX` in `.env` only take effect in the `host` environment. The
 default environment sets them to pixi's compiler, and what the environment

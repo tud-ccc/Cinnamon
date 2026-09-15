@@ -65,3 +65,6 @@ python/cinnamon/_resources
 # Machine-local: where this machine keeps the UPMEM SDK, plus its runtime
 # knobs. Read by .envrc; see .env for the build configuration beside it.
 .upmem_env
+# Machine-local direnv, sourced last by .envrc. .envrc itself is checked in
+# and the same everywhere: what differs between machines goes here or in .env.
+.envrc.local

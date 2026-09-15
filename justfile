@@ -100,11 +100,12 @@ install: build installLlvm
     fi
 
 # The installed tools load some 350 MLIR shared libraries and find them
-# through $ORIGIN/../lib, so they have to sit beside them. Keyed on the pinned
-# revision -- the stamp build-llvm.sh writes beside a prebuilt tree -- because
-# this is the expensive half and only changes when the submodule moves.
+# through $ORIGIN/../lib, so they have to sit beside them. A prebuilt LLVM is
+# keyed on the pinned revision -- the stamp build-llvm.sh writes beside it --
+# because that is the expensive half and only changes when the submodule
+# moves. An LLVM of your own is keyed on nothing: see below.
 
-# Install LLVM and MLIR into the same prefix (~1GB, skipped once present)
+# Install LLVM and MLIR into the same prefix (~1GB, only what changed is copied)
 installLlvm:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -114,19 +115,29 @@ installLlvm:
     fi
     source .github/workflows/common.sh >/dev/null
     stamp="{{install_dir}}/$llvm_prebuilt_stamp"
-    if [ "$(cat "$stamp" 2>/dev/null)" = "$llvm_revision" ]; then
-        echo "LLVM ${llvm_revision:0:12} is already installed in {{install_dir}}"
-        exit 0
-    fi
     if [ -f "$llvm_build_dir/CMakeCache.txt" ]; then
+        # A build tree, where the revision settles nothing: the same one is
+        # rebuilt any number of times, and a dirty tree is no revision at all.
+        # A stamp written from one build of it would skip the install of every
+        # later one -- silently, and the tests then run against libraries that
+        # are not what was built. cmake --install copies only what differs, so
+        # there is nothing to save by skipping it anyway.
         cmake --install "$llvm_build_dir" --prefix "{{install_dir}}"
+        # No stamp: what is installed is a build of a revision, not the
+        # revision, and a later prebuilt install of the same one must not
+        # mistake this for itself.
+        rm -f "$stamp"
+    elif [ "$(cat "$stamp" 2>/dev/null)" = "$llvm_revision" ]; then
+        # The prebuilt tree is unpacked per revision and never written to
+        # again, so for it the revision does settle it.
+        echo "LLVM ${llvm_revision:0:12} is already installed in {{install_dir}}"
     else
         # A prebuilt LLVM was unpacked as an install tree already.
         echo "Copying the prebuilt LLVM from $llvm_build_dir"
         mkdir -p "{{install_dir}}"
         cp -a "$llvm_build_dir/." "{{install_dir}}/"
+        printf '%s\n' "$llvm_revision" > "$stamp"
     fi
-    printf '%s\n' "$llvm_revision" > "$stamp"
 
 # Neither pixi nor conda tracks what was installed, so this is the way back
 # short of recreating the environment. The whole directory goes, rather than
