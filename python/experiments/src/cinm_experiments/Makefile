@@ -9,18 +9,22 @@ SHELL := /bin/bash
 .SHELLFLAGS := -o pipefail -c
 .DELETE_ON_ERROR:
 
-# The repository this makefile compiles against. compile_run.py passes it, and
-# must: this file ships inside the package, whose depth below the repository
-# differs between an editable install and a wheel, so counting ".." here would
-# be right in one case and silently wrong in the other. The default is the
-# editable layout, for running make by hand from this directory.
-ROOT        ?= ../../../..
-# opt and llc among them: the build symlinks the LLVM tools next to its own,
-# from whichever LLVM it was built against, because IR emitted by
-# cinm-translate is not necessarily readable by another LLVM's tools. The host
-# driver's compiler is a separate question -- it compiles C++, it does not read
-# our IR -- and is settled at BENCH_CXX below.
-CINM_BIN     = $(ROOT)/build/bin
+# Where an installed Cinnamon put itself. compile_run.py passes all three,
+# from cinnamon.paths, and they are not derived from one another: this file
+# ships inside a package whose depth below anything differs between an
+# editable install and a wheel, so counting ".." here would be right in one
+# case and silently wrong in the other. Set them by hand to run make from this
+# directory -- `python -c 'from cinnamon import paths; print(paths.bin_dir())'`
+# says what the environment holds.
+#
+# opt and llc live in CINM_BIN too, from whichever LLVM this was built
+# against, because IR emitted by cinm-translate is not necessarily readable by
+# another LLVM's tools. The host driver's compiler is a separate question --
+# it compiles C++, it does not read our IR -- and is settled at BENCH_CXX.
+CINM_BIN    ?= $(error CINM_BIN is not set)
+BENCH_DIR   ?= $(error BENCH_DIR is not set)
+RT_INCLUDE  ?= $(CINM_BIN)/../include/cinm-mlir/runtime/Upmem
+RT_LIB_DIR  ?= $(CINM_BIN)/../lib
 CINM_OPT     = $(CINM_BIN)/cinm-opt
 CINM_TRANS   = $(CINM_BIN)/cinm-translate
 COMPILE_DPU  = $(CINM_BIN)/cinm-compile-dpu
@@ -30,9 +34,9 @@ COMPILE_DPU  = $(CINM_BIN)/cinm-compile-dpu
 # whichever family directory holds it -- so the search rather than a fixed
 # path, and an error rather than an empty BENCH_DRIVER and a baffling link.
 PRIM         ?= red
-BENCH_DRIVER ?= $(firstword $(wildcard $(ROOT)/benchmarks/*/$(PRIM).cpp))
+BENCH_DRIVER ?= $(firstword $(wildcard $(BENCH_DIR)/*/$(PRIM).cpp))
 ifeq ($(BENCH_DRIVER),)
-  $(error No bench driver for PRIM=$(PRIM) under $(ROOT)/benchmarks/*/)
+  $(error No bench driver for PRIM=$(PRIM) under $(BENCH_DIR)/*/)
 endif
 
 # Single-function source module, already lowered to the upmem dialect by the
@@ -76,7 +80,7 @@ ifneq ($(CONDA_PREFIX),)
 endif
 
 CXXFLAGS = -O3 -std=c++17 \
-           -I$(ROOT)/runtime/Upmem \
+           -I$(RT_INCLUDE) \
            -I$(UPMEM_HOME)/include/dpu \
            $(CONDA_CXXFLAGS)
 
@@ -88,7 +92,7 @@ CXXFLAGS = -O3 -std=c++17 \
 # of single-node page placement (see the comment on output_vector).
 LDFLAGS = -lUpmemDialectRuntime -ldpu -ldpuverbose -lopenblas -lnuma -Wl,-s \
           -L$(UPMEM_HOME)/lib \
-          -L$(ROOT)/build/lib \
+          -L$(RT_LIB_DIR) \
           $(CONDA_LDFLAGS)
 
 # Passes to lower a upmem-level module to host LLVM IR.

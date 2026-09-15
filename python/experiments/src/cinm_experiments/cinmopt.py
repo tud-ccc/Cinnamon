@@ -12,7 +12,7 @@ import pathlib
 import subprocess
 import shlex
 
-from .paths import DEFAULT_CINM_OPT
+from . import paths
 
 PRE_PASSES = ["--cinm-assign-platforms", "--cinm-isolate-compute-blocks"]
 
@@ -32,13 +32,18 @@ def _run(
     infer_opts: dict,
     *,
     out_file: pathlib.Path,
-    cinm_opt: pathlib.Path,
+    cinm_opt: pathlib.Path | None,
     log_file: pathlib.Path,
     extra_opts: list = [],
     pre_passes: list = PRE_PASSES,
     nice: bool = False,
     nolog: bool = False,
 ) -> subprocess.CompletedProcess:
+    # None means "whichever build the environment holds", resolved here rather
+    # than in each caller's default: a default argument is evaluated when the
+    # module is imported, and importing this must not require an installed
+    # compiler.
+    cinm_opt = cinm_opt or paths.cinm_opt()
     cmd = [
         str(cinm_opt),
         str(src),
@@ -78,7 +83,7 @@ def exhaustive_search(
     nice: bool = True,
     out_file: pathlib.Path | None = None,
     log_file: pathlib.Path | None = None,
-    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+    cinm_opt: pathlib.Path | None = None,
 ) -> pathlib.Path:
     """Exhaustively evaluate every valid config, dumping
     {out_dir}/infer_{fn_name}/pool.csv per function found in src (the
@@ -119,7 +124,7 @@ def dump_space(
     infer_opts: dict | None = None,
     out_file: pathlib.Path | None = None,
     log_file: pathlib.Path | None = None,
-    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+    cinm_opt: pathlib.Path | None = None,
 ) -> pathlib.Path:
     """Build each function's config space and dump
     {out_dir}/infer_{fn_name}/space.json, evaluating nothing and committing
@@ -162,7 +167,7 @@ def random_sample(
     nice: bool = True,
     out_file: pathlib.Path | None = None,
     log_file: pathlib.Path | None = None,
-    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+    cinm_opt: pathlib.Path | None = None,
 ) -> pathlib.Path:
     """Evaluate a random sample of n_samples valid configs (instead of every
     valid config, see exhaustive_search), dumping {out_dir}/infer_{fn_name}/
@@ -211,7 +216,7 @@ def graph_allocation(
     nice: bool = True,
     out_file: pathlib.Path | None = None,
     log_file: pathlib.Path | None = None,
-    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+    cinm_opt: pathlib.Path | None = None,
 ) -> pathlib.Path:
     """Run the two-level graph solve over a whole program: profile every
     program-identity class over the device-size menu, then partition the
@@ -271,7 +276,7 @@ def bo_multiseed(
     nolog: bool = False,
     out_file: pathlib.Path | None = None,
     log_file: pathlib.Path | None = None,
-    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+    cinm_opt: pathlib.Path | None = None,
 ) -> pathlib.Path:
     """Run n_seeds independent BO searches sharing the config-space setup
     (the C++ multi-seed engine), dumping
@@ -319,7 +324,7 @@ def eval_solution(
     *,
     out_file: pathlib.Path,
     extra_infer_opts: dict = {},
-    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+    cinm_opt: pathlib.Path | None = None,
     nice: bool = False,
     log_file: pathlib.Path | None = None,
 ) -> subprocess.CompletedProcess:
@@ -352,7 +357,7 @@ def probe_solution(
     params: dict,
     *,
     log_file: pathlib.Path,
-    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+    cinm_opt: pathlib.Path | None = None,
     nice: bool = True,
 ) -> str:
     """Force-lower exactly one configuration and classify what happened:
@@ -393,7 +398,7 @@ def search_lowerer(
     max_evals: int = 64,
     n_init: int | None = None,
     dir_name: str = "search",
-    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+    cinm_opt: pathlib.Path | None = None,
     extra_infer_opts: dict = {},
 ):
     """A Config.lower callable that searches instead of evaluating a fixed
@@ -444,7 +449,7 @@ def annotate_costs(
     costs_csv: pathlib.Path | None = None,
     simulator: str = "cycle-accurate",
     eval_timeout_ms: int | None = None,
-    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+    cinm_opt: pathlib.Path | None = None,
 ) -> subprocess.CompletedProcess:
     """Run --upmem-annotate-costs over an already-lowered module (the "upmem
     dialect" stage Config.lower produces), for its side outputs rather than
@@ -452,10 +457,11 @@ def annotate_costs(
 
     `program_dump_dir` writes one <kernel>.cnmprog.json per simulated DPU
     program: the symbolic interchange format the Python reference cost model
-    reads (third-party/cnm-cost-model/Predictor/cnmprog.py), so the same
-    program can be priced by both engines. `costs_csv` is the C++ side's own
+    reads (refmodel.py drives it), so the same program can be priced by both
+    engines. `costs_csv` is the C++ side's own
     per-category breakdown of that same run -- the number the dumps get
     compared against."""
+    cinm_opt = cinm_opt or paths.cinm_opt()  # see _run
     opts: dict = {"simulator": simulator}
     if eval_timeout_ms is not None:
         opts["eval-timeout-ms"] = eval_timeout_ms
@@ -482,7 +488,7 @@ def with_program_dump(
     dir_name: str = "cnmprog",
     simulator: str = "cycle-accurate",
     eval_timeout_ms: int | None = None,
-    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+    cinm_opt: pathlib.Path | None = None,
 ):
     """Wrap a Config.lower callable so that a successful lowering is followed
     by an annotate_costs run dumping each DPU program to
@@ -522,7 +528,7 @@ def with_program_dump(
 
 
 def eval_solution_lowerer(
-    *, cinm_opt: pathlib.Path = DEFAULT_CINM_OPT, extra_infer_opts: dict = {}
+    *, cinm_opt: pathlib.Path | None = None, extra_infer_opts: dict = {}
 ):
     """A (fn_module, out_file, log_file) -> CompletedProcess callable, for use
     as compile_run.Config.lower -- compiles CINM 2.0's chosen `params` with no
@@ -549,7 +555,7 @@ def eval_solution_lowerer(
 def stamped_lowerer(
     *,
     infer_opts: dict,
-    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+    cinm_opt: pathlib.Path | None = None,
 ):
     """A (fn_module, out_file, log_file) -> CompletedProcess callable for
     compile_run.Config.lower that SEARCHES rather than replays: run

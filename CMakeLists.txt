@@ -224,3 +224,11 @@ add_subdirectory(runtime/Memristor)
 install(DIRECTORY benchmarks/
         DESTINATION share/cinnamon/benchmarks
         PATTERN "gen" EXCLUDE)
+
+# The analytical reference model the evaluation prices programs against. Half
+# a megabyte of Python that is run as a subprocess, so it installs like the
+# benchmarks do, and for the same reason: a comparison and the compiler whose
+# output it judges have to be the same version of each other.
+install(DIRECTORY third-party/cnm-cost-model/Predictor
+        DESTINATION share/cinnamon/cnm-cost-model
+        PATTERN "__pycache__" EXCLUDE)

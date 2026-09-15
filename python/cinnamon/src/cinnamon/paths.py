@@ -2,8 +2,7 @@
 
 Everything `just install` puts into an environment lives under one directory,
 and this module is the only thing that knows which. Callers ask for a tool or
-a suite by name; they never join a path onto a checkout root, which is what
-tied the pipelines to one clone and one build-directory layout.
+a suite by name; they never join a path onto a checkout root.
 
 The directory is `libexec/cinnamon` of the active environment -- a subtree of
 its own, because our LLVM is a whole toolchain and the environment is shared
@@ -22,6 +21,7 @@ _SUBDIR = pathlib.PurePath("libexec", "cinnamon")
 # Under the install directory. The tools and the libraries they load keep the
 # usual layout; the rest is where `cmake --install` puts it.
 _BENCHMARKS = pathlib.PurePath("share", "cinnamon", "benchmarks")
+_REFERENCE_MODEL = pathlib.PurePath("share", "cinnamon", "cnm-cost-model", "Predictor")
 _UPMEM_RUNTIME_INCLUDE = pathlib.PurePath("include", "cinm-mlir", "runtime", "Upmem")
 
 
@@ -102,6 +102,16 @@ def benchmarks_dir() -> pathlib.Path:
     path = install_dir() / _BENCHMARKS
     if not path.is_dir():
         raise CinnamonNotInstalled(f"No benchmark suites in {path}.")
+    return path
+
+
+def reference_model_dir() -> pathlib.Path:
+    """The analytical cost model the evaluation prices programs against. Run
+    as a subprocess from this directory, which is why it is a directory rather
+    than the one script: it reads its kernel tables relative to itself."""
+    path = install_dir() / _REFERENCE_MODEL
+    if not path.is_dir():
+        raise CinnamonNotInstalled(f"No reference model in {path}.")
     return path
 
 

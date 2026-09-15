@@ -1,0 +1,5 @@
+UPMEM_HOME=/opt/upmem/upmem-2025.1.0-Linux-x86_64
+LD_LIBRARY_PATH=/opt/upmem/upmem-2025.1.0-Linux-x86_64/lib
+PYTHONPATH=/opt/upmem/upmem-2025.1.0-Linux-x86_64/local/lib/python3.10/dist-packages
+UPMEM_VERBOSE=-,V
+UPMEM_PROFILE='disabledMask=0x20'

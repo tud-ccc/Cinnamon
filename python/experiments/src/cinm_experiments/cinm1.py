@@ -31,7 +31,7 @@ import pathlib
 import re
 import subprocess
 
-from .paths import DEFAULT_CINM_OPT
+from . import paths
 from .cinmopt import _infer_opts_str
 
 PRE_PASSES = ["--cinm-assign-platforms"]
@@ -182,7 +182,7 @@ def compile_cinm1(
     out_file: pathlib.Path,
     *,
     work_dir: pathlib.Path,
-    cinm_opt: pathlib.Path = DEFAULT_CINM_OPT,
+    cinm_opt: pathlib.Path | None = None,
     log_file: pathlib.Path | None = None,
     use_upmem_scatter_api: bool = False,
 ) -> subprocess.CompletedProcess:
@@ -191,6 +191,10 @@ def compile_cinm1(
     tasklets) working group -- no search. Intermediate stage files are kept
     in work_dir for debugging (mirrors benchmarks/cinm1/Makefile's own
     $(IR_PREFIX).N.*.mlir convention)."""
+    # None means "whichever build the environment holds", resolved here rather
+    # than in the signature: a default argument is evaluated when the module is
+    # imported, and importing this must not require an installed compiler.
+    cinm_opt = cinm_opt or paths.cinm_opt()
     work_dir = pathlib.Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_file or (work_dir / "cinm-opt.log")
@@ -216,7 +220,7 @@ def compile_cinm1(
     return r
 
 
-def lowerer(*, cinm_opt: pathlib.Path = DEFAULT_CINM_OPT, **kwargs):
+def lowerer(*, cinm_opt: pathlib.Path | None = None, **kwargs):
     """A (fn_module, out_file, log_file) -> CompletedProcess callable, for use
     as compile_run.Config.lower -- compiles CINM 1.0's program for this fixed
     (dpus, tasklets) working group."""

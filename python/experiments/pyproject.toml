@@ -3,11 +3,11 @@
 # pipeline living in another repository (the artifact) can depend on it by
 # path rather than reaching into this tree with sys.path.
 #
-# A separate distribution from python/cinnamon deliberately. That one declares
-# torch and torch-mlir and is wired to a completed build (build-cinnamon.sh
-# symlinks cinm-opt and friends beside it); torch-mlir is not on PyPI at all.
-# Folding this into it would mean no analysis without a compiler, and the
-# artifact's environment is meant to resolve on a laptop with nothing built.
+# A separate distribution from python/cinnamon deliberately. That one is about
+# a build -- where its tools went, what it installed beside them -- and this
+# one about what a campaign produced. They move for different reasons: a
+# reader of last year's dumps wants this package at the version that wrote
+# them and whatever compiler happens to be around.
 
 [build-system]
 # >=77 for the SPDX license expression and license-files.
@@ -27,6 +27,12 @@ license-files = ["LICENSE"]
 # modules here return plain task dictionaries and never import it, which is
 # what lets a non-doit caller use them.
 dependencies = [
+    # Where an installed compiler is: the tools, the benchmark suites, the
+    # UPMEM runtime, the reference model. Pure Python and dependency-free, so
+    # this costs an analysis-only environment nothing; paths.py imports it
+    # only when something actually needs a build, so reading a campaign's
+    # results still works where none is installed.
+    "cinnamon",
     "matplotlib",
     "numpy>=1.26",
     # <3 deliberately: the paper's numbers were assembled on pandas 2, and 3.0
