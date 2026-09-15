@@ -1,11 +1,12 @@
 [build-system]
-requires = ["setuptools", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "cinnamon"
 version = "0.1.0"
-license = {file = "LICENSE"}
+license = "MIT"
+license-file = "LICENSE"
 description = "Python bindings for the Cinnamon compiler"
 authors = [{name = "Felix Reißmann"}]
 requires-python = ">=3.6"

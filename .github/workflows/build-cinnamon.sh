@@ -83,7 +83,6 @@ BUILD_TYPE="${CMAKE_BUILD_TYPE:-RelWithDebInfo}"
 
 if [[ "$need_config" -eq 1 ]]; then
   status "Configuring Cinnamon (Ninja): $reason"
-  ln -s "$project_root/LICENSE" "$cinnamon_path/python/cinnamon/" 2>/dev/null || true
 
   # ---- Conan: install C++ dependencies into the build dir ----
   if ! command -v conan >/dev/null 2>&1; then

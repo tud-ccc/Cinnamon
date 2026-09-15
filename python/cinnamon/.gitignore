@@ -2,4 +2,3 @@
 **/*.egg-info
 dist
 src/cinnamon/_resources
-LICENSE
