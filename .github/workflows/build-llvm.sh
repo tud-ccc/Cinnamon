@@ -76,8 +76,81 @@ fetch_prebuilt_llvm() {
   rm -rf "$llvm_prebuilt_dir" && mv "$download_dir/$name" "$llvm_prebuilt_dir"
 }
 
+# The compiler family and major version that built the LLVM in $1, as "clang 22"
+# or "gcc 14", read from the ELF .comment of its MLIR library. Empty when there
+# is no shared library to read it from. A clang-built library names GCC too,
+# for its startup files, so clang wins when both appear.
+llvm_built_by() {
+  local lib comment
+  lib="$(find "$1/lib" -maxdepth 1 -name 'libMLIRIR.so*' -print -quit 2>/dev/null || true)"
+  if [[ -n "$lib" ]] && command -v readelf >/dev/null 2>&1; then
+    comment="$(readelf -p .comment "$lib" 2>/dev/null || true)"
+    if [[ "$comment" == *"clang version"* ]]; then
+      echo "clang $(grep -m1 -oE 'clang version [0-9]+' <<<"$comment" | cut -d' ' -f3)"
+    elif [[ "$comment" == *"GCC:"* ]]; then
+      echo "gcc $(grep -m1 -oE 'GCC: \([^)]*\) [0-9]+' <<<"$comment" | sed 's/.* //')"
+    fi
+  fi
+}
+
+# The same, for the compiler this build uses.
+we_build_with() {
+  case "$("$CXX" --version 2>/dev/null | sed -n 1p)" in
+    *[Cc]lang*) echo "clang $("$CXX" -dumpversion 2>/dev/null | cut -d. -f1)" ;;
+    *)          echo "gcc $("$CXX" -dumpversion 2>/dev/null | cut -d. -f1)" ;;
+  esac
+}
+
+# Fails when the LLVM in $1, described by $2, was built with a compiler this
+# build cannot link against. The remaining arguments are the lines of advice
+# that end the message.
+#
+# MLIR identifies traits and interfaces by addresses that compilers do not
+# share, so an LLVM only works with the compiler that built it: mixing them
+# gives passes that cannot see attributes and interfaces which are plainly
+# there, and tests that fail far from the cause. Two clangs of the same version
+# are not alike enough either -- pixi's targets an older glibc than the system
+# one, and that fails at the link, on symbols like __libc_single_threaded, long
+# before any test runs. A build tree names its compiler, which tells those two
+# apart; for anything else the family and version from the library is all there
+# is.
+check_llvm_compiler() {
+  local dir="$1" what="$2"; shift 2
+  local their_cxx theirs ours line
+  their_cxx="$(grep -E '^CMAKE_CXX_COMPILER:[A-Z]+=' "$dir/CMakeCache.txt" 2>/dev/null | sed 's/.*=//' || true)"
+  if [[ -n "$their_cxx" ]]; then
+    [[ ! "$their_cxx" -ef "$CXX" ]] || return 0
+    # The same compiler reached by another path is fine; a different target
+    # triple or version is not.
+    if [[ -x "$their_cxx" ]] \
+       && [[ "$("$their_cxx" -dumpmachine 2>/dev/null)" == "$("$CXX" -dumpmachine 2>/dev/null)" ]] \
+       && [[ "$("$their_cxx" --version 2>/dev/null | sed -n 1p)" == "$("$CXX" --version 2>/dev/null | sed -n 1p)" ]]; then
+      return 0
+    fi
+    theirs="'$their_cxx'"
+    ours="'$CXX'"
+  else
+    theirs="$(llvm_built_by "$dir")"
+    [[ -n "$theirs" ]] || return 0
+    ours="$(we_build_with)"
+    [[ "$theirs" != "$ours" ]] || return 0
+    ours="$ours ('$CXX')"
+  fi
+  error "The $what was built with $theirs, but this build uses $ours."
+  error "MLIR identifies traits and interfaces by addresses that compilers do not share,"
+  error "so the two cannot be mixed: passes stop seeing attributes that are plainly there,"
+  error "and their C++ runtimes differ, which is what the link fails on first."
+  for line in "$@"; do error "$line"; done
+  exit 1
+}
+
 if [[ "$build_llvm" -eq 0 ]]; then
   status "Not building LLVM; using '$llvm_build_dir'"
+  check_llvm_compiler "$llvm_build_dir" "LLVM in '$llvm_build_dir'" \
+    "Build with the compiler it was built with: set CC and CXX to it in .env and" \
+    "use the 'host' pixi environment ('pixi run -e host configure'), which is where" \
+    "they take effect. Or unset LLVM_BUILD_DIR to build against an LLVM of this" \
+    "environment's own."
   export PATH="$llvm_build_dir/bin:$PATH"
 else
 
@@ -91,36 +164,9 @@ if [[ "$use_prebuilt_llvm" -eq 1 ]]; then
       warning "The prebuilt LLVM has Python bindings for Python $prebuilt_python, but ours is ${our_python:-missing}."
       warning "Torch-MLIR will not build against them; use Python $prebuilt_python, or LLVM_PREBUILT=never."
     fi
-    # MLIR identifies traits and interfaces by addresses that compilers do not
-    # share, so a prebuilt LLVM only works with the compiler family it was
-    # built with. Mixing them gives passes that cannot see attributes and
-    # interfaces which are plainly there, and tests that fail far from the
-    # cause. A clang-built library names GCC too, for its startup files, so
-    # clang wins when both appear.
-    prebuilt_lib="$(find "$llvm_prebuilt_dir/lib" -maxdepth 1 -name 'libMLIRIR.so*' -print -quit 2>/dev/null || true)"
-    if [[ -n "$prebuilt_lib" ]] && command -v readelf >/dev/null 2>&1; then
-      comment="$(readelf -p .comment "$prebuilt_lib" 2>/dev/null || true)"
-      if [[ "$comment" == *"clang version"* ]]; then
-        their_cc="clang $(grep -m1 -oE 'clang version [0-9]+' <<<"$comment" | cut -d' ' -f3)"
-      elif [[ "$comment" == *"GCC:"* ]]; then
-        their_cc="gcc $(grep -m1 -oE 'GCC: \([^)]*\) [0-9]+' <<<"$comment" | sed 's/.* //')"
-      else
-        their_cc=""
-      fi
-      cxx_version_line="$("$CXX" --version 2>/dev/null | sed -n 1p)"
-      case "$cxx_version_line" in
-        *[Cc]lang*) our_cc="clang $("$CXX" -dumpversion 2>/dev/null | cut -d. -f1)" ;;
-        *)          our_cc="gcc $("$CXX" -dumpversion 2>/dev/null | cut -d. -f1)" ;;
-      esac
-      if [[ -n "$their_cc" && "$their_cc" != "$our_cc" ]]; then
-        error "The prebuilt LLVM was built with $their_cc, but this build uses $our_cc ($CXX)."
-        error "MLIR identifies traits and interfaces by addresses that compilers do not share,"
-        error "so the two cannot be mixed: passes stop seeing attributes that are plainly there."
-        error "Build with $their_cc (the default pixi environment), or set LLVM_PREBUILT=never"
-        error "to build LLVM here with the compiler you are using."
-        exit 1
-      fi
-    fi
+    check_llvm_compiler "$llvm_prebuilt_dir" "prebuilt LLVM" \
+      "Build with the default pixi environment, which has that compiler, or set" \
+      "LLVM_PREBUILT=never to build LLVM here with the compiler you are using."
     exit 0
   fi
   if [[ "$llvm_prebuilt" == always ]]; then
