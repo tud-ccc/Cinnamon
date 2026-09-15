@@ -10,10 +10,12 @@ class CinmBackend:
     CINM_PIPELINE = [
         # Convert supported torch ops to cinm dialect
         "func.func(convert-torch-to-cinm)",
-        "func.func(convert-cinm-to-cim)",
-        "func.func(cim-schedule-asap)",
-        "func.func(convert-cim-to-memristor)",
-        "func.func(convert-memristor-to-func)",
+        # cim is a memref-only dialect, so the cinm ops have to be bufferized
+        # before they can be lowered to it. Unknown ops are let through because
+        # the torch ops this backend does not claim are still here, and are
+        # bufferized by the linalg pipeline further down.
+        "one-shot-bufferize{allow-unknown-ops}",
+        "func.func(convert-cinm-to-cim,cim-schedule-asap,convert-cim-to-memristor,convert-memristor-to-func)",
         "convert-func-to-llvm",
     ]
     LINALG_PIPELINE = (

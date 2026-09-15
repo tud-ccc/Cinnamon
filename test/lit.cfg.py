@@ -39,6 +39,16 @@ config.substitutions.append(("%shlibext", config.llvm_shlib_ext))
 
 llvm_config.with_system_environment(["HOME", "INCLUDE", "LIB", "TMP", "TEMP"])
 
+# The dialect runtimes the python backend dlopens are built against the C++
+# runtime of the interpreter's environment. The torch wheel resolves
+# libstdc++ through the default search path and loads the system one into the
+# process first, which is older than what those runtimes need.
+llvm_config.with_environment(
+    "LD_LIBRARY_PATH",
+    os.path.join(os.path.dirname(os.path.dirname(config.python_executable)), "lib"),
+    append_path=True,
+)
+
 llvm_config.use_default_substitutions()
 
 # Tweak the PATH to include the tools dir.

@@ -303,9 +303,9 @@ struct LowerCinmGemm : public OpConversionPattern<cinm::GemmOp> {
 
     Value A = toMemrefLike(rewriter, loc, adaptor.getLhs());
     Value B = toMemrefLike(rewriter, loc, adaptor.getRhs());
-    Value C = op.getResult();
+    Value C = adaptor.getOut();
 
-    auto CTy = dyn_cast<MemRefType>(C.getType());
+    auto CTy = C ? dyn_cast<MemRefType>(C.getType()) : nullptr;
     if (!CTy || CTy.getRank() != 2)
       return op.emitOpError("`out` must be rank-2 memref");
 
@@ -338,9 +338,9 @@ struct LowerCinmGemv : public OpConversionPattern<cinm::GemvOp> {
 
     Value A = toMemrefLike(rewriter, loc, adaptor.getLhs());
     Value x = toMemrefLike(rewriter, loc, adaptor.getRhs());
-    Value yOut = op.getResult();
+    Value yOut = adaptor.getOut();
 
-    auto yTy = dyn_cast<MemRefType>(yOut.getType());
+    auto yTy = yOut ? dyn_cast<MemRefType>(yOut.getType()) : nullptr;
     if (!yTy || yTy.getRank() != 1)
       return op.emitOpError("`out` must be rank-1 memref");
 
@@ -397,8 +397,16 @@ struct InlineCinmCompute : public OpConversionPattern<cinm::ComputeBlockOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(cinm::ComputeBlockOp op, OpAdaptor,
+  matchAndRewrite(cinm::ComputeBlockOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    // The block is isolated from above, so the body reaches the operands
+    // through the region's arguments. Those arguments go away with the region,
+    // so the body has to be pointed at the operands themselves before it is
+    // moved out.
+    for (auto [arg, operand] :
+         llvm::zip(op.getRegion().getArguments(), adaptor.getOperands()))
+      rewriter.replaceAllUsesWith(arg, operand);
+
     Block *parentBlock = op->getBlock();
     auto insertionPoint = rewriter.getInsertionPoint();
     for (auto &nested : llvm::make_early_inc_range(op.getBody().getOps()))
