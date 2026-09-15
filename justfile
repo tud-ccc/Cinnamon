@@ -88,6 +88,16 @@ alias b := build
 
 # Install Cinnamon and the LLVM it loads into the environment
 install: build installLlvm
+    #!/usr/bin/env bash
+    set -euo pipefail
+    source .github/workflows/common.sh >/dev/null
+    # torch-mlir-opt is the torch backend's, and torch-mlir has an install
+    # tree of its own; only that one tool is wanted here.
+    if [ -x "$torch_mlir_build_dir/bin/torch-mlir-opt" ]; then
+        cp -a "$torch_mlir_build_dir/bin/torch-mlir-opt" "{{install_dir}}/bin/torch-mlir-opt"
+    else
+        echo "No torch-mlir-opt; the torch backend will not find it." >&2
+    fi
 
 # The installed tools load some 350 MLIR shared libraries and find them
 # through $ORIGIN/../lib, so they have to sit beside them. Keyed on the pinned

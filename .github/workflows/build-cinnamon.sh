@@ -190,36 +190,46 @@ print_and_run cmake --build "$cinnamon_build_dir" --target all $CINNAMON_BUILD_O
 # Into whichever environment is active: the venv, or pixi's, which sets
 # VIRTUAL_ENV to itself.
 if [[ -n "${VIRTUAL_ENV:-}" ]]; then
-  status "Installing Cinnamon Python package into $VIRTUAL_ENV"
+  status "Installing Cinnamon into $VIRTUAL_ENV"
   cinnamon_python_package_dir="$project_root/python/cinnamon"
-  # Where ResourcePaths looks for the tools: beside the package's sources.
-  cinnamon_python_resource_dir="$cinnamon_python_package_dir/src/cinnamon/_resources"
 
-  # llc pairs with mlir-translate from the same LLVM; clang here is only the
-  # linker driver, so pixi's is fine even though it comes from a newer LLVM.
-  declare -A cinnamon_python_resources=(
-    [cinm-opt]="$cinnamon_build_dir/bin/cinm-opt"
-    [libMemristorDialectRuntime.so]="$cinnamon_build_dir/lib/libMemristorDialectRuntime.so"
-    [torch-mlir-opt]="$torch_mlir_build_dir/bin/torch-mlir-opt"
-    [mlir-translate]="$llvm_build_dir/bin/mlir-translate"
-    [llc]="$llvm_build_dir/bin/llc"
-    [clang]="${CC:-}"
-  )
+  # Everything the Python package resolves -- the tools, the libraries they
+  # load, the UPMEM runtime and its headers, the benchmark suites -- goes into
+  # a subtree of the environment, which is what cinnamon.paths looks in. Under
+  # libexec rather than in bin/ and lib/ directly, because our LLVM is a whole
+  # toolchain and the environment is shared with conda packages carrying one
+  # of their own. Keep in step with the justfile's `install_dir`.
+  cinnamon_install_dir="$VIRTUAL_ENV/libexec/cinnamon"
+  print_and_run cmake --install "$cinnamon_build_dir" --prefix "$cinnamon_install_dir"
 
-  mkdir -p "$cinnamon_python_resource_dir"
-  for name in "${!cinnamon_python_resources[@]}"; do
-    resource="${cinnamon_python_resources[$name]}"
-    link="$cinnamon_python_resource_dir/$name"
-    if [[ -n "$resource" && -e "$resource" ]]; then
-      ln -sfn "$resource" "$link"
+  # The tools load some 350 MLIR shared libraries and resolve them next to
+  # themselves, so LLVM goes into the same subtree. Keyed on the revision, in
+  # the stamp file a prebuilt LLVM already carries: this is about a gigabyte
+  # and only changes when the submodule moves.
+  if [[ "$(cat "$cinnamon_install_dir/$llvm_prebuilt_stamp" 2>/dev/null)" != "$llvm_revision" ]]; then
+    status "Installing LLVM ${llvm_revision:0:12} into $cinnamon_install_dir"
+    if [[ -f "$llvm_build_dir/CMakeCache.txt" ]]; then
+      print_and_run cmake --install "$llvm_build_dir" --prefix "$cinnamon_install_dir"
     else
-      warning "No '$resource'; the Python package will not find '$name'"
-      rm -f "$link"
+      # A prebuilt LLVM was unpacked as an install tree already.
+      mkdir -p "$cinnamon_install_dir"
+      print_and_run cp -a "$llvm_build_dir/." "$cinnamon_install_dir/"
     fi
-  done
+    printf '%s\n' "$llvm_revision" > "$cinnamon_install_dir/$llvm_prebuilt_stamp"
+  fi
+
+  # torch-mlir-opt is the torch backend's, and torch-mlir has an install tree
+  # of its own; only that one tool is wanted here.
+  if [[ -x "$torch_mlir_build_dir/bin/torch-mlir-opt" ]]; then
+    print_and_run cp -a "$torch_mlir_build_dir/bin/torch-mlir-opt" \
+                        "$cinnamon_install_dir/bin/torch-mlir-opt"
+  else
+    warning "No torch-mlir-opt; the torch backend will not find it"
+  fi
 
   # Editable, so that edits to its sources need no reinstall. Without its
-  # dependencies: torch-mlir is not on PyPI, and build-torch.sh installed it.
+  # dependencies: the torch extra names torch-mlir, which is not on PyPI --
+  # build-torch.sh installed it.
   PYTHONWARNINGS=ignore verbose_cmd python -m pip install --no-deps --no-build-isolation -e "$cinnamon_python_package_dir"
 
   if [[ "$setup_python_venv" -eq 1 && "$build_cinnamon_wheel" -eq 1 ]]; then
