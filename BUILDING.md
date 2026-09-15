@@ -149,7 +149,7 @@ leaves the matching submodule uninitialized.
 | `TORCH_MLIR_SOURCE_DIR` | Build Torch-MLIR from your checkout instead of the submodule |
 | `TORCH_MLIR_INSTALL_DIR` | Use a Torch-MLIR you have already installed |
 | `UPMEM_HOME` | Location of the UPMEM SDK |
-| `CINNAMON_BUILD_DIR` | Where to build Cinnamon itself (default `build/`) |
+| `CINNAMON_BUILD_DIR` | Where to build Cinnamon itself (default `build/`); Torch-MLIR is installed into its `torch-mlir-install/` |
 
 ### Build
 

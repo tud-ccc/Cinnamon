@@ -318,7 +318,9 @@ mlir_cmake_dir="$llvm_build_dir/lib/cmake/mlir"
 # ---- Torch-MLIR ----
 torch_mlir_source_dir="${TORCH_MLIR_SOURCE_DIR:-$project_root/third-party/torch-mlir}"
 torch_mlir_build_dir="$torch_mlir_source_dir/build"
-torch_mlir_install_dir="${TORCH_MLIR_INSTALL_DIR:-$torch_mlir_source_dir/install}"
+# Not beside the build dir: torch-mlir's .gitignore covers build/ but not
+# install/, which would leave the submodule permanently dirty.
+torch_mlir_install_dir="${TORCH_MLIR_INSTALL_DIR:-$cinnamon_build_dir/torch-mlir-install}"
 if [[ -n "${TORCH_MLIR_INSTALL_DIR:-}" ]]; then
   build_torch_mlir=0
   info "Using Torch-MLIR installation '$torch_mlir_install_dir' (TORCH_MLIR_INSTALL_DIR)"

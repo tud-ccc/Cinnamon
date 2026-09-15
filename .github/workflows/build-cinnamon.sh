@@ -51,6 +51,7 @@ fi
 need_config=0
 reason=""
 cached_llvm_dir="$(grep -E '^LLVM_DIR:[A-Z]+=' "$cache_file" 2>/dev/null | sed 's/.*=//' || true)"
+cached_torch_mlir_dir="$(grep -E '^TORCH_MLIR_DIR:[A-Z]+=' "$cache_file" 2>/dev/null | sed 's/.*=//' || true)"
 if [[ ! -f "$cache_file" ]]; then
   reason="no CMake cache in '$cinnamon_build_dir'"
 elif ! grep -q 'CMAKE_GENERATOR:INTERNAL=Ninja' "$cache_file"; then
@@ -59,6 +60,9 @@ elif [[ ! -f "$cinnamon_build_dir/build.ninja" ]]; then
   reason="build.ninja missing"
 elif [[ -n "$cached_llvm_dir" && ! "$cached_llvm_dir" -ef "$llvm_cmake_dir" ]]; then
   reason="LLVM moved from '$cached_llvm_dir' to '$llvm_cmake_dir'"
+elif [[ -d "$torch_mlir_install_dir" && ! "$cached_torch_mlir_dir" -ef "$torch_mlir_install_dir" ]]; then
+  # Including a tree configured before there was one to find
+  reason="the Torch-MLIR installation is now '$torch_mlir_install_dir'"
 elif [[ "$reconfigure" -eq 1 ]]; then
   reason="forced reconfigure (reconfigure=1)"
 elif [[ -n "${PYBIN:-}" ]]; then
@@ -74,7 +78,11 @@ if [[ -n "$cached_cxx" && ! "$cached_cxx" -ef "$CXX" ]]; then
   # CMake will not change the compiler of a build tree, so this one has to go.
   warning "Cinnamon was built with '$cached_cxx', now building with '$CXX'"
   warning "Recreating '$cinnamon_build_dir'"
-  rm -rf "$cinnamon_build_dir"
+  # Except for the Torch-MLIR installation, which build-torch.sh has just
+  # refreshed in there and which the configure below is pointed at.
+  for entry in "$cinnamon_build_dir"/{*,.[!.]*}; do
+    [[ "$entry" -ef "$torch_mlir_install_dir" ]] || rm -rf "$entry"
+  done
   reason="the compiler changed"
   need_config=1
 fi
