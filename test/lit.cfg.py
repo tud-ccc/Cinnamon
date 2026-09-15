@@ -51,6 +51,6 @@ tool_dirs = [
     config.llvm_tools_dir,
     os.path.dirname(config.python_executable),
 ]
-tools = ["cinm-opt", "cinm-constraint-tests", "python"]
+tools = ["cinm-opt", "python"]
 
 llvm_config.add_tool_substitutions(tools, tool_dirs)

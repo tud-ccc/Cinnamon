@@ -52,6 +52,9 @@ matplotlib = "*"
 plotly = "*"
 tqdm = "*"
 doit = "*"
+# The project itself, as setup-venv.sh installs it. Not python/cinnamon: it
+# depends on torch-mlir, which is not on PyPI, so build-cinnamon.sh installs it.
+cinm-experiments = { path = "python/experiments", editable = true }
 
 # conda-forge's Clang with its own libstdc++, built against an old glibc
 # baseline, so every machine builds with the same compiler. LLVM has to be

@@ -18,6 +18,10 @@ class ResourcePaths:
         resource_dir = ResourcePaths._resource_dir()
         return os.path.join(resource_dir, "mlir-translate")
 
+    def llc():
+        resource_dir = ResourcePaths._resource_dir()
+        return os.path.join(resource_dir, "llc")
+
     def clang():
         resource_dir = ResourcePaths._resource_dir()
         return os.path.join(resource_dir, "clang")

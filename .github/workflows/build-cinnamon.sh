@@ -187,35 +187,46 @@ status "Building Cinnamon (Ninja)"
 print_and_run cmake --build "$cinnamon_build_dir" --target all $CINNAMON_BUILD_OPTIONS
 
 # ---- Python package wiring ----
-if [[ "$setup_python_venv" -eq 1 ]]; then
-  status "Building Cinnamon Python package"
-  site_packages_dir="$(python -c 'import sysconfig; p=sysconfig.get_paths(); print(p.get("platlib") or p.get("purelib"))')"
-  cinnamon_python_package_dir_src="$project_root/python/cinnamon/src/cinnamon"
-  cinnamon_python_package_resource_dir="$site_packages_dir/_resources"
+# Into whichever environment is active: the venv, or pixi's, which sets
+# VIRTUAL_ENV to itself.
+if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+  status "Installing Cinnamon Python package into $VIRTUAL_ENV"
+  cinnamon_python_package_dir="$project_root/python/cinnamon"
+  # Where ResourcePaths looks for the tools: beside the package's sources.
+  cinnamon_python_resource_dir="$cinnamon_python_package_dir/src/cinnamon/_resources"
 
-  cinnamon_python_resources=(
-    "$cinnamon_build_dir/bin/cinm-opt"
-    "$cinnamon_build_dir/lib/libMemristorDialectRuntime.so"
-    "$torch_mlir_build_dir/bin/torch-mlir-opt"
-    "$llvm_build_dir/bin/mlir-translate"
-    "$llvm_build_dir/bin/clang"
+  # llc pairs with mlir-translate from the same LLVM; clang here is only the
+  # linker driver, so pixi's is fine even though it comes from a newer LLVM.
+  declare -A cinnamon_python_resources=(
+    [cinm-opt]="$cinnamon_build_dir/bin/cinm-opt"
+    [libMemristorDialectRuntime.so]="$cinnamon_build_dir/lib/libMemristorDialectRuntime.so"
+    [torch-mlir-opt]="$torch_mlir_build_dir/bin/torch-mlir-opt"
+    [mlir-translate]="$llvm_build_dir/bin/mlir-translate"
+    [llc]="$llvm_build_dir/bin/llc"
+    [clang]="${CC:-}"
   )
 
-  if [[ ! -e "$site_packages_dir" ]]; then
-    ln -s "$cinnamon_python_package_dir_src" "$site_packages_dir"
-  fi
-
-  mkdir -p "$cinnamon_python_package_resource_dir" || true
-  for resource in "${cinnamon_python_resources[@]}"; do
-    ln -s "$resource" "$cinnamon_python_package_resource_dir" 2>/dev/null || true
+  mkdir -p "$cinnamon_python_resource_dir"
+  for name in "${!cinnamon_python_resources[@]}"; do
+    resource="${cinnamon_python_resources[$name]}"
+    link="$cinnamon_python_resource_dir/$name"
+    if [[ -n "$resource" && -e "$resource" ]]; then
+      ln -sfn "$resource" "$link"
+    else
+      warning "No '$resource'; the Python package will not find '$name'"
+      rm -f "$link"
+    fi
   done
 
-  if [[ "$build_cinnamon_wheel" -eq 1 ]]; then
-    pushd "$cinnamon_path/python/cinnamon" >/dev/null
+  # Editable, so that edits to its sources need no reinstall. Without its
+  # dependencies: torch-mlir is not on PyPI, and build-torch.sh installed it.
+  PYTHONWARNINGS=ignore verbose_cmd python -m pip install --no-deps --no-build-isolation -e "$cinnamon_python_package_dir"
+
+  if [[ "$setup_python_venv" -eq 1 && "$build_cinnamon_wheel" -eq 1 ]]; then
+    pushd "$cinnamon_python_package_dir" >/dev/null
     PYTHONWARNINGS=ignore verbose_cmd python -m build
     popd >/dev/null
   fi
 else
-  warning "Skipping Cinnamon Python package build"
-  warning "Ensure your Python env is set up if you need it."
+  warning "No active Python environment; skipping the Cinnamon Python package"
 fi

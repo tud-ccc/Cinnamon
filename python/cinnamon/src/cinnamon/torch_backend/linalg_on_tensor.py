@@ -19,7 +19,7 @@ class LinalgOnTensorBackend:
         mlir = invoker.compile_torch_module(model, input_tensor)
         llvm_mlir = invoker.cinm_opt(LinalgOnTensorBackend.PIPELINE, mlir)
         ll_ir = invoker.mlir_translate(llvm_mlir)
-        shared_object = invoker.clang(ll_ir)
+        shared_object = invoker.link(invoker.llc(ll_ir))
 
         signatures = SignatureExtractor.extract(mlir)
 
