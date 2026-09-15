@@ -42,6 +42,13 @@ endif()
 # Set global language standard to C++20.
 set(CMAKE_CXX_STANDARD 20 CACHE STRING "C++ standard to conform to")
 
+# Installed binaries look for their libraries next to themselves, so the
+# prefix can be moved or recreated elsewhere without relinking. MLIR's library
+# macros already do this for the dialect libraries; a plain add_executable
+# gets only the global value, which is why it is set here rather than on each
+# tool. CMake drops the build-tree rpath on install, so this is what is left.
+list(APPEND CMAKE_INSTALL_RPATH "\$ORIGIN/../lib")
+
 # Detect if this is a stand-alone build.
 if (${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_CURRENT_SOURCE_DIR})
     # Set shared output directories.
@@ -204,3 +211,11 @@ add_subdirectory(test)
 add_subdirectory(tools)
 
 add_subdirectory(runtime/Memristor)
+
+# The benchmark suites travel with the compiler that lowers them: a suite and
+# the tools are one version of one thing, and the experiment pipelines resolve
+# both through the same prefix rather than through a path into a checkout.
+# cinm1/gen/ holds what its own makefile produces and is not part of the suite.
+install(DIRECTORY benchmarks/
+        DESTINATION share/cinnamon/benchmarks
+        PATTERN "gen" EXCLUDE)

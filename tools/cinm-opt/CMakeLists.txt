@@ -31,3 +31,5 @@ target_link_libraries(${PROJECT_NAME}
 )
 # Information necessary for perf.
 target_compile_options(${PROJECT_NAME} PRIVATE -fno-omit-frame-pointer -g)
+
+install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
