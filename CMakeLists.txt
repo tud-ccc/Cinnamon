@@ -54,7 +54,14 @@ endif()
 
 
 # Find MLIR.
+# The Conan toolchain turns on CMAKE_FIND_PACKAGE_PREFER_CONFIG, which makes
+# LLVMConfig's find_package(ZLIB) skip the zlib in CMAKE_PREFIX_PATH (it ships
+# no CMake config) and pick up the system's ZLIBConfig instead, whose static
+# target may point at a libz.a that is not installed.
+set(_saved_prefer_config ${CMAKE_FIND_PACKAGE_PREFER_CONFIG})
+set(CMAKE_FIND_PACKAGE_PREFER_CONFIG OFF)
 find_package(MLIR REQUIRED CONFIG)
+set(CMAKE_FIND_PACKAGE_PREFER_CONFIG ${_saved_prefer_config})
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 
