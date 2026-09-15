@@ -9,11 +9,26 @@ import lit.util
 
 from lit.llvm import llvm_config
 
-has_cinnamon_module = importlib.util.find_spec("cinnamon") is not None
+
+# The tests under Python/ drive the torch backend, so every module it imports
+# has to be there. cinnamon on its own does not settle that: it is a pypi
+# dependency of the environment, so it is importable wherever pixi has run,
+# including jobs that only unpack a build tree. torch-mlir is the one that
+# says a build actually happened here -- it is not on PyPI, build-torch.sh
+# installs it from the submodule.
+def _importable(name):
+    try:
+        return importlib.util.find_spec(name) is not None
+    except ImportError:
+        return False
+
+
+_missing = [m for m in ("cinnamon", "torch", "torch_mlir") if not _importable(m)]
+has_cinnamon_module = not _missing
 if has_cinnamon_module:
-    print("INFO: cinnamon module found; running python tests")
+    print("INFO: running the python tests")
 else:
-    print("WARNING: cinnamon module not found; skipping python tests")
+    print(f"WARNING: skipping the python tests; no {', '.join(_missing)}")
     print("INFO: using python interpreter:", sys.executable)
 
 # name: The name of this test suite.
