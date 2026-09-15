@@ -1,0 +1,11 @@
+[submodule "third-party/cnm-cost-model"]
+	path = third-party/cnm-cost-model
+	url = https://github.com/tud-ccc/cnm-cost-model.git
+  branch = cpp-sim
+[submodule "third-party/llvm"]
+	path = third-party/llvm
+	url = https://github.com/tud-ccc/cinnamon-llvm.git
+	branch = cinnamon
+[submodule "third-party/torch-mlir"]
+	path = third-party/torch-mlir
+	url = https://github.com/llvm/torch-mlir.git

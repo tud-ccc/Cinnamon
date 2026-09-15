@@ -1,10 +1,15 @@
 add_mlir_dialect_library(CnmTransforms
     SPIRVAttachAttributes.cpp
-    Bufferize.cpp
+    BufferizeCnm.cpp
     HoistWorkgroups.cpp
+    FuseLaunches.cpp
+    EnsureScatterGatherContiguous.cpp
+    ScatterOptimizations.cpp
+    IsolateLinalgCaptures.cpp
 
 DEPENDS
     CnmIncGen
+    CinmIncGen
     CnmTransformPassesIncGen
 
 LINK_LIBS PUBLIC
@@ -15,7 +20,9 @@ LINK_LIBS PUBLIC
     MLIRLLVMDialect
     MLIRAffineDialect
     MLIRLinalgDialect
+    MLIRTensorDialect
     MLIRSPIRVTarget
     MLIRTransformUtils
     CnmIR
+    CinmIR
 )

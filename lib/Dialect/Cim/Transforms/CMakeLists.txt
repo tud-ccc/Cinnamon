@@ -1,5 +1,7 @@
 add_mlir_dialect_library(CimTransforms
     SchedulingPasses.cpp
+    MarkRelowerPass.cpp
+    CimCleanupUnsupported.cpp
 
 DEPENDS
     CimIncGen

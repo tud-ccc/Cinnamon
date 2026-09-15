@@ -12,37 +12,38 @@ include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/EnumAttr.td"
 include "mlir/IR/OpBase.td"
 include "UPMEMBase.td"
+include "cinm-mlir/Dialect/Cinm/IR/CinmWorkgroupTypeInterface.td"
 
-
-def UPMEM_AsyncToken : UPMEM_Type<"AsyncToken"> {
-  let mnemonic = "async.token";
-  let summary = "";
-}
-
-def DeviceHierarchy : UPMEM_Type<"DeviceHierarchy"> {
+def DeviceHierarchyType : UPMEM_Type<"DeviceHierarchy", [CinmWorkgroupTypeInterface]> {
   let mnemonic = "hierarchy";
-  let summary = "";
+  let summary = "A set of allocated DPUs and the tasklets running on them";
+  let description = [{
+    `!upmem.hierarchy<DxT>`: D DPUs running T tasklets each. The SDK
+    allocates DPU *counts* -- which ranks they land on is its business, and
+    unobservable -- so ranks are deliberately not part of the shape.
+  }];
 
-  let parameters = (ins ArrayRefParameter<"int64_t">:$shape);
+  let parameters = (ins "uint32_t":$numDpus, "uint32_t":$numTaskletsPerDpu);
 
   let hasCustomAssemblyFormat = 1;
-  let genVerifyDecl = 1;
   let extraClassDeclaration = [{
-    int64_t getNumElements() {
-      auto wgShape = getShape();
-      return std::reduce(wgShape.begin(), wgShape.end(), 1, std::multiplies<>());
+    int64_t getNumElements() const {
+      return getNumDpus() * getNumTaskletsPerDpu();
     }
-    int64_t getNumDims() { return getShape().size();}
 
-    int64_t getNumRanks() {
-      return getShape()[0];
+    int64_t getNumDims() const { return 2; }
+
+    SmallVector<int64_t, 2> getWgShape() const {
+      return {getNumDpus(), getNumTaskletsPerDpu()};
     }
-    int64_t getNumDpusPerRank() {
-      return getShape()[1];
+
+    /// cinm::WorkgroupTypeInterface -- what lets a hierarchy allocated
+    /// outside a compute block be recognized as a forwarded workgroup by
+    /// code that cannot name this dialect.
+    ::llvm::SmallVector<int64_t> getWorkgroupShape() const {
+      return {getNumDpus(), getNumTaskletsPerDpu()};
     }
-    int64_t getNumTaskletsPerDpu() {
-      return getShape()[2];
-    }
+
   }];
 }
 

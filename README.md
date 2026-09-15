@@ -19,68 +19,35 @@ Emerging compute-near-memory (CNM) and compute-in-memory (CIM) architectures hav
 
 
 <!-- GETTING STARTED -->
-## Getting Started
+#### Building
 
-This is an example of how you can build the framework locally.
+See [BUILDING.md](BUILDING.md).
 
-### Prerequisites
 
-CINM depends on `LLVM 20.1`. This is built automatically.
-Additionally, a number of software packages are required to build it:
-- CMake (at least version 3.22)
-- [`just`](https://github.com/casey/just?tab=readme-ov-file#installation)
-- A somewhat recent Python installation (>=3.7?)
+### Tests
 
-On some systems you might need to update your C++ compiler or update the default, e.g. on Ubuntu 24.04:
 ```sh
-sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 70 --slave /usr/bin/g++ g++ /usr/bin/g++-13
-# Or use another compiler or gcc/g++ version supporting the C++ 20 standard.
+just test
 ```
-
-### Download and Build
-
-The repository contains a `justfile` that installs all needed dependencies and builds the sources.
-
-* Make sure you install build dependencies:
-```sh
-sudo apt-get install clang ninja-build mold libvulkan-dev ccache
-```
-* Clone the repo
-  ```sh
-  git clone https://github.com/tud-ccc/Cinnamon.git
-  ```
-* Set up the environment variables in a `.env`-file (in the root)
-  ```sh
-  # Recommended:
-  CMAKE_GENERATOR=Ninja
-  CMAKE_C_COMPILER=clang
-  CMAKE_CXX_COMPILER=clang++
-  CMAKE_LINKER_TYPE=MOLD
-
-  # Options passed to llvm when it is build by the build script
-  # Building llvm uses a lot of memory, so it is recommended to limit the number of parallel compile, link & tablegen jobs. The example values here work great for 32 GiB of RAM.
-  LLVM_CMAKE_OPTIONS='-DLLVM_CCACHE_BUILD=ON -DLLVM_PARALLEL_COMPILE_JOBS=16 -DLLVM_PARALLEL_LINK_JOBS=2 -DLLVM_PARALLEL_TABLEGEN_JOBS=8'
-
-  TORCH_MLIR_CMAKE_OPTIONS='-DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang'
-  CINNAMON_CMAKE_OPTIONS='-DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -DLLVM_ENABLE_LIBCXX=ON'
-
-  # You could add your own LLVM dir; the build script won't try to clone and build LLVM
-  LLVM_BUILD_DIR=/home/username/projects/Cinnamon/third-party/llvm/build/
-  ```
-* Download, configure, and build dependencies and the sources (without the torch-mlir frontend).
-  ```sh
-  just configure -no-torch-mlir
-  ```
 
 <!-- USAGE EXAMPLES -->
 ## Usage
-All benchmarks at the `cinm` abstraction are in this repository under `testbench/`. The `compile-benches.sh` script compiles all the benchmarks using the Cinnamon flow. The generated code and the intermediate IRs for each bench can be found under`testbench/gen/`.
+Benchmarks at the `cinm` abstraction live under `benchmarks/`, one directory
+per suite: `cinm1/` is the CINM 1.0 flow driven by its own makefile, while
+`prim/` and `multiop/` are compiled by the experiment pipelines. Compiling
+and running a `cinm1` benchmark goes through `just`, and needs the UPMEM SDK
+(for the last step at least):
 
-   ```sh
-   chmod +x compile-benches.sh
-   ./compile-benches.sh
-   ```
-The user can also try running individual benchmarks by manually trying individual conversions. The benchmark files have a comment at the top giving the command used to lower them to the upmem IR.
+```sh
+just genBench gemv   # compile only; output lands in benchmarks/cinm1/gen/gemv/
+just bench gemv      # compile and run
+```
+
+The generated code and the intermediate IRs for each bench are written to
+`benchmarks/cinm1/gen/`. You can also lower a benchmark by hand: each benchmark file
+has a comment at the top giving the command that lowers it to the UPMEM IR.
+`just cinm-opt` runs the compiler from the build tree without putting it on
+your `PATH`.
 
 <!-- ROADMAP -->
 ## Roadmap

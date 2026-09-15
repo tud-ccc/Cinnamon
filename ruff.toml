@@ -1,0 +1,31 @@
+target-version = "py310"
+line-length = 88
+
+extend-exclude = [
+    "third-party",
+    "build",
+    ".venv",
+    ".exp0",
+    ".experiments",
+    ".smt",
+    "samples/transformers/llama2.c",  # vendored nested checkout, not our code
+]
+
+[lint]
+# Default rule set: pyflakes (F) + a slice of pycodestyle (E4/E7/E9) that
+# catches real bugs without imposing a broader style opinion.
+select = ["E4", "E7", "E9", "F"]
+ignore = ["E741"]
+
+[lint.per-file-ignores]
+# lit injects `config`/`lit_config` into these at exec time.
+"**/lit.cfg.py" = ["F821"]
+# gem5 config scripts rely on `from m5.objects import *` and imports after
+# sys.path/addToPath setup.
+"runtime/Alpine/se_alpine.py" = ["F403", "F405", "E402"]
+# doit task files insert onto sys.path before importing sibling packages.
+"**/dodo.py" = ["E402"]
+
+[format]
+quote-style = "double"
+indent-style = "space"

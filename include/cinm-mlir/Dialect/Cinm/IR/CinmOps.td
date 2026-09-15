@@ -11,7 +11,10 @@
 include "cinm-mlir/Dialect/Cinm/IR/CinmBase.td"
 include "cinm-mlir/Dialect/Cinm/IR/CinmTypes.td"
 include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.td"
+include "cinm-mlir/Dialect/Cinm/IR/CinmPlatformAttrInterface.td"
 include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.td"
+include "cinm-mlir/Dialect/Cinm/IR/CinmComputeOpInterface.td"
+include "cinm-mlir/Dialect/Cinm/IR/CinmGemmlikeOpInterface.td"
 
 include "mlir/IR/EnumAttr.td"
 include "mlir/IR/BuiltinAttributes.td"
@@ -24,149 +27,118 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Dialect/Linalg/IR/LinalgEnums.td"
 
+def Cinm_ElementwiseOp
+    : Cinm_Op<"op.elementwise", [
+        DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+        AttrSizedOperandSegments
+    ]> {
 
-// Define the attribute enums matching elementwise op kind (e.g., add).
-def ElementwiseKindAttr : EnumAttr<Cinm_Dialect,
-                                   ElementwiseKind, "elemwise_kind"> {
-  // EnumAttr directly inherits the cppNamespace of the UnaryFn enumInfo, which
-  // is mlir::linalg in this case. However, we want to override to mlir::cinm.
-  let cppNamespace = "mlir::cinm";
+    let summary = "";
+    let description = [{
+        TODO
+    }];
+
+    let arguments = (ins
+        Cinm_ElementwiseKindAttr:$kind,
+        AnyShaped:$lhs,
+        Optional<AnyShaped>:$rhs,
+        Optional<AnyShaped>:$out
+    );
+
+    let results = (outs Optional<AnyRankedTensor>:$result);
+
+    let extraClassDeclaration = [{
+      ArrayRef<int64_t> getShape() {
+        return getLhs().getType().getShape();
+      }
+    }];
+
+    let hasCustomAssemblyFormat = true;
+
+    let skipDefaultBuilders = 1;
+    let builders = [
+      OpBuilder<(ins "cinm::ElementwiseKind":$kind, "Value":$a, "Value":$b, "Value":$out)>,
+      OpBuilder<(ins "cinm::ElementwiseKind":$kind, "Value":$a, "Value":$b),
+        "build($_builder, $_state, kind, a, b, Value{});">,
+      OpBuilder<(ins "cinm::ElementwiseKind":$kind, "Value":$a),
+        "build($_builder, $_state, kind, a, Value{}, Value{});">
+    ];
 }
 
+class Cinm_GemmlikeOp<string name, string cppClassName> : Cinm_Op<name,
+  [
+    InferTensorTypeAdaptor,
+    DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+    // OptionalTypesMatchWith<
+    //   "bias should have compatible type", "result", "bias", "$_self">,
+    AttrSizedOperandSegments,
+    CinmGemmlikeOpInterface
+  ]> {
 
-
-// Op templates
-
-defvar AnyScalar = AnyType; // todo
-
-// no implicit broadcast
-class Cinm_Elementwise_Op<string name, list<Trait> traits = []>
-    : Cinm_Op<name, traits # [SameOperandsAndResultType]> {
-
-    let arguments = (ins AnyRankedTensor:$lhs, AnyRankedTensor:$rhs);
-    let results = (outs AnyRankedTensor:$result);
-
-    let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($result)";
-}
-
-class Cinm_Elementwise_Scalar_Op<string name, list<Trait> traits = []>
-    : Cinm_Op<name, traits # [
-        SameOperandsAndResultElementType,
-        TypesMatchWith<"lhs & result must have the same type", "lhs", "result", "$_self">,
-        TypesMatchWith<"rhs must be element type of lhs", "lhs", "rhs", "::llvm::cast<RankedTensorType>($_self).getElementType()">
-     ]> {
-
-    let arguments = (ins AnyRankedTensor:$lhs, AnyType:$rhs);
-    let results = (outs AnyRankedTensor:$result);
-
-    let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs)";
-}
-
-class Cinm_Bitwise_Op<string name, list<Trait> traits = []>
-    : Cinm_Op<name, traits> {
-    let arguments = (ins AnyRankedTensor:$lhs, AnyRankedTensor:$rhs);
-    let results = (outs AnyRankedTensor:$result);
-}
-
-def Cinm_Elementwise_Unary_Op : Cinm_Op<"op.element_wise", [Pure, SameOperandsAndResultType, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
-  let summary = "Generic elementwise unary operation on a tensor";
   let description = [{
-    Perform a unary operation on each element of a tensor. Example:
+    CINM GEMM-like ops (batch/non-batch gemm/gemv) semantics depend on whether they operate
+    on memrefs or tensors.
 
+    If the operands are tensors:
+    ```mlir
+        %C = cinm.op.gemm %A, %B                      // %C = %A * %B
+        %C = cinm.op.gemm %A, %B plus %bias           // %C = %A * %B + %bias
     ```
-	%r = cinm.compute attributes { workgroupShape = array<i64: 1,1,16> } -> tensor<512xf32> {
-	    %sqrts = cinm.op.element_wise sqrt (%input) : tensor<512xf32>
-	    cinm.yield %sqrts : tensor<512xf32>
+    A tensor out buffer is only used as a bufferization hint (is states that %C may be equivalent to %out):
+    ```mlir
+        %C = cinm.op.gemm %A, %B into %out            // %C = %A * %B
+        %C = cinm.op.gemm %A, %B plus %bias into %out // %C = %A * %B + %bias
     ```
+    If the operands are memrefs:
+    ```mlir
+        cinm.op.gemm %A, %B into %out                 // %out += %A * %B
+        cinm.op.gemm %A, %B plus %bias into %out      // %out += %A * %B + %bias
+    ```
+    The main difference is that the memref variant reads from the out buffer and accumulates into it, while the tensor variant does not. When bufferizing, the output buffer is first initialized
+    with the bias (or zeroed out if there is no bias) to preserve the tensor semantics.
+
+    Note that this difference can lead to slightly different bufferized IRs depending on whether you bufferize or tile first.
+
   }];
 
   let arguments = (ins
-    ElementwiseKindAttr:$method,
-    AnyRankedTensor:$input
+      AnyShaped:$lhs,
+      AnyShaped:$rhs,
+      Optional<AnyShaped>:$bias,
+      Optional<AnyShaped>:$out
   );
 
-  let results = (outs
-    AnyRankedTensor:$result
-  );
+  // let hasVerifier = 1; // todo
+  let hasFolder = 1;
+  let results = (outs Optional<AnyRankedTensor>:$result);
+  let assemblyFormat =
+    "$lhs `,` $rhs (`plus` $bias^)? (`into` $out^)? attr-dict `:` type($lhs) `,` type($rhs) (`plus` type($bias)^)? (`into` type($out)^)? (`->` type($result)^)?";
 
-  let assemblyFormat = "$method `(` $input `)` attr-dict `:` type($input)";
-}
-
-// Concrete op definitions
-
-class TypeMatchesElementType<string tensorTy, string toInfer>:
-TypesMatchWith<"output type matches element type of input", toInfer, tensorTy,
-              "::llvm::cast<RankedTensorType>($_self).getElementType()">;
-
-def Cinm_AddOp : Cinm_Elementwise_Op<"op.add", [Commutative, Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
-  let summary = "Tensor addition operation";
-  let description = [{}];
-}
-
-def Cinm_AddsOp : Cinm_Elementwise_Scalar_Op<"op.adds", [Commutative, Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
-  let summary = "Tensor & scalar addition operation";
-  let description = [{}];
-}
-
-def Cinm_SubOp : Cinm_Elementwise_Op<"op.sub", [Pure,  DeclareOpInterfaceMethods<CinmTilingInterface>]> {
-  let summary = "Tensor subtraction operation";
-  let description = [{}];
-}
-
-def Cinm_SubsOp : Cinm_Elementwise_Scalar_Op<"op.subs", [Pure,  DeclareOpInterfaceMethods<CinmTilingInterface>]> {
-  let summary = "Tensor & scalar subtraction operation";
-  let description = [{}];
-}
-
-// these two aren't in the paper
-def Cinm_MulOp : Cinm_Elementwise_Op<"op.mul", [Commutative, Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
-  let summary = "Hadamard product (element-wise multiplication)";
-  let description = [{}];
-}
-
-def Cinm_MulsOp : Cinm_Elementwise_Scalar_Op<"op.muls", [Commutative, Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
-  let summary = "Tensor & scalar multiplication operation";
-  let description = [{}];
-}
-
-def Cinm_DivOp : Cinm_Elementwise_Op<"op.div", [Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
-  let summary = "Tensor division operation";
-  let description = [{}];
-}
-
-def Cinm_DivsOp : Cinm_Elementwise_Scalar_Op<"op.divs", [Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
-  let summary = "Tensor & scalar division operation";
-  let description = [{}];
-}
-
-def Cinm_GemmOp : Cinm_Op<"op.gemm",
-    [Pure, InferTensorTypeAdaptor, DeclareOpInterfaceMethods<CinmTilingInterface>,
-     OptionalTypesMatchWith<"bias should have compatible type", "result", "bias", "$_self">]> {
-  let summary = "Generalized Matrix Matrix Multiplication operation";
-  let description = [{
-    TODO
-  }];
-  let arguments = (ins 2DTensorOf<[AnyType]>:$left,
-                       2DTensorOf<[AnyType]>:$right,
-                       Optional<2DTensorOf<[AnyType]>>:$bias);
-  let results = (outs 2DTensorOf<[AnyType]>:$result);
-  let assemblyFormat = "$left `,` $right (`plus` $bias^)? attr-dict `:` `(` type($left) `,` type($right) `)` `->` type($result)";
-
-  let builders=[
+  let skipDefaultBuilders = 1;
+  let builders = [
+    OpBuilder<(ins "Value":$left, "Value":$right, "Value":$bias, "Value":$out),
+      "buildGemmLikeOp<" # cppClassName # ">($_builder, $_state, left, right, bias, out);">,
+    OpBuilder<(ins "Value":$left, "Value":$right, "Value":$bias),
+      "build($_builder, $_state, left, right, bias, Value{});">,
     OpBuilder<(ins "Value":$left, "Value":$right),
-      "build($_builder, $_state, ValueRange {left, right});">
-
+      "build($_builder, $_state, left, right, Value{}, Value{});">
   ];
 }
 
-def Cinm_GemvOp : Cinm_Op<"op.gemv", [Pure, InferShapedTypeOpAdaptor, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
+def Cinm_GemmOp : Cinm_GemmlikeOp<"op.gemm", "GemmOp"> {
+  let summary = "Generalized Matrix Matrix Multiplication operation";
+}
+
+def Cinm_GemvOp : Cinm_GemmlikeOp<"op.gemv", "GemvOp"> {
   let summary = "Generalized Matrix Vector Multiplication";
-  let description = [{
-    TODO
-  }];
-  let arguments = (ins 2DTensorOf<[AnyType]>:$left, 1DTensorOf<[AnyType]>:$right);
-  let results = (outs 1DTensorOf<[AnyType]>:$result);
-  let assemblyFormat = "$left `,` $right attr-dict `:` `(` type($left) `,` type($right) `)` `->` type($result)";
+}
+
+def Cinm_BatchGemmOp : Cinm_GemmlikeOp<"op.batch_gemm", "BatchGemmOp"> {
+  let summary = "Batched matrix multiplication";
+}
+
+def Cinm_BatchGemvOp : Cinm_GemmlikeOp<"op.batch_gemv", "BatchGemvOp"> {
+  let summary = "Batched matrix vector multiplication";
 }
 
 
@@ -180,16 +152,15 @@ def Cinm_TransposeOp : Cinm_Op<"op.transpose", [InferShapedTypeOpAdaptor, Pure]>
   }];
 
   let arguments = (ins
-    AnyRankedTensor:$input1,
-    AnyRankedTensor:$perms // TODO
+    AnyShaped:$input1,
+    DenseI64ArrayAttr:$permutation
   );
 
   let results = (
-    outs AnyRankedTensor:$output
+    outs AnyShaped:$output
   );
 
   let extraClassDeclaration = [{
-    LogicalResult getConstantPerms(llvm::SmallVector<int64_t> &perms);
   }];
 }
 
@@ -203,12 +174,12 @@ def Cinm_ScanOp : Cinm_Op<"op.scan", [SameOperandsAndResultType, Pure]> {
 
   let arguments = (ins
     Cinm_ScanMethodAttr:$method,
-    AnyRankedTensor:$input
+    AnyShaped:$input
   );
 
   let results = (
     outs
-    AnyRankedTensor:$result
+    AnyShaped:$result
   );
 
   let extraClassDeclaration = [{
@@ -218,7 +189,8 @@ def Cinm_ScanOp : Cinm_Op<"op.scan", [SameOperandsAndResultType, Pure]> {
 }
 
 def Cinm_ReduceOp : Cinm_Op<"op.reduce",
-    [Pure, DeclareOpInterfaceMethods<CinmTilingInterface>]> {
+    [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+     DeclareOpInterfaceMethods<InferTypeOpInterface, ["inferReturnTypes"]>]> {
   let summary = "Reduce the tensor according to a given binary operator.";
 
   let description = [{
@@ -227,35 +199,64 @@ def Cinm_ReduceOp : Cinm_Op<"op.reduce",
     is -1 (last dim). 0-ranked result gets converted to scalar value. Example:
 
     ```
-    %r = cinm.compute attributes { workgroupShape = array<i64: 1,8,16> } -> tensor<288xf32> {
+    %r = cinm.compute -> tensor<288xf32> {
         // Simple vector to scalar: tensor<100xf32> -> f32
         %reduced_vec = cinm.op.reduce min (%vec) : tensor<100xf32> -> f32
         // Default: reduction dimension = -1 -> last dim -> on a 2D tensor, dim = 1
         %max_along_dim1_a = cinm.op.reduce max (%x) : tensor<288x512xf32> -> tensor<288xf32>
         // Equivalent
-        %max_along_dim1_b = cinm.op.reduce max (%x) { dimensions = array<i64: 1> } : tensor<288x512xf32> -> tensor<288xf32>
+        %max_along_dim1_b = cinm.op.reduce max (%x) { dimension = 1 } : tensor<288x512xf32> -> tensor<288xf32>
         // Different dimension yields different result type tensor<512xf32>
-        %add_along_dim0 = cinm.op.reduce add (%x) { dimensions = array<i64: 0> } : tensor<288x512xf32> -> tensor<512xf32>
+        %add_along_dim0 = cinm.op.reduce add (%x) { dimension = 0 } : tensor<288x512xf32> -> tensor<512xf32>
         cinm.yield %max_along_dim1_a : tensor<288xf32>
     }
     ```
+
+    Like the GEMM-like ops, this op has a memref (destination-passing) mode,
+    used when the operands live in device memory -- in particular inside a
+    `cnm.launch` body. There the reduction accumulates into `%out` rather than
+    producing a value, and reads `%out`'s previous contents:
+
+    ```mlir
+        // %out = combine(%out, reduce(%x))
+        cinm.op.reduce add (%x) into %out : memref<288x512xf32> into memref<288xf32>
+    ```
+
+    Accumulating rather than overwriting is what makes the memref mode tilable:
+    a tile of the reduction dimension contributes a partial result, and the
+    caller seeds `%out` with the reduction's identity beforehand (which is what
+    the `cnm.scatter` of the output init already does on the CNM path).
   }];
 
   let arguments = (ins
     Cinm_ReduceMethodAttr:$method,
-    AnyNon0RankedTensor:$input,
-    DefaultValuedAttr<DenseI64ArrayAttr, "{-1}">:$dimensions
+    AnyShaped:$input,
+    // Destination buffer for the memref mode; absent in tensor mode.
+    Optional<AnyShaped>:$out,
+    ConfinedAttr<I64Attr, [IntNonNegative]>:$dimension,
+    DefaultValuedAttr<BoolAttr, "{true}">:$rankReduce
   );
+
+  let skipDefaultBuilders = 1;
+  let builders = [
+    OpBuilder<(ins "Type":$resultTy, "cinm::ReduceMethod":$method,  "Value":$input, CArg<"int64_t", "-1">:$dimension)>,
+    // Memref mode: no result, accumulates into `out`.
+    OpBuilder<(ins "cinm::ReduceMethod":$method, "Value":$input, "Value":$out, CArg<"int64_t", "-1">:$dimension)>
+    ];
 
   let results = (
     outs
-    AnyType:$result
+    Optional<AnyType>:$result
   );
 
+  let hasVerifier = 1;
   let extraClassDeclaration = [{
+    /// True when the op operates on tensors (produces a result).
+    /// False when it accumulates in-place into a memref output buffer.
+    bool isTensorVariant() { return static_cast<bool>(getResult()); }
   }];
 
-  let assemblyFormat = "$method `(` $input `)` attr-dict `:` type($input) `->` type($result)";
+  let hasCustomAssemblyFormat = 1;
 }
 
 def Cinm_TopKOp : Cinm_Op<"op.topK", [InferShapedTypeOpAdaptor, Pure]> {
@@ -268,14 +269,14 @@ def Cinm_TopKOp : Cinm_Op<"op.topK", [InferShapedTypeOpAdaptor, Pure]> {
   let arguments = (ins
     // todo what is enum parameter? it's an attribute though
     // two tensor parameters to search, TODO must have same shape
-    AnyRankedTensor:$input,
+    AnyShaped:$input,
     I64:$k // size of result tensor
   );
 
   let results = (
     outs
     // these have dynamic sizes and rank 1
-    AnyRankedTensor:$resultValues,
+    AnyShaped:$resultValues,
     TensorOf<[Builtin_Index]>:$resultIndices
   );
 
@@ -307,16 +308,16 @@ def Cinm_SimSearchOp : Cinm_Op<"op.simSearch",
   let arguments = (ins
     // two tensor parameters to search, TODO must have same shape
     Cinm_SimilarityMetricAttr:$metric,
-    AnyRankedTensor:$left,
-    AnyRankedTensor:$right,
+    AnyShaped:$left,
+    AnyShaped:$right,
     Builtin_IntegerAttr:$k // size of result tensors (maybe max size)
   );
 
   let results = (
     outs
     // these have dynamic sizes and rank 1
-    AnyRankedTensor:$resultValues,
-    AnyRankedTensor:$resultIndices
+    AnyShaped:$resultValues,
+    AnyShaped:$resultIndices
   );
 
   let extraClassDeclaration = [{
@@ -335,7 +336,7 @@ def Cinm_MergePartialOp : Cinm_Op<"op.mergePartial", [Pure]> {
 
   let results = (
     outs
-    AnyRankedTensor:$result
+    AnyShaped:$result
   );
 
   let extraClassDeclaration = [{
@@ -363,61 +364,238 @@ def Cinm_PopCountOp : Cinm_Op<"op.popCount", [Pure]> {
 }
 
 
+def AcceleratorOp : Cinm_Op<"accelerator", [OpAsmOpInterface]> {
+  let description = [{
+    TileFirst accelerator declaration. This op must be declared at the top of
+    a block op.
+  }];
+
+  let arguments = (ins CinmAcceleratorAttrInterface:$accelerator);
+  let results = (outs AcceleratorRefType:$reference);
+
+  let assemblyFormat = "$accelerator attr-dict";
+  let hasVerifier = 1;
+
+  let extraClassDeclaration = [{
+    void getAsmResultNames(OpAsmSetValueNameFn setName) {
+      auto accName = getAccelerator().getPlatform().getName();
+      setName(getReference(), accName);
+    }
+  }];
+
+}
 
 def Cinm_ComputeOp : Cinm_Base_Op<"compute", [
-  AffineScope, AutomaticAllocationScope
-//  IsolatedFromAbove //, Pure
+  AffineScope, AutomaticAllocationScope, RecursiveMemoryEffects,
+  DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getRegionInvocationBounds", "getSuccessorRegions", "getSuccessorInputs"]>,
+  CinmComputeOpInterface
 ]> {
-  let summary = "TODO";
+  let summary = "Delimits a block of IR that is to be offloaded";
   let description = [{
+    This operation may declare an accelerator on which the computation is to
+    be done. The candidate platforms for the search are declared separately,
+    via the `cinm.available_platforms` attribute (on the op or an enclosing
+    op). The full lowering flow requires concretizing a platform into a
+    compatible accelerator, which can be used for further lowerings.
 
-    %rbuf = cinm.compute attributes { ... } -> tensor<...> {
+    An accelerator is required for instance to run --cinm-infer-tile-sizes
+    or --convert-cinm-to-cnm.
+
+    This operation has no parameters, and is not IsolatedFromAbove.
+    Can be turned automatically into an IsolatedFromAbove compute op
+    with --cinm-isolate-compute-blocks.
+
+    ```
+    %rbuf = cinm.compute -> tensor<...> attributes { ... } {
       %flt = arith.constant <"...">: tensor<...>
       %conv = cinm.op.gemm %arg0, %flt: tensor<...>, tensor<...>
       cinm.yield %conv : tensor<...>
     }
+    ```
   }];
 
-  /// These attributes are used for lowering of the contained cinm ops into CNM.
-  let arguments = (ins DefaultValuedAttr<DenseI64ArrayAttr, "{2, 32, 16}">:$workgroupShape,
-                       DefaultValuedAttr<DenseI64ArrayAttr, "{0, 65536, 0}">:$bufferSizesInBytes);
+  let arguments = (ins
+      OptionalAttr<CinmAcceleratorAttrInterface>:$accelerator
+  );
+
   let results = (outs Variadic<AnyType>:$results);
   let regions = (region SizedRegion<1>:$body);
 
+  let skipDefaultBuilders = 1;
+  let builders = [
+    OpBuilder<(ins "TypeRange":$results), [{
+      $_state.addTypes(results);
+      ::mlir::Region *region = $_state.addRegion();
+      auto& block = region->emplaceBlock(); // satisfy SizedRegion<1>
+    }]>
+  ];
 
-
-  let extraClassDeclaration = [{
-    cnm::WorkgroupType getCnmWorkgroupType() {
-      return cnm::WorkgroupType::get(getContext(), getWorkgroupShape());
-    }
-    long getWorkgroupSize() {
-      auto wgShape = getWorkgroupShape();
-      return std::reduce(wgShape.begin(), wgShape.end(), 1, std::multiplies<>());
-    }
-
-  }];
-//  let hasCustomAssemblyFormat = 1;
-  let assemblyFormat = "attr-dict-with-keyword (`->` type($results)^)? $body";
+ let hasCustomAssemblyFormat = 1;
 }
 
 
-//===----------------------------------------------------------------------===//
-// ReturnOp
-//===----------------------------------------------------------------------===//
-
-def Cinm_YieldOp : Cinm_Op<"yield", [Pure, HasParent<"ComputeOp">,
-                                     ReturnLike, Terminator]> {
-  let summary = "Yield the result of a cinm.compute operator.";
+def Cinm_ComputeBlockOp : Cinm_Base_Op<"compute_block", [
+  AffineScope, AutomaticAllocationScope, IsolatedFromAbove, RecursiveMemoryEffects,
+  DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getRegionInvocationBounds", "getSuccessorRegions", "getEntrySuccessorOperands", "getSuccessorInputs"]>,
+  CinmComputeOpInterface
+]> {
+  let summary = "Delimits a region of code for offloading - IsolatedFromAbove";
   let description = [{
-      TODO
+    Delimits a region of code for offloading. See `cinm.compute` as well. This
+    version is isolated from above to parallelize passes that operate
+    only on the nested IR.
+
+    ```
+    %rbuf = cinm.compute_block (%a = %v : tensor<...>) -> tensor<...>  attributes { ... } {
+      %flt = arith.constant <"...">: tensor<...>
+      %conv = cinm.op.gemm %a, %flt: tensor<...>, tensor<...>
+      cinm.yield %conv : tensor<...>
+    }
+
+    %rbuf = cinm.compute_block on accelerator #upmem.accelerator<...> (%a = %v : tensor<...>) -> tensor<...> {
+      %flt = arith.constant <"...">: tensor<...>
+      %conv = cinm.op.gemm %a, %flt: tensor<...>, tensor<...>
+      cinm.yield %conv : tensor<...>
+    }
+    ```
+  }];
+
+  let arguments = (ins
+      Variadic<AnyType>:$operands,
+      OptionalAttr<CinmAcceleratorAttrInterface>:$accelerator
+  );
+
+  let results = (outs Variadic<AnyType>:$results);
+  let regions = (region SizedRegion<1>:$body);
+
+  let extraClassDeclaration = [{
+    auto zipArgsWithOperands() {
+      return llvm::zip(getRegion().getArguments(), getOperands());
+    }
+    auto zipArgsWithOpOperands() {
+      return llvm::zip(getRegion().getArguments(), (*this)->getOpOperands());
+    }
+    auto zipResultsWithYieldOperands() {
+      auto term = getBody().front().getTerminator();
+      return llvm::zip(getResults(), term->getOpOperands());
+    }
+    auto getBodyArguments() {
+      return getRegion().getArguments();
+    }
+
+  }];
+
+  let skipDefaultBuilders = 1;
+  let builders = [
+    OpBuilder<(ins "ValueRange":$operands, "TypeRange":$results), [{
+
+      $_state.addOperands(operands);
+      $_state.addTypes(results);
+      ::mlir::Region *region = $_state.addRegion();
+      auto& block = region->emplaceBlock(); // satisfy SizedRegion<1>
+      for (auto opnd : operands)
+        block.addArgument(opnd.getType(), opnd.getLoc());
+    }]>
+  ];
+
+ let hasCustomAssemblyFormat = 1;
+}
+
+//===----------------------------------------------------------------------===//
+// SelectOp
+//===----------------------------------------------------------------------===//
+def Cinm_SelectOp : Cinm_Op<"select", [Pure]> {
+  let summary = "Select one of multiple child-regions depending on the cost-model estimates";
+  let description = [{}];
+
+  let results = (outs Variadic<AnyType>:$results);
+  let regions = (region VariadicRegion<AnyRegion>:$regions);
+
+  let assemblyFormat = "attr-dict `from` $regions (`->` type($results)^)?";
+}
+
+//===----------------------------------------------------------------------===//
+// YieldOp
+//===----------------------------------------------------------------------===//
+def Cinm_YieldOp : Cinm_Op<"yield", [Pure, ReturnLike, Terminator]> {
+  let summary = "Yield the result of a cinm.compute_block / cinm.select.";
+  let description = [{
+    Terminator for both `cinm.compute_block` and `cinm.select`.
+    The operand types must match the parent op's result types exactly.
   }];
 
   let arguments = (ins Variadic<AnyType>:$operands);
 
-  //let hasVerifier = 1;
-  let assemblyFormat = "attr-dict ($operands^ `:` type($operands))?";
+  let hasVerifier = 1;
 
+  let assemblyFormat = "attr-dict ($operands^ `:` type($operands))?";
 }
 
+def Cinm_QuantizeOp : Cinm_Op<"op.quantize", [Pure]> {
+  let summary = "Quantize tensor (float -> integer) with per-tensor params";
+  let description = [{
+    Per-tensor affine quantization of a tensor:
+      out[i...] = clamp(round(src[i...] / scale) + zeroPoint, qmin, qmax)
+
+    Contracts (enforced later via verifier/lowering, not here):
+      - element_type(src) ∈ {f16, bf16, f32, f64}
+      - element_type(result) is integer (e.g. i8/i16/i32 or signless of those)
+      - ranks & shapes of src and result match
+      - `scale` is positive, `zeroPoint` fits in result element type
+      - `narrowRange` uses (qmin+1 .. qmax) instead of (qmin .. qmax)
+      - `axis` reserved for future per-channel support (ignored for now)
+
+    Example:
+      %q = cinm.op.quantize %x
+           { scale = 0.03125 : f32, zeroPoint = 0 : i64,
+             rounding = #cinm.rounding<nearest> }
+           : tensor<1024x1024xf32> -> tensor<1024x1024xi8>
+  }];
+
+  let arguments = (ins
+    AnyShaped:$src,
+    Optional<AnyShaped>:$out,
+    F32Attr:$scale,
+    I64Attr:$zeroPoint,
+    OptionalAttr<I64Attr>:$axis,
+    DefaultValuedAttr<Cinm_RoundingMode, "::mlir::cinm::RoundingMode::Nearest">:$rounding,
+    DefaultValuedAttr<BoolAttr, "false">:$narrowRange
+  );
+
+  let results = (outs Optional<AnyRankedTensor>:$result);
+
+  // let hasCustomAssemblyFormat = true;
+}
+
+def Cinm_DequantizeOp : Cinm_Op<"op.dequantize", [Pure]> {
+  let summary = "Dequantize tensor (integer -> float) with per-tensor params";
+  let description = [{
+    Per-tensor affine dequantization of a tensor:
+      out[i...] = (src[i...] - zeroPoint) * scale
+
+    Contracts (to be verified later):
+      - element_type(src) is integer (e.g. i8/i16/i32 or signless of those)
+      - element_type(result) ∈ {f16, bf16, f32, f64}
+      - ranks & shapes match
+      - `axis` reserved for future per-channel (ignored for now)
+
+    Example:
+      %x = cinm.op.dequantize %q
+           { scale = 0.03125 : f32, zeroPoint = 0 : i64 }
+           : tensor<1024x1024xi8> -> tensor<1024x1024xf32>
+  }];
+
+  let arguments = (ins
+    AnyShaped:$src,
+    Optional<AnyShaped>:$out,
+    F32Attr:$scale,
+    I64Attr:$zeroPoint,
+    OptionalAttr<I64Attr>:$axis
+  );
+
+  let results = (outs Optional<AnyRankedTensor>:$result);
+
+  // let hasCustomAssemblyFormat = true;
+}
 
 #endif

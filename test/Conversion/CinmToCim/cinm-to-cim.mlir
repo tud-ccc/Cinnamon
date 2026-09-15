@@ -1,21 +1,45 @@
-// RUN: cinm-opt --convert-cinm-to-cim %s | cinm-opt | FileCheck %s
+// RUN: cinm-opt --cinm-isolate-compute-blocks --one-shot-bufferize --convert-cinm-to-cim %s | FileCheck %s
 
-// CHECK-LABEL: simple
-func.func @simple(%t0: tensor<6x6xi32>, %t1: tensor<6x6xi32>, %t2 : tensor<6xi32>) {
+// cim is memref-only, so the compute block is bufferized first: the gemm-like
+// ops then carry their destination as an `out` operand and have no result.
+// The block is isolated from above, so its body reads the operands through
+// block arguments, and those have to survive the block being dissolved.
 
-// CHECK %0 = cim.acquire_device -> !cim.deviceId
-// CHECK %1 = cim.acquire_crossbar %0 : !cim.deviceId -> !cim.crossbarId
-    %result = cinm.compute -> tensor<6xi32> {
-// CHECK %2 = cim.op.gemm %arg0, %arg1 : tensor<6x6xi32>, tensor<6x6xi32> -> !cim.future<6x6xi32>
-            %r0 = cinm.op.gemm %t0, %t1 : (tensor<6x6xi32>, tensor<6x6xi32>) -> tensor<6x6xi32>
-// CHECK %3 = cim.op.gemv %2, %arg2 : !cim.future<6x6xi32>, tensor<6xi32> -> !cim.future<6xi32>
-            %r1 = cinm.op.gemv %r0, %t2 : (tensor<6x6xi32>, tensor<6xi32>) -> tensor<6xi32>
-// CHECK %4 = cim.barrier %3 : !cim.future<6xi32> -> tensor<6xi32>
-            cinm.yield %r1: tensor<6xi32>
-    }
-// CHECK cim.release_crossbar %1 : !cim.crossbarId
-// CHECK cim.release_device %0 : !cim.deviceId
-
-    return
+// CHECK-LABEL: func.func @gemm
+// CHECK-SAME:      (%[[A:.*]]: tensor<6x6xi32>, %[[B:.*]]: tensor<6x6xi32>)
+//       CHECK:   %[[BM:.*]] = bufferization.to_buffer %[[B]]
+//       CHECK:   %[[AM:.*]] = bufferization.to_buffer %[[A]]
+//       CHECK:   %[[DEV:.*]] = cim.acquire_device
+//       CHECK:   %[[XB:.*]] = cim.acquire_crossbar %[[DEV]]
+//       CHECK:   %[[OUT:.*]] = memref.alloc() : memref<6x6xi32>
+//       CHECK:   %[[FUT:.*]] = cim.op.gemm %[[XB]], %[[AM]], %[[BM]] : {{.*}} -> !cim.future<6x6xi32>
+//       CHECK:   %[[RES:.*]] = cim.barrier %[[FUT]] : !cim.future<6x6xi32> -> memref<6x6xi32>
+//       CHECK:   memref.copy %[[RES]], %[[OUT]]
+//       CHECK:   cim.release_crossbar %[[XB]]
+//       CHECK:   cim.release_device %[[DEV]]
+//       CHECK:   bufferization.to_tensor %[[OUT]]
+func.func @gemm(%t0: tensor<6x6xi32>, %t1: tensor<6x6xi32>) -> tensor<6x6xi32> {
+  %r = cinm.compute -> tensor<6x6xi32> {
+    %g = cinm.op.gemm %t0, %t1 : tensor<6x6xi32>, tensor<6x6xi32> -> tensor<6x6xi32>
+    cinm.yield %g : tensor<6x6xi32>
+  }
+  return %r : tensor<6x6xi32>
 }
 
+// CHECK-LABEL: func.func @gemv
+// CHECK-SAME:      (%[[A:.*]]: tensor<6x6xi32>, %[[X:.*]]: tensor<6xi32>)
+//       CHECK:   %[[XM:.*]] = bufferization.to_buffer %[[X]]
+//       CHECK:   %[[AM:.*]] = bufferization.to_buffer %[[A]]
+//       CHECK:   %[[XB:.*]] = cim.acquire_crossbar
+//       CHECK:   %[[OUT:.*]] = memref.alloc() : memref<6xi32>
+//       CHECK:   %[[FUT:.*]] = cim.op.gemv %[[XB]], %[[AM]], %[[XM]] : {{.*}} -> !cim.future<6xi32>
+//       CHECK:   %[[RES:.*]] = cim.barrier %[[FUT]] : !cim.future<6xi32> -> memref<6xi32>
+//       CHECK:   memref.copy %[[RES]], %[[OUT]]
+//       CHECK:   bufferization.to_tensor %[[OUT]]
+func.func @gemv(%t0: tensor<6x6xi32>, %t1: tensor<6xi32>) -> tensor<6xi32> {
+  %r = cinm.compute -> tensor<6xi32> {
+    %g = cinm.op.gemv %t0, %t1 : tensor<6x6xi32>, tensor<6xi32> -> tensor<6xi32>
+    cinm.yield %g : tensor<6xi32>
+  }
+  return %r : tensor<6xi32>
+}

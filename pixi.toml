@@ -1,0 +1,113 @@
+[workspace]
+name = "cinnamon"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+# conda-forge provides only the interpreter, the compiler and native tools.
+# Every Python package comes from PyPI: when both provide one, pins clash
+# (pyyaml) and installs overwrite each other's files (wheel).
+[dependencies]
+# 3.12 is what setup-venv.sh prefers, and MLIR's numpy<=2.1.2 pin has no 3.14 wheels.
+# The prebuilt LLVM's Python bindings are for this version too: keep it in
+# sync with cinnamon/pixi.toml in tud-ccc/cinnamon-llvm.
+python = "3.12.*"
+cmake = "==4.2.1"
+ninja = "*"
+ccache = "*"
+mold = "*"
+just = "*"
+# Unpacks the prebuilt LLVM
+zstd = "*"
+# Matches the mirrors-clang-format rev in .pre-commit-config.yaml
+clang-format = "==22.1.8"
+# For -enable-gpu (cinm-vulkan-runner); the GPU driver itself comes from the system
+libvulkan-headers = "*"
+libvulkan-loader = "*"
+# What benchmarks/common.hpp includes: openblas for the golden references it
+# checks every run against, numactl for the interleaved gather buffer.
+openblas = "*"
+numactl = "*"
+
+[pypi-dependencies]
+# pixi doesn't add pip to Python like conda does; build-torch.sh installs torch-mlir with it
+pip = "*"
+pre-commit = "*"
+# Last versions known to work with the pinned torch-mlir; bump them together
+torch = { version = "==2.10.0", index = "https://download.pytorch.org/whl/cpu" }
+torchvision = { version = "==0.25.0", index = "https://download.pytorch.org/whl/cpu" }
+torchaudio = { version = "==2.10.0", index = "https://download.pytorch.org/whl/cpu" }
+build = "*"
+wheel = "*"
+conan = "*"
+# From $LLVM_SOURCE_DIR/mlir/python/requirements.txt
+nanobind = ">=2.9, <3.0"
+pyyaml = ">=5.4.0, <=6.0.1"
+typing-extensions = ">=4.12.2"
+numpy = ">=2.1.0, <=2.1.2"
+ml-dtypes = ">=0.5.0, <=0.6.0"
+# The analysis stack the in-tree python/experiments project needs.
+pandas = "*"
+scipy = "*"
+matplotlib = "*"
+plotly = "*"
+tqdm = "*"
+doit = "*"
+# The two in-tree projects, by path because neither is published. The
+# distribution is cinnamon-mlir while the package it installs is `cinnamon`:
+# PyPI's `cinnamon` is somebody else's, and under the old name a manifest that
+# forgot this line resolved to theirs and installed it, silently, under the
+# same import name.
+#
+# build-cinnamon.sh installs cinnamon-mlir again, editable, after a build;
+# that is the same path, so it is the same install.
+cinnamon-mlir = { path = "python/cinnamon", editable = true }
+cinm-experiments = { path = "python/experiments", editable = true }
+
+# conda-forge's Clang with its own libstdc++, built against an old glibc
+# baseline, so every machine builds with the same compiler. LLVM has to be
+# built with it too; the `host` environment is for an LLVM built with the
+# system compiler (see the README). Keep the version in sync with
+# cinnamon/pixi.toml in tud-ccc/cinnamon-llvm.
+[feature.toolchain.dependencies]
+clang_linux-64 = "22.*"
+clangxx_linux-64 = "22.*"
+# Clang has no OpenMP runtime of its own (GCC bundles libgomp), and the cost
+# model predictor needs one.
+llvm-openmp = "22.*"
+# LLVM's optional dependencies; without them CMake falls back to /usr
+zlib = "*"
+libxml2-devel = "*"
+
+# The compiler packages set no CC/CXX; without these the build scripts would
+# prefer a versioned system compiler (g++-13, clang-18, ...) found on PATH.
+[feature.toolchain.activation.env]
+CC = "$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-clang"
+CXX = "$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-clang++"
+# Make CMake prefer this environment's libraries (Vulkan, zlib, ...) over the
+# system's, which are built against a newer glibc than this compiler targets.
+CMAKE_PREFIX_PATH = "$CONDA_PREFIX"
+
+[environments]
+default = { features = ["toolchain"], solve-group = "default" }
+# The same tools and Python, with the system compiler
+host = { features = [], solve-group = "default" }
+
+[activation.env]
+# The build scripts only pick up Python from an active venv;
+# pointing VIRTUAL_ENV at this environment lets them use it unchanged.
+VIRTUAL_ENV = "$CONDA_PREFIX"
+# cinm-opt and friends, along with the LLVM tools installed next to them (opt,
+# llc, mlir-translate, ...), which match the LLVM we build against.
+#
+# The installed copies rather than the build tree's, so that a tool run by hand
+# is the same binary the Python packages resolve through cinnamon.paths --
+# `just build` installs on every build, so this is never behind. Empty until
+# something has been installed here; CINNAMON_PREFIX overrides where the
+# packages look, but not this, so add that prefix's bin yourself if you point
+# them elsewhere.
+PATH = "$CONDA_PREFIX/libexec/cinnamon/bin:$PATH"
+
+[tasks]
+# The conan exports from setup-venv.sh, which -no-python-venv skips
+conan-recipes = "conan export third-party/conan-recipes/mlpack --name mlpack --version 4.8.0 && conan export third-party/conan-recipes/gecode --name gecode --version 6.4.0"
+configure = { cmd = "just configure -no-python-venv", depends-on = ["conan-recipes"] }

@@ -5,6 +5,36 @@ PREAMBLE_LOADED="1"
 
 set -e
 
+script_dir="$( cd -- "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 ; pwd -P )"
+project_root="$(realpath "$script_dir/../..")"
+
+# Load .env, which provides defaults: a variable already set in the environment
+# wins, so that `LLVM_BUILD_DIR= just configure` and the like work without
+# editing the file. This is also why pixi's compiler survives a CC in .env in
+# the environments that set one.
+if [ -f "$project_root/.env" ]; then
+  declare -A _env_preset=()
+  while IFS= read -r _line || [[ -n "$_line" ]]; do
+    _line="${_line#"${_line%%[![:space:]]*}"}"
+    [[ -z "$_line" || "$_line" == \#* ]] && continue
+    _line="${_line#export }"
+    _key="${_line%%=*}"
+    _key="${_key%%[[:space:]]*}"
+    [[ "$_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    [[ -n "${!_key+x}" ]] && _env_preset["$_key"]="${!_key}"
+  done < "$project_root/.env"
+
+  set -o allexport
+  # shellcheck source=/dev/null
+  source "$project_root/.env"
+  set +o allexport
+
+  for _key in "${!_env_preset[@]}"; do
+    export "$_key=${_env_preset[$_key]}"
+  done
+  unset _line _key _env_preset
+fi
+
 status() { echo -e "\033[1m$1\033[0m"; }
 info() { echo -e "\033[1;34m$1\033[0m"; }
 warning() { echo -e "\033[1;33m$1\033[0m"; }
@@ -24,66 +54,77 @@ verbose_cmd() {
   fi
 }
 
-git_clone_revision() {
-  repo_url="$1"
-  revision="$2"
-  path="$3"
-  if (echo a version 2.49.0; git --version) | sort -Vk3 | tail -1 | grep -q git; then
-    git clone --revision "$revision" --depth 1 "$repo_url" "$path"
+# Check out a submodule at the revision this repository pins it to.
+#
+# Pass shallow=1 for large histories (LLVM). A shallow `git submodule update`
+# only fetches the tip of the remote's default branch, which need not contain
+# the pinned revision, so fetch that revision directly and hand the result to
+# git. Submodule names match their paths throughout .gitmodules.
+ensure_submodule() {
+  local path="$1"
+  local shallow="${2:-0}"
+  local abs="$project_root/$path"
+  local revision url current
+  # Not `ls-tree --object-only`: that needs git 2.36.
+  revision="$(git -C "$project_root" ls-tree HEAD -- "$path" | awk '$2 == "commit" { print $3 }')"
+
+  # Presence is judged by content, not by a .git entry: CI restores these trees
+  # from a cache that does not carry the corresponding .git/modules directory.
+  # A lone .git does not count: that is a checkout whose files were removed.
+  if [[ -n "$(ls -A "$abs" 2>/dev/null | grep -v -x '\.git')" ]]; then
+    current=""
+    if [[ -e "$abs/.git" ]]; then
+      current="$(git -C "$abs" rev-parse -q --verify HEAD 2>/dev/null || true)"
+    fi
+    if [[ -n "$current" && -n "$revision" && "$current" != "$revision" ]]; then
+      warning "Submodule '$path' is at ${current:0:12}, but this repository pins ${revision:0:12}."
+      warning "Run 'git submodule update -- $path' unless that is intended."
+    fi
+    info "Submodule '$path' is already checked out"
+    return 0
+  fi
+  if [[ -e "$abs/.git" ]]; then
+    error "Submodule '$path' has its git metadata but no files."
+    error "Restore them with: git -C '$abs' checkout -f ${revision:-<pinned revision>}"
+    exit 1
+  fi
+
+  url="$(git -C "$project_root" config -f "$project_root/.gitmodules" --get "submodule.$path.url")"
+  if [[ -z "$revision" || -z "$url" ]]; then
+    error "'$path' is not a registered submodule of this repository"
+    exit 1
+  fi
+
+  if [[ "$shallow" -eq 1 ]]; then
+    status "Checking out submodule '$path' at $revision (shallow)"
+    mkdir -p "$abs"
+    git -C "$abs" init -q
+    git -C "$abs" remote add origin "$url" 2>/dev/null \
+      || git -C "$abs" remote set-url origin "$url"
+    git -C "$abs" fetch -q --depth 1 origin "$revision"
+    git -C "$abs" checkout -q FETCH_HEAD
+    git -C "$project_root" submodule absorbgitdirs -- "$path"
   else
-    mkdir -p "$path"
-    pushd "$path" >/dev/null
-    git init
-    git remote add origin "$repo_url"
-    git fetch origin "$revision"
-    git checkout FETCH_HEAD
-    popd >/dev/null
+    status "Checking out submodule '$path' at $revision"
+    print_and_run git -C "$project_root" submodule update --init -- "$path"
   fi
 }
 
-project_root="$( cd -- "$(dirname "$0")/../.." >/dev/null 2>&1 ; pwd -P )"
 status "Project root: $project_root"
-mkdir -p "$project_root/third-party"
 
 py_venv_path="$project_root/.venv"
 cinnamon_path="$project_root"
-llvm_path="$project_root/third-party/llvm"
-torch_mlir_path="$project_root/third-party/torch-mlir"
-upmem_path="$project_root/third-party/upmem"
+cinnamon_build_dir="${CINNAMON_BUILD_DIR:-$project_root/build}"
 
 verbose=0
 reconfigure=0
 
 setup_python_venv=1
-checkout_and_build_llvm=1
-checkout_and_build_torch_mlir=1
-checkout_upmem=1
-
+build_torch_mlir=1
 build_cinnamon_wheel=1
 
 enable_cuda=0
 enable_roc=0
-
-if [[ -n "${LLVM_BUILD_DIR:-}" ]]; then
-  checkout_and_build_llvm=0
-  TORCH_MLIR_CMAKE_OPTIONS="${TORCH_MLIR_CMAKE_OPTIONS:-} -DLLVM_DIR=$LLVM_BUILD_DIR/lib/cmake/llvm -DMLIR_DIR=$LLVM_BUILD_DIR/lib/cmake/mlir"
-  CINNAMON_CMAKE_OPTIONS="${CINNAMON_CMAKE_OPTIONS:-} -DLLVM_DIR=$LLVM_BUILD_DIR/lib/cmake/llvm -DMLIR_DIR=$LLVM_BUILD_DIR/lib/cmake/mlir"
-  info "Using environment variable LLVM_BUILD_DIR for configuration"
-  info "Dependent targets will use '$LLVM_BUILD_DIR'"
-  if [[ ! -d "$LLVM_BUILD_DIR" ]]; then
-    warning "Directory '$LLVM_BUILD_DIR' does not exist"
-  fi
-fi
-
-if [[ -n "${UPMEM_HOME:-}" ]]; then
-  checkout_upmem=0
-  CINNAMON_CMAKE_OPTIONS="${CINNAMON_CMAKE_OPTIONS:-} -DUPMEM_DIR=$UPMEM_HOME"
-  info "Using environment variable UPMEM_HOME for configuration"
-  info "Dependent targets will use '$UPMEM_HOME'"
-  if [[ ! -d "$UPMEM_HOME" ]]; then
-    warning "Directory '$UPMEM_HOME' does not exist"
-  fi
-fi
 
 if echo "$@" | grep -q -- "-verbose"; then
   verbose=1
@@ -99,16 +140,8 @@ if echo "$@" | grep -q -- "-no-python-venv"; then
   setup_python_venv=0
 fi
 
-if echo "$@" | grep -q -- "-no-llvm"; then
-  checkout_and_build_llvm=0
-fi
-
 if echo "$@" | grep -q -- "-no-torch-mlir"; then
-  checkout_and_build_torch_mlir=0
-fi
-
-if echo "$@" | grep -q -- "-no-upmem"; then
-  checkout_upmem=0
+  build_torch_mlir=0
 fi
 
 if echo "$@" | grep -q -- "-no-cinnamon-wheel"; then
@@ -127,15 +160,208 @@ if echo "$@" | grep -q -- "-enable-roc"; then
   enable_roc=1
 fi
 
-if [[ -n "${TORCH_MLIR_INSTALL_DIR:-}" ]] && [[ "${checkout_and_build_torch_mlir}" -ne 0 ]]; then
-  checkout_and_build_torch_mlir=0
-  CINNAMON_CMAKE_OPTIONS="${CINNAMON_CMAKE_OPTIONS:-} -DTORCH_MLIR_DIR=$TORCH_MLIR_INSTALL_DIR"
-  info "Using environment variable TORCH_MLIR_INSTALL_DIR for configuration"
-  info "Dependent targets will use '$TORCH_MLIR_INSTALL_DIR'"
-  if [[ ! -d "$TORCH_MLIR_INSTALL_DIR" ]]; then
-    warning "Directory '$TORCH_MLIR_INSTALL_DIR' does not exist"
+################################################################################
+# Host compiler
+#
+# CMake, Conan and the sub-builds must all agree on one compiler, so resolve it
+# here and export CC/CXX rather than letting each of them guess.
+#
+# A bare `clang` from PATH is not trustworthy: vendor SDKs ship old
+# cross-compilers under that name and can sit ahead of the system one. The
+# UPMEM SDK in particular provides a clang 12, which cannot compile the C++20
+# this project requires. So resolve to an absolute path and check the version
+# before handing it to anything.
+################################################################################
+
+gcc_min_major=12
+clang_min_major=16
+
+compiler_is_usable() {
+  local cc="$1" major
+  command -v "$cc" >/dev/null 2>&1 || return 1
+  major="$("$cc" -dumpversion 2>/dev/null | cut -d. -f1)"
+  [[ -n "$major" ]] || return 1
+  if "$cc" --version 2>/dev/null | head -1 | grep -qi clang; then
+    (( major >= clang_min_major ))
+  else
+    (( major >= gcc_min_major ))
+  fi
+}
+
+describe_compiler() {
+  printf '%s (%s)' "$(command -v "$1")" "$("$1" --version 2>/dev/null | head -1)"
+}
+
+if [[ -n "${CC:-}" || -n "${CXX:-}" ]]; then
+  # An explicit choice is honoured, but still checked: pointing the build at a
+  # compiler that cannot handle C++20 fails in a much more confusing way later.
+  if [[ -z "${CC:-}" || -z "${CXX:-}" ]]; then
+    error "Set both CC and CXX, or neither (CC='${CC:-}' CXX='${CXX:-}')"
+    exit 1
+  fi
+  if ! compiler_is_usable "$CXX"; then
+    error "CXX='$CXX' is not usable: $(describe_compiler "$CXX" 2>/dev/null || echo 'not found')"
+    error "This project needs C++20, i.e. GCC >= $gcc_min_major or Clang >= $clang_min_major."
+    exit 1
+  fi
+else
+  for pair in "gcc-15:g++-15" "gcc-14:g++-14" "gcc-13:g++-13" "gcc-12:g++-12" \
+              "clang-20:clang++-20" "clang-19:clang++-19" "clang-18:clang++-18" \
+              "clang-17:clang++-17" "clang-16:clang++-16" "cc:c++"; do
+    if compiler_is_usable "${pair#*:}"; then
+      CC="$(command -v "${pair%%:*}")"
+      CXX="$(command -v "${pair#*:}")"
+      break
+    fi
+  done
+  if [[ -z "${CXX:-}" ]]; then
+    error "No C++20 host compiler found (need GCC >= $gcc_min_major or Clang >= $clang_min_major)."
+    error "Install one, or set CC and CXX to the compiler you want to build with."
+    if command -v clang >/dev/null 2>&1; then
+      error "Note: '$(describe_compiler clang)' is on your PATH but was rejected."
+    fi
+    exit 1
   fi
 fi
 
+CC="$(command -v "$CC")"
+CXX="$(command -v "$CXX")"
+export CC CXX
+info "Host compiler: $CXX ($("$CXX" --version 2>/dev/null | head -1))"
+
+# A compiler passed through one of the *_CMAKE_OPTIONS overrides CC/CXX for
+# that sub-build, so it has to pass the same check.
+for opts_var in LLVM_CMAKE_OPTIONS TORCH_MLIR_CMAKE_OPTIONS CINNAMON_CMAKE_OPTIONS; do
+  opts_val="${!opts_var:-}"
+  [[ -n "$opts_val" ]] || continue
+  # `|| true`: no match is the normal case, and grep failing must not trip
+  # `set -e` / `pipefail` in the scripts that source this file.
+  override="$(echo "$opts_val" | grep -o -- '-DCMAKE_CXX_COMPILER=[^ ]*' | tail -1 | cut -d= -f2- || true)"
+  [[ -n "$override" ]] || continue
+  if ! compiler_is_usable "$override"; then
+    error "$opts_var sets -DCMAKE_CXX_COMPILER=$override, which cannot build this project:"
+    error "  $(describe_compiler "$override" 2>/dev/null || echo "$override: not found")"
+    error "Drop it to use the detected compiler ($CXX), or point it at a C++20 compiler."
+    exit 1
+  fi
+done
+
+################################################################################
+# Dependency resolution
+#
+# Every dependency is described by three independent facts:
+#
+#   <dep>_source_dir   where its sources live
+#   <dep>_build_dir    where its build tree lives, i.e. what CMake is pointed at
+#   build_<dep>        whether we build it here, or only consume it
+#
+# The in-tree default for each source dir is a git submodule under third-party/.
+# Setting <DEP>_SOURCE_DIR or <DEP>_BUILD_DIR points the build at a tree you
+# already have elsewhere; the corresponding submodule then stays uninitialized
+# and is never cloned. Downstream CMake invocations always receive explicit
+# paths, whichever way they were resolved.
+################################################################################
+
+# ---- LLVM / MLIR ----
+llvm_source_dir="${LLVM_SOURCE_DIR:-$project_root/third-party/llvm}"
+llvm_build_dir="${LLVM_BUILD_DIR:-$llvm_source_dir/build}"
+
+# The CI of tud-ccc/cinnamon-llvm publishes an LLVM install tree for every
+# commit of its `cinnamon` branch. Rather than building the submodule, we
+# download the one for the revision it is pinned to (see build-llvm.sh) and
+# unpack it into third-party/llvm-prebuilt. LLVM_PREBUILT=never always builds
+# from source; LLVM_PREBUILT=always fails rather than fall back to that.
+llvm_prebuilt="${LLVM_PREBUILT:-auto}"
+case "$llvm_prebuilt" in
+  auto|always|never) ;;
+  *) error "LLVM_PREBUILT must be auto, always or never, not '$llvm_prebuilt'"; exit 1 ;;
+esac
+llvm_prebuilt_dir="$project_root/third-party/llvm-prebuilt"
+llvm_prebuilt_base_url="${LLVM_PREBUILT_URL:-https://github.com/tud-ccc/cinnamon-llvm/releases/download}"
+# A file in the install tree holding the LLVM revision it was built from
+llvm_prebuilt_stamp="cinnamon-llvm-revision"
+llvm_revision="$(git -C "$project_root" ls-tree HEAD -- third-party/llvm 2>/dev/null | awk '$2 == "commit" { print $3 }' || true)"
+
+# File name (without extension) and download URL of the prebuilt LLVM for a
+# revision. The CI of tud-ccc/cinnamon-llvm publishes it under these; its
+# cinnamon/build-prebuilt.sh has to agree.
+llvm_prebuilt_name() {
+  echo "cinnamon-llvm-${1:0:12}-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
+}
+llvm_prebuilt_url() {
+  echo "$llvm_prebuilt_base_url/cinnamon-${1:0:12}/$(llvm_prebuilt_name "$1").tar.zst"
+}
+
+# We only build LLVM ourselves when it lives in the tree we manage.
+use_prebuilt_llvm=0
+if [[ -n "${LLVM_BUILD_DIR:-}" ]]; then
+  build_llvm=0
+  info "Using LLVM build tree '$llvm_build_dir' (LLVM_BUILD_DIR)"
+  [[ -d "$llvm_build_dir" ]] || warning "Directory '$llvm_build_dir' does not exist"
+else
+  build_llvm=1
+  # A prebuilt LLVM stands in for the submodule, not for sources of your own.
+  if [[ -z "${LLVM_SOURCE_DIR:-}" && "$llvm_prebuilt" != never ]]; then
+    use_prebuilt_llvm=1
+    # Once build-llvm.sh has unpacked one, everything builds against it.
+    if [[ -f "$llvm_prebuilt_dir/$llvm_prebuilt_stamp" ]]; then
+      llvm_build_dir="$llvm_prebuilt_dir"
+    fi
+  fi
+fi
+if echo "$@" | grep -q -- "-no-llvm"; then
+  build_llvm=0
+fi
+llvm_cmake_dir="$llvm_build_dir/lib/cmake/llvm"
+mlir_cmake_dir="$llvm_build_dir/lib/cmake/mlir"
+
+# ---- Torch-MLIR ----
+torch_mlir_source_dir="${TORCH_MLIR_SOURCE_DIR:-$project_root/third-party/torch-mlir}"
+torch_mlir_build_dir="$torch_mlir_source_dir/build"
+# Not beside the build dir: torch-mlir's .gitignore covers build/ but not
+# install/, which would leave the submodule permanently dirty.
+torch_mlir_install_dir="${TORCH_MLIR_INSTALL_DIR:-$cinnamon_build_dir/torch-mlir-install}"
+if [[ -n "${TORCH_MLIR_INSTALL_DIR:-}" ]]; then
+  build_torch_mlir=0
+  info "Using Torch-MLIR installation '$torch_mlir_install_dir' (TORCH_MLIR_INSTALL_DIR)"
+  [[ -d "$torch_mlir_install_dir" ]] || warning "Directory '$torch_mlir_install_dir' does not exist"
 fi
 
+# ---- UPMEM SDK ----
+# Not a submodule: the SDK is not publicly redistributable, so it is either
+# unpacked into third-party/upmem by hand or pointed to by UPMEM_HOME.
+upmem_dir="${UPMEM_HOME:-$project_root/third-party/upmem}"
+enable_upmem=1
+if echo "$@" | grep -q -- "-no-upmem"; then
+  enable_upmem=0
+fi
+
+# ---- Python environment ----
+# Activated here rather than by setup-venv.sh so that each build script is a
+# self-contained program: they are run as subprocesses, not sourced, and so
+# cannot inherit an environment from one another.
+if [[ "$setup_python_venv" -eq 1 && -z "${VIRTUAL_ENV:-}" && -f "$py_venv_path/bin/activate" ]]; then
+  # shellcheck disable=SC1091
+  source "$py_venv_path/bin/activate"
+fi
+
+# Clang's driver does not search this environment's lib directory, so the
+# linker cannot resolve what our dependencies need indirectly: libz, needed by
+# libLLVMSupport, is the one that bites. CMake seeds the linker flags of a
+# build from LDFLAGS, which is how conda's own toolchains pass this too.
+# -rpath so that what we build finds those libraries when it runs, as well.
+if [[ -n "${CONDA_PREFIX:-}" ]]; then
+  conda_ld_flags="-L$CONDA_PREFIX/lib -Wl,-rpath-link,$CONDA_PREFIX/lib -Wl,-rpath,$CONDA_PREFIX/lib"
+  case "${LDFLAGS:-}" in
+    # conda's clang passes these itself; its GCC does not
+    *"-L$CONDA_PREFIX/lib"*) ;;
+    *) export LDFLAGS="${LDFLAGS:+$LDFLAGS }$conda_ld_flags" ;;
+  esac
+fi
+
+if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+  PYBIN="$(command -v python)"
+  export LLVM_CMAKE_OPTIONS="${LLVM_CMAKE_OPTIONS:-} -DPython3_EXECUTABLE=${PYBIN} -DPython3_FIND_VIRTUALENV=ONLY"
+fi
+
+fi

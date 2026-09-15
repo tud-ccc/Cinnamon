@@ -1,4 +1,20 @@
 add_mlir_dialect_library(CinmTransforms
+    AssignPlatformsPass.cpp
+    InferTileSizesPass.cpp
+    BufferizeCinm.cpp
+    CinmTransformsUtils.cpp
+    CinmMemoryCleanup.cpp
+    CinmQuantization.cpp
+    CleanupLinalgPass.cpp
+    ComputeTransforms.cpp
+    CinmTilingImplementations.cpp
+    CompleteComputeGraph.cpp
+    DecomposeAccumulations.cpp
+    DecomposeGemmToGemv.cpp
+    ExpandComputeScope.cpp
+    GemvMinWrite.cpp
+    RelowerStandaloneOps.cpp
+    SimplifyComputeSignatures.cpp
     SoftmaxToCinmPass.cpp
     TilingPass.cpp
 
@@ -8,10 +24,12 @@ DEPENDS
 
 LINK_LIBS PUBLIC
     MLIRIR
-    MLIRLLVMDialect
     MLIRAffineDialect
     MLIRLinalgDialect
-    MLIRTransformUtils
-    CinmIR
+    MLIRLinalgUtils
+    MLIRTensorDialect
     MLIRLLVMCommonConversion
+    MLIRLLVMDialect
+    MLIRTransformDialectUtils
+    CinmIR
 )

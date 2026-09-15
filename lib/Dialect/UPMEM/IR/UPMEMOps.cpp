@@ -4,650 +4,556 @@
 
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 
-#include "mlir/IR/Builders.h"
-#include "mlir/IR/OpImplementation.h"
-
-#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h"
+#include "cinm-mlir/Utils/CinmUtils.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/Builders.h"
+
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/DialectImplementation.h"
-#include "mlir/IR/Matchers.h"
 #include "mlir/IR/OpImplementation.h"
-#include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Interfaces/FunctionImplementation.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/InliningUtils.h"
-#include "llvm/ADT/APFloat.h"
-#include "llvm/ADT/TypeSwitch.h"
-#include "llvm/Support/CommandLine.h"
-#include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/StringSaver.h"
-
-#include "mlir/IR/IRMapping.h"
-#include "llvm/ADT/MapVector.h"
-#include <cstdint>
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
+#include <llvm/Support/LogicalResult.h>
+#include <mlir/IR/BuiltinAttributeInterfaces.h>
+#include <mlir/IR/BuiltinTypes.h>
 #include <mlir/IR/OperationSupport.h>
+#include <mlir/IR/PatternMatch.h>
+#include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/Value.h>
 #include <mlir/Support/LogicalResult.h>
 
 #define DEBUG_TYPE "upmem-ops"
 
 using namespace mlir;
-using namespace mlir::upmem;
+
+//===- Generated implementation -------------------------------------------===//
+
+#define GET_OP_CLASSES
+#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.cpp.inc"
 
 //===----------------------------------------------------------------------===//
 // UPMEMDialect
 //===----------------------------------------------------------------------===//
 
-void UPMEMDialect::registerOps() {
+void upmem::UPMEMDialect::registerOps() {
   addOperations<
 #define GET_OP_LIST
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.cpp.inc"
       >();
 }
 
+// ===----------------------------------------------------------------------===//
+// getDpuProgram helpers
+// ===----------------------------------------------------------------------===//
+
+// LoadProgramOp owns the symbol reference, so it does the real lookup.
+upmem::DpuProgramOp upmem::LoadProgramOp::getDpuProgram() {
+  auto *sym =
+      SymbolTable::lookupNearestSymbolFrom(getOperation(), getDpuProgramRef());
+  return dyn_cast_or_null<upmem::DpuProgramOp>(sym);
+}
+
+/// The program resident on `hierarchy` when `at` executes. Which program a
+/// set holds is a property of the point in the schedule, not of the value:
+/// the nearest upmem.load_program preceding `at` in its own block decides.
+/// When no load precedes it there (the load can sit in an ancestor region,
+/// e.g. at the top of the container function while `at` is inside a compute
+/// block), a unique load anywhere on the value is unambiguous and is used;
+/// several loads none of which precedes `at` locally cannot be told apart
+/// without dominance analysis, and this returns null rather than guessing.
+static upmem::DpuProgramOp programLoadedOn(Value hierarchy, Operation *at) {
+  for (Operation *prev = at->getPrevNode(); prev; prev = prev->getPrevNode())
+    if (auto load = dyn_cast<upmem::LoadProgramOp>(prev))
+      if (load.getHierarchy() == hierarchy)
+        return load.getDpuProgram();
+
+  upmem::LoadProgramOp unique;
+  for (Operation *user : hierarchy.getUsers())
+    if (auto load = dyn_cast<upmem::LoadProgramOp>(user)) {
+      if (unique)
+        return {};
+      unique = load;
+    }
+  return unique ? unique.getDpuProgram() : upmem::DpuProgramOp{};
+}
+
+upmem::DpuProgramOp upmem::ScatterOnArrayOp::getDpuProgram() {
+  return programLoadedOn(getHierarchy(), getOperation());
+}
+
+upmem::DpuProgramOp upmem::GatherFromArrayOp::getDpuProgram() {
+  return programLoadedOn(getHierarchy(), getOperation());
+}
+
+upmem::DpuProgramOp upmem::ScatterBlocksOp::getDpuProgram() {
+  return programLoadedOn(getHierarchy(), getOperation());
+}
+
+upmem::DpuProgramOp upmem::GatherBlocksOp::getDpuProgram() {
+  return programLoadedOn(getHierarchy(), getOperation());
+}
+
+upmem::DpuProgramOp upmem::BroadcastOp::getDpuProgram() {
+  return programLoadedOn(getHierarchy(), getOperation());
+}
+
+upmem::DpuProgramOp upmem::WaitForOp::getDpuProgram() {
+  return programLoadedOn(getDpuSet(), getOperation());
+}
+
+MemRefType upmem::detail::flatMemRefType(Type ty) {
+  MemRefType structured = llvm::cast<MemRefType>(ty);
+
+  auto numBytes =
+      structured.getNumElements() * structured.getElementTypeBitWidth() / 8;
+  return MemRefType::get(
+      {numBytes}, IntegerType::get(structured.getContext(), 8),
+      MemRefLayoutAttrInterface{}, structured.getMemorySpace());
+}
 // parsers/printers
 
-LogicalResult UPMEMDialect::verifyOperationAttribute(Operation *op,
-                                                     NamedAttribute attr) {
-  if (!llvm::isa<UnitAttr>(attr.getValue()) ||
-      attr.getName() != getContainerModuleAttrName())
-    return success();
-
-  auto module = dyn_cast<ModuleOp>(op);
-  if (!module)
-    return op->emitError("expected '")
-           << getContainerModuleAttrName() << "' attribute to be attached to '"
-           << ModuleOp::getOperationName() << '\'';
+LogicalResult upmem::UPMEMDialect::verifyOperationAttribute(Operation *,
+                                                            NamedAttribute) {
   return success();
 }
 
-static ParseResult parseAsyncDependencies(
-    OpAsmParser &parser, Type &asyncTokenType,
-    SmallVectorImpl<OpAsmParser::UnresolvedOperand> &asyncDependencies) {
-  auto loc = parser.getCurrentLocation();
-  if (succeeded(parser.parseOptionalKeyword("async"))) {
-    if (parser.getNumResults() == 0)
-      return parser.emitError(loc, "needs to be named when marked 'async'");
-    asyncTokenType = parser.getBuilder().getType<AsyncTokenType>();
+void upmem::StaticAllocOp::build(OpBuilder &builder, OperationState &result,
+                                 MemRefType ty, DpuMemSpace memSpace,
+                                 StringRef name, bool noinit, bool zeroinit) {
+  result.addAttribute(getMemSpaceAttrName(result.name),
+                      builder.getAttr<DpuMemSpaceAttr>(memSpace));
+  if (noinit)
+    result.addAttribute(getNoinitAttrName(result.name), builder.getUnitAttr());
+  if (zeroinit)
+    result.addAttribute(getZeroinitAttrName(result.name),
+                        builder.getUnitAttr());
+
+  if (!name.empty()) {
+    result.addAttribute(getSymNameAttrName(result.name),
+                        builder.getStringAttr(name));
   }
-  return parser.parseOperandList(asyncDependencies,
-                                 OpAsmParser::Delimiter::OptionalSquare);
+  result.addTypes(ty);
 }
 
-static ParseResult
-parseAttributions(OpAsmParser &parser, StringRef keyword,
-                  SmallVectorImpl<OpAsmParser::Argument> &args) {
-  // If we could not parse the keyword, just assume empty list and succeed.
-  if (failed(parser.parseOptionalKeyword(keyword)))
-    return success();
+/// Every transfer op moves `blockSize` elements at a time, starting at the
+/// host index `map` computes for each point of `box` -- the DPU array, plus
+/// the block index for the `_blocks` forms. Both the flat memcpy
+/// (do_dpu_transfer) and the SDK's scatter-gather API (dpu_push_sg_xfer) take
+/// one *address* and a length, so a block that runs over a gap in the host
+/// memref's layout silently reads or writes unrelated data. This is the one
+/// contract all five ops share, checked the same way for each.
+///
+/// A strided memref is a regular grid of contiguous runs of
+/// `getContiguousSuffixSize` elements. Linearizing the map's trailing results
+/// against that run gives where in it each block starts; the block fits iff
+/// that offset plus its length still lies inside. The check declines (rather
+/// than rejects) whenever a bound cannot be computed exactly.
+static LogicalResult verifyTransferBlocks(Operation *op, MemRefType hostTy,
+                                          AffineMap map, int64_t blockSize,
+                                          ArrayRef<int64_t> box) {
+  int64_t runSize = getContiguousSuffixSize(hostTy);
+  if (runSize < 0)
+    return success(); // dynamic or unsupported layout; nothing to check
 
-  return parser.parseArgumentList(args, OpAsmParser::Delimiter::Paren,
-                                  /*allowType=*/true);
-}
+  if (blockSize > runSize)
+    return op->emitOpError("the number of transferred elements (")
+           << blockSize << ") exceeds the largest contiguous run of elements ("
+           << runSize << ") in host buffer " << hostTy
+           << "; each transferred block must be contiguous in memory";
 
-/// Verifies a UPMEM function memory attribution.
-// static LogicalResult verifyAttributions(Operation *op,
-//                                         ArrayRef<BlockArgument> attributions,
-//                                         upmem::AddressSpace memorySpace) {
-//   for (Value v : attributions) {
-//     auto type = llvm::dyn_cast<MemRefType>(v.getType());
-//     if (!type)
-//       return op->emitOpError() << "expected memref type in attribution";
-
-//     // We can only verify the address space if it hasn't already been lowered
-//     // from the AddressSpaceAttr to a target-specific numeric value.
-//     auto addressSpace =
-//         llvm::dyn_cast_or_null<upmem::AddressSpaceAttr>(type.getMemorySpace());
-//     if (!addressSpace)
-//       continue;
-//     if (addressSpace.getValue() != memorySpace)
-//       return op->emitOpError()
-//              << "expected memory space " <<
-//              stringifyAddressSpace(memorySpace)
-//              << " in attribution";
-//   }
-//   return success();
-// }
-
-//===----------------------------------------------------------------------===//
-// AsyncOpInterface
-//===----------------------------------------------------------------------===//
-
-void upmem::addAsyncDependency(Operation *op, Value token) {
-  op->insertOperands(0, {token});
-  if (!op->template hasTrait<OpTrait::AttrSizedOperandSegments>())
-    return;
-  auto attrName =
-      OpTrait::AttrSizedOperandSegments<void>::getOperandSegmentSizeAttr();
-  auto sizeAttr = op->template getAttrOfType<DenseI32ArrayAttr>(attrName);
-
-  // Async dependencies is the only variadic operand.
-  if (!sizeAttr)
-    return;
-
-  SmallVector<int32_t, 8> sizes(sizeAttr.asArrayRef());
-  ++sizes.front();
-  op->setAttr(attrName, Builder(op->getContext()).getDenseI32ArrayAttr(sizes));
-}
-
-//===----------------------------------------------------------------------===//
-// LaunchOp
-//===----------------------------------------------------------------------===//
-
-void LaunchOp::build(OpBuilder &builder, OperationState &result,
-                     Value device_hierarchy, Value rankSize, Value dpuSize,
-                     Value taskletSize, Value dynamicSharedMemorySize,
-                     Type asyncTokenType, ValueRange asyncDependencies,
-                     TypeRange workgroupAttributions,
-                     TypeRange privateAttributions) {
-
-  // Add a WorkGroup attribution attribute. This attribute is required to
-  // identify private attributions in the list of block argguments.
-  result.addAttribute(getNumWorkgroupAttributionsAttrName(),
-                      builder.getI64IntegerAttr(workgroupAttributions.size()));
-
-  // Add Op operands.
-  result.addOperands(asyncDependencies);
-  if (asyncTokenType)
-    result.types.push_back(builder.getType<AsyncTokenType>());
-
-  // Add grid and block sizes as op operands, followed by the data operands.
-  result.addOperands(device_hierarchy);
-  result.addOperands({rankSize, dpuSize, taskletSize});
-  if (dynamicSharedMemorySize)
-    result.addOperands(dynamicSharedMemorySize);
-
-  // Create a kernel body region with kNumConfigRegionAttributes + N memory
-  // attributions, where the first kNumConfigRegionAttributes arguments have
-  // `index` type and the rest have the same types as the data operands.
-  Region *kernelRegion = result.addRegion();
-  Block *body = new Block();
-  // TODO: Allow passing in proper locations here.
-  for (unsigned i = 0; i < kNumConfigRegionAttributes; ++i)
-    body->addArgument(builder.getIndexType(), result.location);
-  // Add WorkGroup & Private attributions to the region arguments.
-  for (Type argTy : workgroupAttributions)
-    body->addArgument(argTy, result.location);
-  for (Type argTy : privateAttributions)
-    body->addArgument(argTy, result.location);
-  kernelRegion->push_back(body);
-  // Fill OperandSegmentSize Attribute.
-  SmallVector<int32_t, 6> segmentSizes(6, 1);
-  segmentSizes.front() = asyncDependencies.size();
-  segmentSizes.back() = dynamicSharedMemorySize ? 1 : 0;
-  result.addAttribute(getOperandSegmentSizeAttr(),
-                      builder.getDenseI32ArrayAttr(segmentSizes));
-}
-
-KernelDim LaunchOp::getRankIdClass() {
-  assert(!getBody().empty() && "LaunchOp body must not be empty.");
-  auto args = getBody().getArguments();
-  return KernelDim{args[0]};
-}
-
-KernelDim LaunchOp::getDPUIdClass() {
-  assert(!getBody().empty() && "LaunchOp body must not be empty.");
-  auto args = getBody().getArguments();
-  return KernelDim{args[1]};
-}
-
-KernelDim LaunchOp::getTaskletIdClass() {
-  assert(!getBody().empty() && "LaunchOp body must not be empty.");
-  auto args = getBody().getArguments();
-  return KernelDim{args[2]};
-}
-
-KernelDim LaunchOp::getRankSizeClass() {
-  assert(!getBody().empty() && "LaunchOp body must not be empty.");
-  auto args = getBody().getArguments();
-  return KernelDim{args[3]};
-}
-
-KernelDim LaunchOp::getDPUSizeClass() {
-  assert(!getBody().empty() && "LaunchOp body must not be empty.");
-  auto args = getBody().getArguments();
-  return KernelDim{args[4]};
-}
-
-KernelDim LaunchOp::getTaskletSizeClass() {
-  assert(!getBody().empty() && "LaunchOp body must not be empty.");
-  auto args = getBody().getArguments();
-  return KernelDim{args[5]};
-}
-
-KernelDim LaunchOp::getRankSizeOperandValue() {
-  auto operands = getOperands().drop_front(1 + getAsyncDependencies().size());
-  return KernelDim{operands[0]};
-}
-
-KernelDim LaunchOp::getDPUSizeOperandValue() {
-  auto operands = getOperands().drop_front(1 + getAsyncDependencies().size());
-  return KernelDim{operands[1]};
-}
-
-KernelDim LaunchOp::getTaskletSizeOperandValue() {
-  auto operands = getOperands().drop_front(1 + getAsyncDependencies().size());
-  return KernelDim{operands[2]};
-}
-
-LogicalResult LaunchOp::verifyRegions() {
-  if (!getBody().empty()) {
-    if (getBody().getNumArguments() <
-        kNumConfigRegionAttributes + getNumWorkgroupAttributions())
-      return emitOpError("unexpected number of region arguments");
+  ArrayRef<int64_t> shape = hostTy.getShape();
+  MLIRContext *ctx = op->getContext();
+  int64_t runRank = getContiguousSuffixRank(hostTy);
+  if (runRank > 0) {
+    AffineMap runLayout = AffineMap::get(
+        runRank, 0, linearizeIndices(ctx, shape.take_back(runRank)), ctx);
+    AffineMap trailing =
+        AffineMap::get(map.getNumDims(), map.getNumSymbols(),
+                       map.getResults().take_back(runRank), ctx);
+    std::optional<int64_t> start =
+        getAffineUpperBound(runLayout.compose(trailing).getResult(0), box);
+    if (start && *start + blockSize > runSize)
+      return op->emitOpError("a transferred block starts at offset ")
+             << *start << " of a contiguous run of " << runSize
+             << " elements in host buffer " << hostTy << " and is " << blockSize
+             << " elements long, so it runs past the end of the run";
   }
 
-  for (Block &block : getBody()) {
-    if (block.empty())
-      continue;
-    if (block.back().getNumSuccessors() != 0)
-      continue;
-    if (!isa<upmem::TerminatorOp>(&block.back())) {
-      return block.back()
-          .emitError()
-          .append("expected '", upmem::TerminatorOp::getOperationName(),
-                  "' or a terminator with successors")
-          .attachNote(getLoc())
-          .append("in '", LaunchOp::getOperationName(), "' body region");
+  // The transfer must also stay inside the memref at all. The largest linear
+  // offset any index reaches is the last element's.
+  FailureOr<AffineExpr> offset = linearizeToElementOffset(map, hostTy);
+  if (succeeded(offset)) {
+    if (std::optional<int64_t> highest = getAffineUpperBound(*offset, box)) {
+      SmallVector<int64_t> last(
+          llvm::map_range(shape, [](int64_t extent) { return extent - 1; }));
+      AffineMap lastIndex = AffineMap::get(
+          0, 0,
+          llvm::to_vector(llvm::map_range(
+              last, [&](int64_t i) { return getAffineConstantExpr(i, ctx); })),
+          ctx);
+      FailureOr<AffineExpr> extent =
+          linearizeToElementOffset(lastIndex, hostTy);
+      if (succeeded(extent))
+        if (auto constant = dyn_cast<AffineConstantExpr>(*extent))
+          if (*highest + blockSize > constant.getValue() + 1)
+            return op->emitOpError("a transferred block reaches element ")
+                   << (*highest + blockSize - 1) << " of a host buffer "
+                   << hostTy << " that only addresses "
+                   << (constant.getValue() + 1);
     }
   }
+  return success();
+}
 
-  if (getNumResults() == 0 && getAsyncToken())
-    return emitOpError("needs to be named when async keyword is specified");
+/// The (dpu) box of `hierarchy`. The tasklet dimension is deliberately
+/// absent: a transfer targets a DPU's MRAM, which its tasklets share.
+static SmallVector<int64_t> arrayBox(upmem::DeviceHierarchyType hierarchy) {
+  return {hierarchy.getNumDpus()};
+}
+
+LogicalResult upmem::GatherFromArrayOp::verify() {
+  if (getScatterMap().getNumResults() !=
+          getHostBuffer().getType().getShape().size() ||
+      getScatterMap().getNumDims() != 1)
+    return emitOpError("Scatter map should map (dpu) to a start index in "
+                       "the host buffer");
+  return verifyTransferBlocks(*this, getHostBuffer().getType(), getScatterMap(),
+                              getTransferCount(),
+                              arrayBox(getHierarchy().getType()));
+}
+
+LogicalResult upmem::ScatterOnArrayOp::verify() {
+  if (getScatterMap().getNumResults() !=
+          getHostBuffer().getType().getShape().size() ||
+      getScatterMap().getNumDims() != 1)
+    return emitOpError("Scatter map should map (dpu) to a start index in "
+                       "the host buffer");
+  return verifyTransferBlocks(*this, getHostBuffer().getType(), getScatterMap(),
+                              getTransferCount(),
+                              arrayBox(getHierarchy().getType()));
+}
+
+/// Shared by both `_blocks` ops: same map arity, same box, and
+/// `transferCount` is one block of the `numBlocksPerDpu` a DPU receives.
+template <class Op> static LogicalResult verifyBlockTransfer(Op op) {
+  if (op.getScatterMap().getNumResults() !=
+          op.getHostBuffer().getType().getShape().size() ||
+      op.getScatterMap().getNumDims() != 2)
+    return op.emitOpError("Scatter map should map (dpu, block) to a "
+                          "start index in the host buffer");
+  if (op.getNumBlocksPerDpu() < 1)
+    return op.emitOpError("must transfer at least one block per DPU");
+
+  SmallVector<int64_t> box = arrayBox(op.getHierarchy().getType());
+  box.push_back(op.getNumBlocksPerDpu());
+  return verifyTransferBlocks(op, op.getHostBuffer().getType(),
+                              op.getScatterMap(), op.getTransferCount(), box);
+}
+
+LogicalResult upmem::ScatterBlocksOp::verify() {
+  return verifyBlockTransfer(*this);
+}
+
+LogicalResult upmem::GatherBlocksOp::verify() {
+  return verifyBlockTransfer(*this);
+}
+
+LogicalResult upmem::BroadcastOp::verify() {
+  MemRefType hostTy = getHostBuffer().getType();
+  if (!hostTy.hasStaticShape())
+    return emitOpError("host buffer must have a static shape");
+
+  // One block, the whole buffer, at the origin -- so the map is the constant
+  // zero index and the box is a single point.
+  MLIRContext *ctx = getContext();
+  SmallVector<AffineExpr> origin(hostTy.getRank(),
+                                 getAffineConstantExpr(0, ctx));
+  return verifyTransferBlocks(*this, hostTy, AffineMap::get(1, 0, origin, ctx),
+                              hostTy.getNumElements(), /*box=*/{1});
+}
+
+/// Resolves `dpuBufRef` to the upmem.static_alloc it must name, in the
+/// dpu_program loaded onto `hierarchy`. Returns a null StaticAllocOp (not a
+/// failure) if `hierarchy` is a block argument and can't be resolved
+/// statically; emits an error and returns failure if it resolves to
+/// something else.
+static FailureOr<upmem::StaticAllocOp>
+resolveDpuBuffer(Operation *op, Value hierarchy, FlatSymbolRefAttr dpuBufRef,
+                 SymbolTableCollection & /*symbolTable*/) {
+  // Which program the set holds is flow-sensitive since the alloc/load
+  // split (see programLoadedOn): when it cannot be resolved statically --
+  // forwarded hierarchy with no local load, or several candidate loads --
+  // skip the static check rather than guess.
+  upmem::DpuProgramOp program = programLoadedOn(hierarchy, op);
+  if (!program)
+    return upmem::StaticAllocOp{};
+
+  Operation *bufOp = SymbolTable::lookupSymbolIn(program, dpuBufRef);
+  if (!bufOp)
+    return op->emitOpError("buffer reference ")
+           << dpuBufRef << " does not refer to any symbol in @"
+           << program.getSymName();
+
+  auto staticAlloc = dyn_cast<upmem::StaticAllocOp>(bufOp);
+  if (!staticAlloc)
+    return op->emitOpError("buffer reference ")
+           << dpuBufRef << " must refer to a named upmem.static_alloc op";
+
+  return staticAlloc;
+}
+
+static LogicalResult
+verifyScatterGatherSymbolUses(Operation *op, Value hierarchy,
+                              FlatSymbolRefAttr dpuBufRef,
+                              SymbolTableCollection &symbolTable) {
+  return resolveDpuBuffer(op, hierarchy, dpuBufRef, symbolTable);
+}
+
+/// Returns true if `a` and `b` describe the same dense buffer: the same
+/// elements in the same order, so that a verbatim copy between them is right.
+///
+/// Not shape equality, because the two sides group the same run of elements
+/// differently. A broadcast operand is one the workgroup shares along some
+/// distributed dimension, and the host side keeps that dimension separate --
+/// a 16-tasklet buffer whose operand is shared along an iteration dimension
+/// split two ways arrives shaped (2, 8, ...) where the device buffer is
+/// (16, ...). Row-major over (2, 8) and over (16) is the same sequence.
+///
+/// Consecutive dimensions may therefore be grouped on either side, and unit
+/// dimensions ignored, but nothing may be reordered: (32, 16) and (16, 32)
+/// hold the same elements in different orders and a verbatim copy between
+/// them would move the right bytes to the wrong places.
+static bool shapesCompatibleUpToUnitDims(ArrayRef<int64_t> a,
+                                         ArrayRef<int64_t> b) {
+  auto significantDims = [](ArrayRef<int64_t> shape) {
+    SmallVector<int64_t> result;
+    llvm::copy_if(shape, std::back_inserter(result),
+                  [](int64_t d) { return d != 1; });
+    return result;
+  };
+  SmallVector<int64_t> lhs = significantDims(a), rhs = significantDims(b);
+  if (llvm::any_of(lhs, ShapedType::isDynamic) ||
+      llvm::any_of(rhs, ShapedType::isDynamic))
+    return true; // nothing to check against
+
+  // One shape has to be reachable from the other by collapsing consecutive
+  // dimensions -- one of them refines the other. Merely having a common
+  // refinement is no test at all: collapsing both sides to a single dimension
+  // always succeeds when the totals agree, which would accept a transpose.
+  auto refines = [](ArrayRef<int64_t> fine, ArrayRef<int64_t> coarse) {
+    size_t i = 0;
+    for (int64_t group : coarse) {
+      int64_t covered = 1;
+      while (covered < group && i < fine.size())
+        covered *= fine[i++];
+      if (covered != group)
+        return false;
+    }
+    return i == fine.size();
+  };
+  return refines(lhs, rhs) || refines(rhs, lhs);
+}
+
+LogicalResult
+upmem::ScatterOnArrayOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  return verifyScatterGatherSymbolUses(*this, getHierarchy(),
+                                       getDpuBufRefAttr(), symbolTable);
+}
+
+LogicalResult
+upmem::GatherFromArrayOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  return verifyScatterGatherSymbolUses(*this, getHierarchy(),
+                                       getDpuBufRefAttr(), symbolTable);
+}
+
+LogicalResult
+upmem::ScatterBlocksOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  return verifyScatterGatherSymbolUses(*this, getHierarchy(),
+                                       getDpuBufRefAttr(), symbolTable);
+}
+
+LogicalResult
+upmem::GatherBlocksOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  return verifyScatterGatherSymbolUses(*this, getHierarchy(),
+                                       getDpuBufRefAttr(), symbolTable);
+}
+
+LogicalResult
+upmem::BroadcastOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  auto staticAllocOrFailure =
+      resolveDpuBuffer(*this, getHierarchy(), getDpuBufRefAttr(), symbolTable);
+  if (failed(staticAllocOrFailure))
+    return failure();
+  upmem::StaticAllocOp staticAlloc = *staticAllocOrFailure;
+  if (!staticAlloc)
+    return success(); // hierarchy is a block argument; can't verify statically
+
+  if (!shapesCompatibleUpToUnitDims(getHostBuffer().getType().getShape(),
+                                    staticAlloc.getType().getShape()))
+    return emitOpError("host buffer shape ")
+           << getHostBuffer().getType()
+           << " is not compatible with target buffer " << staticAlloc.getType()
+           << " (a broadcast copies the buffer verbatim, so one shape must be "
+              "reachable from the other by collapsing consecutive dimensions "
+              "and ignoring extent-1 ones)";
 
   return success();
 }
 
-static void printSizeAssignment(OpAsmPrinter &p, Value size,
-                                BlockArgument arg) {
-  p << '(';
-  p.printRegionArgument(arg, {}, true);
-  p << " upto " << size << ")";
-}
+::mlir::LogicalResult upmem::LoadProgramOp::verifySymbolUses(
+    ::mlir::SymbolTableCollection &symbolTable) {
 
-void LaunchOp::print(OpAsmPrinter &p) {
-  if (getAsyncToken()) {
-    p << " async";
-    if (!getAsyncDependencies().empty())
-      p << " [" << getAsyncDependencies() << ']';
-  }
-  // Print the launch configuration.
-  p << ' ' << getDeviceHierarchy();
-  p << ' ' << getRanksKeyword();
-  auto blockArgs = getRegion().getArguments();
-  printSizeAssignment(p, getRankSizeOperandValue().x, blockArgs[0]);
+  upmem::DpuProgramOp program =
+      symbolTable.lookupNearestSymbolFrom<upmem::DpuProgramOp>(
+          *this, getDpuProgramRefAttr());
 
-  p << ' ' << getDPUsKeyword();
-  printSizeAssignment(p, getDPUSizeOperandValue().x, blockArgs[1]);
-
-  p << ' ' << getTaskletsKeyword();
-  printSizeAssignment(p, getTaskletSizeOperandValue().x, blockArgs[2]);
-
-  if (getDynamicSharedMemorySize())
-    p << ' ' << getDynamicSharedMemorySizeKeyword() << ' '
-      << getDynamicSharedMemorySize();
-
-  p << " on " << getDeviceHierarchy().getType() << " ";
-
-  p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
-  p.printOptionalAttrDict((*this)->getAttrs(), /*elidedAttrs=*/{
-                              LaunchOp::getOperandSegmentSizeAttr(),
-                              getNumWorkgroupAttributionsAttrName()});
-}
-
-static ParseResult
-parseSizeAssignment(OpAsmParser &parser, OpAsmParser::Argument &arg,
-                    OpAsmParser::UnresolvedOperand &upperBound) {
-  if (parser.parseLParen() || parser.parseArgument(arg, false) ||
-      parser.parseKeyword("upto") || parser.parseOperand(upperBound) ||
-      parser.parseRParen())
-    return failure();
-  arg.type = parser.getBuilder().getIndexType();
+  if (!program)
+    return emitOpError("requires ")
+           << getDpuProgramRefAttr() << " to refer to an upmem.dpu_program op";
+  if (program.getNumTasklets() !=
+      getHierarchy().getType().getNumTaskletsPerDpu())
+    return emitOpError("loads a program compiled for ")
+           << program.getNumTasklets() << " tasklet(s) onto a hierarchy of "
+           << getHierarchy().getType().getNumTaskletsPerDpu()
+           << " tasklet(s) per DPU";
   return success();
 }
 
-ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
-  // Sizes of the grid and block.
-  SmallVector<OpAsmParser::UnresolvedOperand, LaunchOp::kNumConfigOperands>
-      sizes(LaunchOp::kNumConfigOperands);
-  MutableArrayRef<OpAsmParser::UnresolvedOperand> sizesRef(sizes);
-
-  // Actual (data) operands passed to the kernel.
-  SmallVector<OpAsmParser::UnresolvedOperand, 4> dataOperands;
-
-  SmallVector<Value, 1> deviceHierarchyOperand;
-  result.operands.emplace_back();
-
-  // Region arguments to be created.
-
-  // Parse optional async dependencies.
-  SmallVector<OpAsmParser::UnresolvedOperand, 4> asyncDependencies;
-  Type asyncTokenType;
-  if (failed(
-          parseAsyncDependencies(parser, asyncTokenType, asyncDependencies)) ||
-      parser.resolveOperands(asyncDependencies, asyncTokenType,
-                             result.operands))
-    return failure();
-  if (parser.getNumResults() > 0)
-    result.types.push_back(asyncTokenType);
-
-  OpAsmParser::UnresolvedOperand deviceHierarchy;
-  if (parser.parseOperand(deviceHierarchy)) {
-    return failure();
-  }
-
-  SmallVector<OpAsmParser::Argument> regionArgs2;
-  SmallVector<OpAsmParser::UnresolvedOperand> upperBounds;
-  if (parser.parseKeyword(LaunchOp::getRanksKeyword().data()) ||
-      parseSizeAssignment(parser, regionArgs2.emplace_back(),
-                          upperBounds.emplace_back()) ||
-      parser.parseKeyword(LaunchOp::getDPUsKeyword().data()) ||
-      parseSizeAssignment(parser, regionArgs2.emplace_back(),
-                          upperBounds.emplace_back()) ||
-      parser.parseKeyword(LaunchOp::getTaskletsKeyword().data()) ||
-      parseSizeAssignment(parser, regionArgs2.emplace_back(),
-                          upperBounds.emplace_back()) ||
-      parser.resolveOperands(upperBounds, parser.getBuilder().getIndexType(),
-                             result.operands))
-    return failure();
-
-  OpAsmParser::UnresolvedOperand dynamicSharedMemorySize;
-  bool hasDynamicSharedMemorySize = false;
-  if (!parser.parseOptionalKeyword(
-          LaunchOp::getDynamicSharedMemorySizeKeyword())) {
-    hasDynamicSharedMemorySize = true;
-    if (parser.parseOperand(dynamicSharedMemorySize) ||
-        parser.resolveOperand(dynamicSharedMemorySize,
-                              parser.getBuilder().getI32Type(),
-                              result.operands))
-      return failure();
-  }
-
-  Type index = parser.getBuilder().getIndexType();
-  SmallVector<Type, LaunchOp::kNumConfigRegionAttributes> dataTypes(
-      LaunchOp::kNumConfigRegionAttributes, index);
-
-  Type deviceHierarchyType;
-  if (parser.parseKeyword("on") || parser.parseType(deviceHierarchyType) ||
-      parser.resolveOperand(deviceHierarchy, deviceHierarchyType,
-                            deviceHierarchyOperand)) {
-    return failure();
-  }
-  result.operands[0] = deviceHierarchyOperand[0];
-
-  Builder &builder = parser.getBuilder();
-  // Parse workgroup memory attributions.
-  if (failed(parseAttributions(parser, LaunchOp::getWorkgroupKeyword(),
-                               regionArgs2)))
-    return failure();
-
-  // Store the number of operands we just parsed as the number of workgroup
-  // memory attributions.
-  unsigned numWorkgroupAttrs =
-      regionArgs2.size() - LaunchOp::kNumConfigRegionAttributes;
-  result.addAttribute(LaunchOp::getNumWorkgroupAttributionsAttrName(),
-                      builder.getI64IntegerAttr(numWorkgroupAttrs));
-
-  // Parse private memory attributions.
-  if (failed(parseAttributions(parser, LaunchOp::getPrivateKeyword(),
-                               regionArgs2)))
-    return failure();
-
-  // Introduce the body region and parse it. The region has
-  // kNumConfigRegionAttributes arguments that correspond to
-  // block/thread identifiers and grid/block sizes, all having `index` type.
-  Region *body = result.addRegion();
-  if (parser.parseRegion(*body, regionArgs2) ||
-      parser.parseOptionalAttrDict(result.attributes))
-    return failure();
-
-  SmallVector<int32_t, 6> segmentSizes(6, 1);
-  segmentSizes.front() = asyncDependencies.size();
-  segmentSizes.back() = hasDynamicSharedMemorySize ? 1 : 0;
-  result.addAttribute(LaunchOp::getOperandSegmentSizeAttr(),
-                      parser.getBuilder().getDenseI32ArrayAttr(segmentSizes));
-  return success();
+void upmem::StaticAllocOp::getAsmResultNames(::mlir::OpAsmSetValueNameFn fn) {
+  fn(getBuffer(), isWram() ? "wram_buf" : "mram_buf");
 }
 
-/// Simplify the upmem.launch when the range of a thread or block ID is
-/// trivially known to be one.
-struct FoldLaunchArguments : public OpRewritePattern<LaunchOp> {
-  using OpRewritePattern<LaunchOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(LaunchOp op,
+void upmem::StaticAllocOp::getEffects(
+    SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
+  effects.emplace_back(MemoryEffects::Allocate::get(),
+                       getOperation()->getOpResult(0),
+                       SideEffects::DefaultResource::get());
+  if (!getSymName())
+    return;
+
+  // A named allocation is the one thing the host can address on the device: it
+  // scatters into and gathers from the symbol. That reference is a
+  // SymbolRefAttr in another module, not an SSA use, so to DCE the buffer looks
+  // like an allocation nobody reads -- exactly the shape it removes. The write
+  // effect below states what is true of it and stops that.
+  //
+  // It deliberately names no value: `wouldOpBeTriviallyDead` drops any effect
+  // that lands on a result the same op allocates, so a write attached to the
+  // buffer would count for nothing. Unattached is also the more honest
+  // reading -- the writer is the host, not this op.
+  effects.emplace_back(MemoryEffects::Write::get(),
+                       SideEffects::DefaultResource::get());
+}
+namespace {
+
+struct FoldCastForLocalTransfer
+    : public OpRewritePattern<upmem::LocalTransferOp> {
+public:
+  using OpRewritePattern<upmem::LocalTransferOp>::OpRewritePattern;
+
+  static bool foldOperand(OpOperand &opnd, PatternRewriter &rewriter) {
+    auto cast = opnd.get().getDefiningOp<memref::CastOp>();
+    if (!cast)
+      return false;
+
+    if (!memref::CastOp::canFoldIntoConsumerOp(cast))
+      return false;
+
+    rewriter.modifyOpInPlace(opnd.getOwner(),
+                             [&]() { opnd.set(cast.getSource()); });
+    return true;
+  }
+
+  LogicalResult matchAndRewrite(upmem::LocalTransferOp op,
                                 PatternRewriter &rewriter) const override {
-    // If the range implies a single value for `id`, replace `id`'s uses by
-    // zero.
-    Value zero;
-    bool simplified = false;
-    auto constPropIdUses = [&](Value id, Value size) {
-      // Check if size is trivially one.
-      if (!matchPattern(size, m_One()))
-        return;
-      if (id.getUses().empty())
-        return;
-      if (!simplified) {
-        // Create a zero value the first time.
-        OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPointToStart(&op.getBody().front());
-        zero =
-            rewriter.create<arith::ConstantIndexOp>(op.getLoc(), /*value=*/0);
-      }
-      rewriter.replaceAllUsesWith(id, zero);
-      simplified = true;
-    };
-    constPropIdUses(op.getRankIdClass().x, op.getRankSizeClass().x);
-    constPropIdUses(op.getDPUIdClass().x, op.getDPUSizeClass().x);
-    constPropIdUses(op.getTaskletIdClass().x, op.getTaskletSizeClass().x);
 
-    return success(simplified);
+    auto foldSource = foldOperand(op.getSourceMutable(), rewriter);
+    auto foldDest = foldOperand(op.getTargetMutable(), rewriter);
+    return success(foldSource || foldDest);
   }
 };
 
-void LaunchOp::getCanonicalizationPatterns(RewritePatternSet &rewrites,
-                                           MLIRContext *context) {
-  rewrites.add<FoldLaunchArguments>(context);
-}
+} // namespace
 
-/// Adds a new block argument that corresponds to buffers located in
-/// workgroup memory.
-BlockArgument LaunchOp::addWorkgroupAttribution(Type type, Location loc) {
-  auto attrName = getNumWorkgroupAttributionsAttrName();
-  auto attr = (*this)->getAttrOfType<IntegerAttr>(attrName);
-  (*this)->setAttr(attrName,
-                   IntegerAttr::get(attr.getType(), attr.getValue() + 1));
-  return getBody().insertArgument(
-      LaunchOp::kNumConfigRegionAttributes + attr.getInt(), type, loc);
-}
-
-/// Adds a new block argument that corresponds to buffers located in
-/// private memory.
-BlockArgument LaunchOp::addPrivateAttribution(Type type, Location loc) {
-  // Buffers on the private memory always come after buffers on the workgroup
-  // memory.
-  return getBody().addArgument(type, loc);
-}
-
-//===----------------------------------------------------------------------===//
-// UPMEMFuncOp
-//===----------------------------------------------------------------------===//
-
-ParseResult UPMEMFuncOp::parse(OpAsmParser &parser, OperationState &result) {
-
-  // Parse the function name.
-  StringAttr nameAttr;
-  if (parser.parseSymbolName(nameAttr, ::mlir::SymbolTable::getSymbolAttrName(),
-                             result.attributes))
-    return failure();
-
-  if (parser.parseLParen() || parser.parseRParen())
-    return failure();
-
-  if (parser.parseOptionalAttrDictWithKeyword(result.attributes))
-    return failure();
-
-  auto *body = result.addRegion();
-  return parser.parseRegion(*body, {});
-}
-
-void UPMEMFuncOp::print(OpAsmPrinter &p) {
-  ::mlir::Builder odsBuilder{getContext()};
-  p << ' ';
-  p.printSymbolName(getName());
-  p << "()";
-  p.printOptionalAttrDictWithKeyword({odsBuilder.getNamedAttr(
-      getNumTaskletsAttrName(),
-      odsBuilder.getI64IntegerAttr(getNumTasklets()))});
-  p << ' ';
-  p.printRegion(getBody(), /*printEntryBlockArgs=*/false);
-}
-
-void UPMEMFuncOp::build(OpBuilder &builder, OperationState &result,
-                        StringRef name, int64_t numTasklets,
-                        ArrayRef<NamedAttribute> attrs,
-                        ArrayRef<DictionaryAttr> argAttrs) {
-  result.addAttribute(getSymNameAttrName(result.name),
-                      builder.getStringAttr(name));
-
-  result.addAttribute(getNumTaskletsAttrName(result.name),
-                      builder.getI64IntegerAttr(numTasklets));
-  result.addAttribute(getResAttrsAttrName(result.name),
-                      builder.getDictionaryAttr(attrs));
-  result.addRegion();
-  // todo arg attrs
-  // result.addAttribute(getArgAttrsAttrName(result.name),
-  // builder.getArrayAttr())))
-}
-
-//===----------------------------------------------------------------------===//
-// LaunchFuncOp
-//===----------------------------------------------------------------------===//
-
-void LaunchFuncOp::build(OpBuilder &builder, OperationState &result,
-                         UPMEMFuncOp kernelFunc, Value upmemToken,
-                         Value dynamicSharedMemorySize,
-                         ValueRange kernelOperands, Type asyncTokenType,
-                         ValueRange asyncDependencies) {
-  result.addOperands(asyncDependencies);
-  if (asyncTokenType)
-    result.types.push_back(builder.getType<AsyncTokenType>());
-
-  // Add grid and block sizes as op operands, followed by the data operands.
-  result.addOperands({upmemToken});
-  if (dynamicSharedMemorySize)
-    result.addOperands(dynamicSharedMemorySize);
-  result.addOperands(kernelOperands);
-  auto kernelModule = kernelFunc->getParentOfType<UPMEMModuleOp>();
-  auto kernelSymbol =
-      SymbolRefAttr::get(kernelModule.getNameAttr(),
-                         {SymbolRefAttr::get(kernelFunc.getNameAttr())});
-
-  Properties &prop = result.getOrAddProperties<Properties>();
-  prop.kernel = kernelSymbol;
-  size_t segmentSizesLen = std::size(prop.operandSegmentSizes);
-  // Initialize the segment sizes to 1.
-  for (auto &sz : prop.operandSegmentSizes)
-    sz = 1;
-  prop.operandSegmentSizes[0] = asyncDependencies.size();
-  prop.operandSegmentSizes[segmentSizesLen - 3] =
-      dynamicSharedMemorySize ? 1 : 0;
-  prop.operandSegmentSizes[segmentSizesLen - 2] =
-      static_cast<int32_t>(kernelOperands.size());
-  prop.operandSegmentSizes[segmentSizesLen - 1] = 0;
-}
-
-StringAttr LaunchFuncOp::getKernelModuleName() {
-  return getKernel().getRootReference();
-}
-
-StringAttr LaunchFuncOp::getKernelName() {
-  return getKernel().getLeafReference();
-}
-
-unsigned LaunchFuncOp::getNumKernelOperands() {
-  return getKernelOperands().size();
-}
-
-Value LaunchFuncOp::getKernelOperand(unsigned i) {
-  return getKernelOperands()[i];
-}
-
-LogicalResult LaunchFuncOp::verify() {
-  auto module = (*this)->getParentOfType<ModuleOp>();
-  if (!module)
-    return emitOpError("expected to belong to a module");
+LogicalResult upmem::LocalTransferOp::verify() {
+  for (auto [side, ty] :
+       {std::pair<StringRef, MemRefType>{"source", getSource().getType()},
+        std::pair<StringRef, MemRefType>{"target", getTarget().getType()}}) {
+    if (memrefIsContiguous(ty))
+      continue;
+    InFlightDiagnostic diag = emitOpError(side)
+                              << " is not contiguous: " << ty
+                              << ". A local transfer is a DMA of one run of "
+                                 "memory; a strided region would move the "
+                                 "right number of bytes to or from the wrong "
+                                 "addresses";
+    SmallVector<int64_t> strides;
+    int64_t offset = 0;
+    if (succeeded(ty.getStridesAndOffset(strides, offset)))
+      diag << " (strides " << strides << ")";
+    return diag;
+  }
   return success();
 }
 
-static ParseResult parseLaunchFuncOperands(
-    OpAsmParser &parser,
-    SmallVectorImpl<OpAsmParser::UnresolvedOperand> &argNames,
-    SmallVectorImpl<Type> &argTypes) {
-  if (parser.parseOptionalKeyword("args"))
+void upmem::LocalTransferOp::getCanonicalizationPatterns(
+    RewritePatternSet &results, MLIRContext *context) {
+  results.add<FoldCastForLocalTransfer>(context);
+}
+
+namespace {
+
+// A transfer map is evaluated over the DPU index alone, or, for the block
+// forms, over (dpu, block). Those extents are what may be assumed while
+// simplifying it. The block extent is `numBlocksPerDpu`, which is a property
+// of the transfer and not of the hierarchy: one tasklet's data may arrive as
+// several blocks, so the tasklet count would be both wrong and, being
+// smaller, wrong in the direction that silently discards the high bits of the
+// block index.
+template <class Op, bool HasBlockDim>
+class SimplifyScatterMap : public OpRewritePattern<Op> {
+  using OpRewritePattern<Op>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(Op op,
+                                PatternRewriter &rewriter) const override {
+    AffineMap map = op.getScatterMap();
+    SmallVector<int64_t> domain{op.getHierarchy().getType().getNumDpus()};
+    if constexpr (HasBlockDim)
+      domain.push_back(op.getNumBlocksPerDpu());
+    if (map.getNumDims() != domain.size())
+      return failure();
+
+    AffineMap simplified = simplifyAffineMapWithBounds(map, domain);
+    if (simplified == map)
+      return failure();
+
+    rewriter.modifyOpInPlace(op, [&] { op.setScatterMap(simplified); });
     return success();
+  }
+};
+} // namespace
 
-  auto parseElement = [&]() -> ParseResult {
-    return failure(parser.parseOperand(argNames.emplace_back()) ||
-                   parser.parseColonType(argTypes.emplace_back()));
-  };
-
-  return parser.parseCommaSeparatedList(OpAsmParser::Delimiter::Paren,
-                                        parseElement, " in argument list");
+void upmem::ScatterBlocksOp::getCanonicalizationPatterns(
+    ::mlir::RewritePatternSet &results, ::mlir::MLIRContext *context) {
+  results.insert<SimplifyScatterMap<ScatterBlocksOp, true>>(context);
 }
-
-static void printLaunchFuncOperands(OpAsmPrinter &printer, Operation *,
-                                    OperandRange operands, TypeRange types) {
-  if (operands.empty())
-    return;
-  printer << "args(";
-  llvm::interleaveComma(llvm::zip(operands, types), printer,
-                        [&](const auto &pair) {
-                          printer.printOperand(std::get<0>(pair));
-                          printer << " : ";
-                          printer.printType(std::get<1>(pair));
-                        });
-  printer << ")";
+void upmem::ScatterOnArrayOp::getCanonicalizationPatterns(
+    ::mlir::RewritePatternSet &results, ::mlir::MLIRContext *context) {
+  results.insert<SimplifyScatterMap<ScatterOnArrayOp, false>>(context);
 }
-
-static void printAsyncDependencies(OpAsmPrinter &printer, Operation *op,
-                                   Type asyncTokenType,
-                                   OperandRange asyncDependencies) {
-  if (asyncTokenType)
-    printer << "async";
-  if (asyncDependencies.empty())
-    return;
-  if (asyncTokenType)
-    printer << ' ';
-  printer << '[';
-  llvm::interleaveComma(asyncDependencies, printer);
-  printer << ']';
+void upmem::GatherBlocksOp::getCanonicalizationPatterns(
+    ::mlir::RewritePatternSet &results, ::mlir::MLIRContext *context) {
+  results.insert<SimplifyScatterMap<GatherBlocksOp, true>>(context);
 }
-
-LogicalResult GatherOp::verify() {
-  auto count = getDpuMemOffset();
-  if ((count % 8) != 0)
-    return emitOpError("has unaligned DPU memory offset ")
-           << count << ", needs to be 8-byte-aligned.";
-  return success();
+void upmem::GatherFromArrayOp::getCanonicalizationPatterns(
+    ::mlir::RewritePatternSet &results, ::mlir::MLIRContext *context) {
+  results.insert<SimplifyScatterMap<GatherFromArrayOp, false>>(context);
 }
-
-LogicalResult ScatterOp::verify() {
-  auto count = getDpuMemOffset();
-  if ((count % 8) != 0)
-    return emitOpError("has unaligned DPU memory offset ")
-           << count << ", needs to be 8-byte-aligned.";
-  return success();
-}
-
-//===- Generated implementation -------------------------------------------===//
-
-#define GET_OP_CLASSES
-#include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.cpp.inc"

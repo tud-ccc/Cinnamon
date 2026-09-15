@@ -4,19 +4,19 @@
 
 #pragma once
 
-#include <mlir/Transforms/DialectConversion.h>
 #include <mlir/Pass/Pass.h>
+#include <mlir/Transforms/DialectConversion.h>
 
 #include "cinm-mlir/Dialect/Cim/IR/CimOps.h"
 
 namespace mlir {
-  namespace cim {
+namespace cim {
 
-    //===- Generated passes ---------------------------------------------------===//
+//===- Generated passes ---------------------------------------------------===//
 
 #define GEN_PASS_DECL
 #define GEN_PASS_REGISTRATION
 #include "cinm-mlir/Dialect/Cim/Transforms/Passes.h.inc"
-    //===----------------------------------------------------------------------===//
-  }  // namespace cim
-}  // namespace mlir
+//===----------------------------------------------------------------------===//
+} // namespace cim
+} // namespace mlir

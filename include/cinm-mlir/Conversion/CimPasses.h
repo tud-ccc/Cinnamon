@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "cinm-mlir/Conversion/CimToAlpine/CimToAlpine.h"
 #include "cinm-mlir/Conversion/CimToMemristor/CimToMemristor.h"
 
 namespace mlir {

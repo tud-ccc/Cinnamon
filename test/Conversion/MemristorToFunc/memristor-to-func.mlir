@@ -6,15 +6,15 @@
 // CHECK: func.func nested @memristor_barrier(i64)
 
 // CHECK-LABEL: simple
-// CHECK-SAME: (%[[arg0:.*]]: memref<6x6xi32>, %[[arg1:.*]]: memref<6x6xi32>, %[[arg2:.*]]: memref<6xi32>) { 
+// CHECK-SAME: (%[[arg0:.*]]: memref<6x6xi32>, %[[arg1:.*]]: memref<6x6xi32>, %[[arg2:.*]]: memref<6xi32>) {
 func.func @simple(%t0: memref<6x6xi32>, %t1 : memref<6x6xi32>, %t2 : memref<6xi32>) {
     %tile = arith.constant 0 : i64
 
     %rm0 = memref.alloc() : memref<6x6xi32>
     %rm1 = memref.alloc() : memref<6xi32>
-// CHECK: %[[c0:.*]] = arith.constant 0 : i64 
-// CHECK: %[[alloc0:.*]] = memref.alloc() : memref<6x6xi32> 
-// CHECK: %[[alloc1:.*]] = memref.alloc() : memref<6xi32> 
+// CHECK: %[[c0:.*]] = arith.constant 0 : i64
+// CHECK: %[[alloc0:.*]] = memref.alloc() : memref<6x6xi32>
+// CHECK: %[[alloc1:.*]] = memref.alloc() : memref<6xi32>
 
 // CHECK: %[[cast0:.*]] = memref.cast %[[arg1]] : memref<6x6xi32> to memref<?x?xi32>
 // CHECK: call @memristor_write_to_crossbar_i32(%[[c0]], %[[cast0]]) : (i64, memref<?x?xi32>) -> ()

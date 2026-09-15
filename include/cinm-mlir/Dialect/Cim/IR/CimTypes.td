@@ -36,20 +36,29 @@ def FutureType : Cim_Type<"Future", [ShapedTypeInterface]> {
   let extraClassDeclaration = [{
     bool hasRank() const { return true; }
 
-    ShapedType cloneWith(::std::optional<::llvm::ArrayRef<int64_t>> newShape, ::mlir::Type elementType) {
+    ShapedType cloneWith(::std::optional<::llvm::ArrayRef<int64_t>> newShape,
+                        ::mlir::Type elementType) {
       auto shape = newShape.value_or(getShape());
       return FutureType::get(getContext(), shape, elementType);
     }
 
     int64_t getItemCount() {
       auto shape = getShape();
-      return shape.empty() ? 1 : mlir::computeProduct(shape);
+      if (shape.empty()) return 1;
+      int64_t prod = 1;
+      for (int64_t d : shape) {
+        if (mlir::ShapedType::isDynamic(d)) return mlir::ShapedType::kDynamic;
+        prod *= d;
+      }
+      return prod;
     }
 
     int64_t getSizeInBytes() {
-      return getItemCount() * getElementTypeBitWidth() / 8;
+      auto items = getItemCount();
+      if (items == mlir::ShapedType::kDynamic) return mlir::ShapedType::kDynamic;
+      return items * getElementTypeBitWidth() / 8;
     }
-  }];
+}];
 }
 
 #endif

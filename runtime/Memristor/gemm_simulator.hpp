@@ -1,4 +1,5 @@
 #include <cstdio>
+#include <cstring>
 #include <iostream>
 
 #include <iostream>
@@ -47,7 +48,11 @@ template <typename T> void gemm_simulator(int32_t crossbar_id) {
 
   struct sockaddr_un address{};
   address.sun_family = AF_UNIX;
-  strncpy(address.sun_path, socket_path.data(), socket_path.size());
+  // Not strncpy: it would copy no terminator for a path this long, and
+  // address is zero-initialized anyway.
+  static_assert(socket_path.size() < sizeof(address.sun_path),
+                "socket path does not fit into sockaddr_un");
+  std::memcpy(address.sun_path, socket_path.data(), socket_path.size());
 
   if (connect(client_fd, (struct sockaddr *)&address, sizeof(address)) == -1) {
     std::cerr << "Error: connect() failed" << std::endl;

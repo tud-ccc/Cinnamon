@@ -1,6 +1,0 @@
-*.*.mlir
-*.upmem.c
-*.*.ll
-*.o
-*.s
-generated2

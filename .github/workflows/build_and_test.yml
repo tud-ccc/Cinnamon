@@ -1,100 +1,302 @@
 name: Build and test cinnamon
 run-name: 'Build and Test: ${{ github.event.head_commit.message }}'
-on: 
+on:
   workflow_dispatch:
   push:
   pull_request:
       types: [opened, reopened]
+
+# A new push supersedes the run of the previous commit. Keyed on the branch
+# rather than on github.ref, which differs between the push and pull_request
+# events of the same branch (refs/heads/x vs refs/pull/N/merge) and so let the
+# two run concurrently -- building the same submodules and racing each other to
+# save the same caches.
+concurrency:
+  group: build-and-test-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
-  main:
-    name: Build and test
+  # One job builds, and each test suite gets a job of its own downstream of it,
+  # so a pull request shows a green light per suite and one suite's failure
+  # does not hide the other's result.
+  build:
+    name: Build
     runs-on: ubuntu-24.04
     env:
-      CC: clang
-      CXX: clang++
-      LDFLAGS: -fuse-ld=mold
-      CMAKE_GENERATOR: Ninja
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      # pixi installs the compiler with fresh timestamps, which ccache's
+      # default check would take for a different compiler.
+      CCACHE_COMPILERCHECK: content
+    defaults:
+      run:
+        shell: bash
 
-    steps: 
+    steps:
+      # The build scripts check out the submodules they need, shallowly and
+      # only when they are actually going to build them.
       - name: Check out repository
-        uses: actions/checkout@v3
-
-      - name: Install build dependencies
-        run:
-          sudo apt-get install clang ninja-build mold libvulkan-dev python3.12-dev
-
-      - name: Restore runtime cache
-        id: runtimes-cache-restore
-        uses: actions/cache/restore@v3
+        uses: actions/checkout@v7
         with:
-          path: |
-            .venv
-            third-party/upmem
-          key: cinnamon-runtimes-${{ runner.os }}
+          submodules: false
 
-      - name: Restore llvm cache
-        id: llvm-cache-restore
-        uses: actions/cache/restore@v3
+      # Activated for all later steps, which is what `pixi run` would do
+      - name: Set up pixi
+        uses: prefix-dev/setup-pixi@v0.10.2
         with:
-          path: third-party/llvm
-          key: cinnamon-llvm-${{ runner.os }}
+          environments: default
+          activate-environment: true
+          cache: true
 
+      # Dependency builds are keyed on the revision this repo pins them to, so
+      # a cache entry is reused until the submodule actually moves.
+      - name: Resolve pinned dependency revisions
+        id: revs
+        run: |
+          echo "llvm=$(git ls-tree --object-only HEAD third-party/llvm)" >> "$GITHUB_OUTPUT"
+          echo "torch-mlir=$(git ls-tree --object-only HEAD third-party/torch-mlir)" >> "$GITHUB_OUTPUT"
+
+      # tud-ccc/cinnamon-llvm builds every commit pushed to its `cinnamon`
+      # branch. A push here that moves the submodule usually follows one there
+      # closely, so wait for that build instead of failing.
+      - name: Wait for the prebuilt LLVM
+        timeout-minutes: 330
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LLVM_REVISION: ${{ steps.revs.outputs.llvm }}
+        run: |
+          url="$(bash -c 'source .github/workflows/common.sh >/dev/null && llvm_prebuilt_url "$LLVM_REVISION"')"
+          runs="repos/tud-ccc/cinnamon-llvm/actions/workflows/cinnamon-prebuilt.yml/runs?head_sha=$LLVM_REVISION&per_page=1"
+          until curl -fsL -r 0-0 -o /dev/null "$url"; do
+            run="$(gh api "$runs" --jq '.workflow_runs[0] // empty | "\(.status) \(.conclusion) \(.html_url)"')"
+            read -r status conclusion run_url <<< "$run" || true
+            if [[ -z "$run" ]]; then
+              echo "::error::tud-ccc/cinnamon-llvm has not built LLVM $LLVM_REVISION. Push it to the cinnamon branch there, or run its 'Cinnamon prebuilt LLVM' workflow for it."
+              exit 1
+            elif [[ "$status" != completed ]]; then
+              echo "Waiting for $run_url ($status)"
+              sleep 120
+            elif [[ "$conclusion" != success ]]; then
+              echo "::error::The build of LLVM $LLVM_REVISION did not succeed ($conclusion): $run_url"
+              exit 1
+            else
+              # The release may have been published a moment ago.
+              sleep 30
+              curl -fsL -r 0-0 -o /dev/null "$url" && break
+              echo "::error::$run_url succeeded, but there is nothing at $url"
+              exit 1
+            fi
+          done
+
+      - name: Fetch the prebuilt LLVM
+        run: LLVM_PREBUILT=always .github/workflows/build-llvm.sh -no-python-venv -verbose
+
+      # `path` must match the save step's exactly, excludes included: the cache
+      # is addressed by (key, version), and the version is derived from this
+      # list. A restore asking for a different list than the save wrote looks
+      # for an entry that is not there, misses every time, and then cannot
+      # create its own -- the key is taken, by the entry it failed to find.
       - name: Restore torch-mlir cache
         id: torch-mlir-cache-restore
-        uses: actions/cache/restore@v3
-        with:
-          path: third-party/torch-mlir
-          key: cinnamon-torch-mlir-${{ runner.os }}
-      
-      - name: Setup venv
-        run: .github/workflows/setup-venv.sh -reconfigure -verbose
-
-      - name: Build LLVM
-        run: |
-          source .venv/bin/activate
-          .github/workflows/build-llvm.sh -reconfigure -verbose
-
-      - name: Save llvm cache
-        uses: actions/cache/save@v3
-        if: always()
-        with:
-          path: third-party/llvm
-          key: ${{ steps.llvm-cache-restore.outputs.cache-primary-key }}
-
-      - name: Build Torch-MLIR
-        run: |
-          source .venv/bin/activate
-          .github/workflows/build-torch.sh -reconfigure -verbose
-
-      - name: Save torch-mlir cache
-        uses: actions/cache/save@v3
-        if: always()
-        with:
-          path: third-party/torch-mlir
-          key: ${{ steps.torch-mlir-cache-restore.outputs.cache-primary-key }}
-
-      # Cannot checkout Upmem SDK anymore. We don't build this in CI anymore.
-      # - name: Checkout upmem
-      #   run: |
-      #     source .venv/bin/activate
-      #     .github/workflows/build-upmem.sh -reconfigure -verbose
-
-      - name: Build CINM
-        run: |
-          source .venv/bin/activate
-          export CINNAMON_CMAKE_OPTIONS='-DCMAKE_GENERATOR=Ninja'
-          .github/workflows/build-cinnamon.sh -reconfigure -verbose -no-upmem
-
-      - name: Test CINM
-        run: |
-          source .venv/bin/activate
-          ninja -Cbuild check-cinm-mlir
-
-      - name: Save runtime cache
-        uses: actions/cache/save@v3
-        if: always()
+        uses: actions/cache/restore@v6
         with:
           path: |
-            .venv
-            third-party/upmem
-          key: ${{ steps.runtimes-cache-restore.outputs.cache-primary-key }}
+            third-party/torch-mlir
+            !third-party/torch-mlir/.git
+          key: cinnamon-torch-mlir-${{ runner.os }}-${{ steps.revs.outputs.torch-mlir }}-llvm-${{ steps.revs.outputs.llvm }}
+
+      # The cached tree carries the submodule's .git file, but not the
+      # .git/modules directory it points at, so git walks into it and fails in
+      # the post-job cleanup. Our scripts judge a submodule by its content.
+      - name: Drop the cached submodule's dangling git pointer
+        run: rm -f third-party/torch-mlir/.git
+
+      - name: Build Torch-MLIR
+        run: .github/workflows/build-torch.sh -no-python-venv -verbose
+
+      # Not always(): that includes cancellation, so a run superseded by the
+      # next push would still reach this and race the run that replaced it for
+      # the same key. A *failed* build still has something worth keeping, which
+      # is what this is for, so the condition is everything except cancelled.
+      - name: Save torch-mlir cache
+        uses: actions/cache/save@v6
+        if: ${{ !cancelled() && steps.torch-mlir-cache-restore.outputs.cache-hit != 'true' }}
+        with:
+          path: |
+            third-party/torch-mlir
+            !third-party/torch-mlir/.git
+          key: ${{ steps.torch-mlir-cache-restore.outputs.cache-primary-key }}
+
+      # Conan has no prebuilt binaries for the compiler we build with, so it
+      # builds its dependencies (OpenBLAS above all) from source. That happens
+      # once per compiler and set of recipes, and is restored from here after.
+      - name: Restore conan cache
+        id: conan-cache-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.conan2
+          # Saved under a key of its own per run, so that a run which built
+          # only some of the packages still contributes them, and the next run
+          # can add the rest. Restoring takes the newest of them.
+          #
+          # Keyed on what decides *which* packages are wanted, and nothing
+          # else. Not pixi.lock: it changes whenever any dependency does, and
+          # every such change then cost a full OpenBLAS-and-mlpack build from
+          # source. The compiler it pins does not need to be here either --
+          # build-cinnamon.sh writes it into the conan profile as compiler,
+          # compiler.version and compiler.libcxx, so it is part of every
+          # package id. A cache from a run with a different compiler is
+          # therefore inert rather than wrong: conan asks for ids that are not
+          # in it and rebuilds exactly those.
+          key: cinnamon-conan-${{ runner.os }}-${{ hashFiles('conanfile.txt', 'third-party/conan-recipes/**') }}-${{ github.run_id }}
+          restore-keys: cinnamon-conan-${{ runner.os }}-${{ hashFiles('conanfile.txt', 'third-party/conan-recipes/**') }}-
+
+      # build-cinnamon.sh compiles through ccache whenever it finds one, which
+      # is only worth anything if the cache outlives the run. Keyed per run so
+      # that a failed build still contributes what it compiled; the newest
+      # entry of this branch is restored.
+      - name: Restore ccache
+        id: ccache
+        uses: actions/cache/restore@v6
+        with:
+          path: .ccache
+          key: cinnamon-ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: cinnamon-ccache-${{ runner.os }}-
+
+      # The UPMEM SDK is no longer publicly downloadable, so the UPMEM runtime
+      # library is not built here.
+      - name: Build Cinnamon
+        id: build-cinnamon
+        run: |
+          ccache --zero-stats
+          pixi run conan-recipes
+          .github/workflows/build-cinnamon.sh -reconfigure -verbose -no-upmem -no-python-venv
+
+      - name: Show ccache statistics
+        if: always()
+        run: ccache --show-stats
+
+      # See the torch-mlir save above for why this is not always().
+      - name: Save ccache
+        uses: actions/cache/save@v6
+        if: ${{ !cancelled() }}
+        with:
+          path: .ccache
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
+
+      # Keeps the packages that were built, drops the sources and build trees
+      - name: Trim the conan cache
+        if: always()
+        run: conan cache clean "*" --source --build --temp || true
+
+      # See the torch-mlir save above for why this is not always().
+      - name: Save conan cache
+        uses: actions/cache/save@v6
+        if: ${{ !cancelled() }}
+        with:
+          path: ~/.conan2
+          key: ${{ steps.conan-cache-restore.outputs.cache-primary-key }}
+
+      # Only what the test jobs need: the binaries, the libraries they load and
+      # the test configuration CMake generated (lit's site config, ctest's test
+      # lists). Object files stay behind. Packed with tar rather than left to
+      # the artifact's own archiving, which follows symlinks and would store
+      # every library twice, once per SONAME alias.
+      - name: Pack the build tree
+        run: tar -cf - --exclude='*.o' build/bin build/lib build/test | zstd -T0 -3 -o cinnamon-build.tar.zst
+
+      - name: Upload the build tree
+        uses: actions/upload-artifact@v7
+        with:
+          name: cinnamon-build
+          path: cinnamon-build.tar.zst
+          if-no-files-found: error
+          # Already compressed, and it is only here to reach the test jobs.
+          compression-level: 0
+          retention-days: 1
+
+  # Both test jobs restore the same tree the build job produced. What they have
+  # to reproduce around it is everything the build baked absolute paths to: the
+  # prebuilt LLVM whose libraries the binaries load, and the pixi environment
+  # holding the C++ runtime and the Python lit runs on. Both land at the same
+  # paths as in the build job, since every job of a run gets the same workspace.
+
+  lit:
+    name: Lit tests
+    needs: build
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      - name: Set up pixi
+        uses: prefix-dev/setup-pixi@v0.10.2
+        with:
+          environments: default
+          activate-environment: true
+          cache: true
+
+      # The build job waited for this release, so here it is only a download.
+      - name: Fetch the prebuilt LLVM
+        run: LLVM_PREBUILT=always .github/workflows/build-llvm.sh -no-python-venv -verbose
+
+      - name: Download the build tree
+        uses: actions/download-artifact@v8
+        with:
+          name: cinnamon-build
+
+      - name: Unpack the build tree
+        run: zstd -dc cinnamon-build.tar.zst | tar -x
+
+      # lit directly rather than through `ninja check-cinm-mlir`: the sources
+      # were checked out after the build outputs were packed, so ninja would
+      # find every one of them out of date and rebuild the tree we just
+      # restored. common.sh is where the path of the LLVM in use is decided.
+      - name: Run the lit tests
+        run: |
+          source .github/workflows/common.sh >/dev/null
+          python "$llvm_build_dir/bin/llvm-lit" -sv build/test
+
+  unit:
+    name: Unit tests
+    needs: build
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      - name: Set up pixi
+        uses: prefix-dev/setup-pixi@v0.10.2
+        with:
+          environments: default
+          activate-environment: true
+          cache: true
+
+      # Not for its tools, but for the MLIR libraries the test binary loads.
+      - name: Fetch the prebuilt LLVM
+        run: LLVM_PREBUILT=always .github/workflows/build-llvm.sh -no-python-venv -verbose
+
+      - name: Download the build tree
+        uses: actions/download-artifact@v8
+        with:
+          name: cinnamon-build
+
+      - name: Unpack the build tree
+        run: zstd -dc cinnamon-build.tar.zst | tar -x
+
+      # ctest directly, for the reason lit is: see the lit job. The test list
+      # was written out by gtest_discover_tests when the binary was built.
+      # --no-tests=error because an empty list is ctest's idea of success, and
+      # a restore that brought back no tests must not read as a passing suite.
+      - name: Run the unit tests
+        run: ctest --test-dir build/test --output-on-failure --no-tests=error -j "$(nproc)"

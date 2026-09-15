@@ -6,7 +6,6 @@
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 
-
 //===- Generated includes -------------------------------------------------===//
 
 #define GET_TYPEDEF_CLASSES

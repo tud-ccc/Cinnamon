@@ -22,12 +22,6 @@ void populateFinalBufferizationPatterns(RewritePatternSet &set);
 
 Value createOrFoldUnrealizedConversionCast(Location loc, OpBuilder &builder,
                                            Type dstType, Value value);
-struct ConvertCnmSetZeroToAffine : public OpConversionPattern<cnm::SetZeroOp> {
-  using OpConversionPattern<cnm::SetZeroOp>::OpConversionPattern;
-
-  LogicalResult matchAndRewrite(cnm::SetZeroOp, OpAdaptor,
-                                ConversionPatternRewriter &) const override;
-};
 
 SmallVector<Value> createAffineApply(OpBuilder &builder, Location loc,
                                      AffineMap map, ValueRange values);

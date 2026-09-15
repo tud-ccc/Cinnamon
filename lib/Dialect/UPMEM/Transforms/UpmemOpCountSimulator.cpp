@@ -1,0 +1,335 @@
+#include "SimulatorBase.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmUtils.h"
+#include <cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h>
+#include <cinm-mlir/Dialect/Cinm/IR/CinmOps.h>
+#include <cinm-mlir/Dialect/Cnm/IR/CnmOps.h>
+#include <cinm-mlir/Dialect/Cnm/IR/CnmTypes.h>
+#include <cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h>
+#include <cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h>
+#include <cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h>
+#include <cinm-mlir/Utils/Scheduling/SchedulingSupport.h>
+
+#include <upmem_cost_model/ScatterGatherCm.h>
+#include <upmem_cost_model/Simulation.h>
+#include <upmem_cost_model/Types.h>
+
+#include <algorithm>
+#include <cmath>
+#include <memory>
+
+#include <llvm/ADT/APInt.h>
+#include <llvm/ADT/TypeSwitch.h>
+#include <llvm/Support/Casting.h>
+#include <llvm/Support/Debug.h>
+
+#include <mlir/Dialect/Affine/IR/AffineOps.h>
+#include <mlir/Dialect/Arith/IR/Arith.h>
+#include <mlir/Dialect/MemRef/IR/MemRef.h>
+#include <mlir/Dialect/Utils/StaticValueUtils.h>
+#include <mlir/IR/BuiltinAttributes.h>
+#include <mlir/IR/BuiltinOps.h>
+#include <mlir/IR/BuiltinTypeInterfaces.h>
+#include <mlir/IR/BuiltinTypes.h>
+#include <mlir/IR/Operation.h>
+#include <mlir/Interfaces/LoopLikeInterface.h>
+
+#define DEBUG_TYPE "cinm-inference"
+
+namespace mlir::upmem {
+
+namespace {
+
+static std::optional<UpmemAcceleratorAttr>
+upmemAccelOf(cnm::WorkgroupType buf) {
+  return llvm::dyn_cast_or_null<UpmemAcceleratorAttr>(buf.getAccelerator());
+}
+
+static int64_t staticElementCount(ShapedType ty) {
+  if (!ty.hasStaticShape())
+    return 1;
+  return ty.getNumElements();
+}
+
+static double elementBytes(Type elemTy) {
+  if (elemTy.isIntOrFloat())
+    return static_cast<double>(elemTy.getIntOrFloatBitWidth()) / 8.0;
+  return 4.0;
+}
+
+/// Whether a serving deployment would pay this transfer once rather than on
+/// every inference. Two conditions, the same ones
+/// measurements._amortizable_index asks of the runtime's timing rows: the
+/// data it moves is the same on every inference (`upmem.timing_tag` says
+/// `static:`, decided by the cnm -> upmem conversion, the last stage that
+/// could still see where the host value came from), and it runs once per
+/// invocation -- a transfer under a loop moves a different tile every trip,
+/// so no single load-time transfer replaces it. An untagged transfer is not
+/// amortizable: unattributed means unproven.
+static bool isAmortizableTransfer(Operation *op) {
+  auto tag = op->getAttrOfType<StringAttr>(UPMEMDialect::TIMING_TAG_NAME);
+  if (!tag || !tag.getValue().starts_with("static:"))
+    return false;
+  for (Operation *parent = op->getParentOp(); parent;
+       parent = parent->getParentOp())
+    if (llvm::isa<LoopLikeOpInterface>(parent))
+      return false;
+  return true;
+}
+
+/// Cost of a host -> device transfer, excluded from the totals when the data
+/// stays pinned on the device across inferences (isAmortizableTransfer). The
+/// cost keeps its transfer category and label, so the breakdown still reports
+/// it; what changes is that SimCost::total() -- what the search minimizes --
+/// stops charging it, which is what measurements.net_time_ms does to the same
+/// transfers on the measured side.
+///
+/// The other direction is never excluded: a gather writes a result, which is
+/// produced on every inference by definition.
+static SimCost scatterCost(Operation *op, double ms, llvm::StringRef label) {
+  SimCost cost = SimCost::forTransfer(ms, label);
+  if (isAmortizableTransfer(op))
+    cost.markExcluded();
+  return cost;
+}
+
+static SimCost costOfRegionCb(Region &region, bool annotate,
+                              const WaitForCostFn &cb);
+
+static SimCost costOfOpCb(Operation &op, bool annotate,
+                          const WaitForCostFn &cb) {
+  SimCost cost =
+      llvm::TypeSwitch<Operation *, SimCost>(&op)
+          .Case([&](LoopLikeOpInterface forOp) {
+            int64_t tripCount;
+            if (auto tc = forOp.getStaticTripCount()) {
+              tripCount = tc->getZExtValue();
+            } else {
+              // In the dynamic case, for now we assume a big number divided by
+              // the loop step We should use integer range analysis
+              int64_t step = 1;
+              if (auto steps = forOp.getLoopSteps())
+                if (!steps->empty())
+                  if (auto sv = mlir::getConstantIntValue(steps->front()))
+                    step = *sv;
+              tripCount = std::max(1L, 2048 / std::max(1L, step));
+            }
+            SimCost bodyCost =
+                costOfRegionCb(*forOp.getLoopRegions()[0], annotate, cb);
+            // Scale each cost component independently by the trip count,
+            // rather than collapsing to a single aggregate first.
+            return bodyCost * static_cast<double>(tripCount);
+          })
+          .Case<arith::AddIOp>([](auto) {
+            // Between 1.6 and 10 ns on chios.
+            // It's lower with more iterations of the enclosing loop
+            return SimCost::forCpu(3e-6, "other");
+          })
+          .Case<cnm::CompactBufferOp>([](cnm::CompactBufferOp op) {
+            // Use the same rule as memref,
+            // the allocation is put out of the hot path
+            // by statically allocating.
+            // The point here is just to put _some_ cost on the compaction.
+            auto hostTy = op.getSource().getType();
+            double bytes = static_cast<double>(staticElementCount(hostTy)) *
+                           elementBytes(hostTy.getElementType());
+            double time_ns = 0.63 * pow(bytes, 0.907);
+            auto cost = SimCost::forCpu(time_ns / 1e6, "compact"); // ns -> ms
+            if (cinm::isStaticValue(op.getSource()))
+              cost.markExcluded();
+            return cost;
+          })
+          .Case<memref::CopyOp>([](memref::CopyOp copyOp) {
+            // Experiment: try to account for the copy happening
+            // LLVM O3 usually unroll the tile copy loop
+            auto hostTy = copyOp.getSource().getType();
+            double bytes = static_cast<double>(staticElementCount(hostTy)) *
+                           elementBytes(hostTy.getElementType());
+            double time_ns = 0.63 * pow(bytes, 0.907);
+            return SimCost::forCpu(time_ns / 1e6, "copy"); // ns -> ms
+          })
+          // .Case<memref::LoadOp, memref::StoreOp>([](auto) { return 1e-7; })
+          .Case<upmem::ScatterOnArrayOp>(
+              [](upmem::ScatterOnArrayOp xferOp) -> SimCost {
+                auto hier = llvm::cast<DeviceHierarchyType>(
+                    xferOp.getHierarchy().getType());
+                int numDpus = hier.getNumDpus();
+                return scatterCost(
+                    xferOp,
+                    upmem_cm::scatterBlockCostMs(
+                        numDpus, xferOp.getDpuBufferSizeInBytes()),
+                    "array");
+              })
+          .Case<upmem::GatherFromArrayOp>(
+              [](upmem::GatherFromArrayOp xferOp) -> SimCost {
+                auto hier = llvm::cast<DeviceHierarchyType>(
+                    xferOp.getHierarchy().getType());
+                int numDpus = hier.getNumDpus();
+                return SimCost::forTransferBack(
+                    upmem_cm::gatherCostMs(numDpus,
+                                           xferOp.getDpuBufferSizeInBytes()),
+                    "array");
+              })
+          .Case<upmem::ScatterBlocksOp>([](auto xferOp) -> SimCost {
+            auto hier = llvm::cast<DeviceHierarchyType>(
+                xferOp.getHierarchy().getType());
+            int numDpus = hier.getNumDpus();
+            // getDpuBufferSizeInBytes() is the size of a single block; the
+            // actual per-DPU transfer covers numBlocksPerDpu of them.
+            return scatterCost(xferOp,
+                               upmem_cm::scatterSgCostMs(
+                                   numDpus, xferOp.getDpuBufferSizeInBytes(),
+                                   xferOp.getNumBlocksPerDpu()),
+                               "blocks");
+          })
+          .Case<upmem::GatherBlocksOp>([](auto xferOp) -> SimCost {
+            auto hier = llvm::cast<DeviceHierarchyType>(
+                xferOp.getHierarchy().getType());
+            int numDpus = hier.getNumDpus();
+            // No sg-specific gather cost has been characterized yet, so this
+            // charges the flat gather rate for the whole per-DPU volume --
+            // an underestimate whenever the blocks are scattered.
+            return SimCost::forTransferBack(
+                upmem_cm::gatherCostMs(numDpus,
+                                       xferOp.getDpuBufferSizeInBytes() *
+                                           xferOp.getNumBlocksPerDpu()),
+                "blocks");
+          })
+          .Case<upmem::BroadcastOp>([](auto xferOp) -> SimCost {
+            auto hier = llvm::cast<DeviceHierarchyType>(
+                xferOp.getHierarchy().getType());
+            int numDpus = hier.getNumDpus();
+            // Same size is sent to every DPU; model it like a scatter of
+            // that buffer's full size.
+            return scatterCost(xferOp,
+                               upmem_cm::broadcastCostMs(
+                                   numDpus, xferOp.getDpuBufferSizeInBytes()),
+                               "broadcast");
+          })
+          .Case<LocalTransferOp>([](auto xferOp) {
+            auto srcTy = llvm::cast<MemRefType>(xferOp.getSource().getType());
+            double bytes = static_cast<double>(staticElementCount(srcTy)) *
+                           elementBytes(srcTy.getElementType());
+            // DPU-internal WRAM<->MRAM transfer: contributes to kernel
+            // (upmem.wait_for) time, not host<->DPU transfer time.
+            return SimCost::forKernel(36.0 * std::max(1.0, bytes / 2048.0),
+                                      "local_transfer");
+          })
+          // Delegate DPU kernel cost to the callback.
+          .Case<WaitForOp>([&](auto waitForOp) -> SimCost {
+            return cb(waitForOp.getOperation(), annotate);
+          })
+          // alloc/free dpus are not counted as they are considered amortized
+          .Case<cnm::LaunchOp>([](auto launchOp) -> SimCost {
+            if (auto acc = upmemAccelOf(launchOp.getWg().getType())) {
+              double c = 1;
+              for (auto buf : launchOp.getBody().getArguments())
+                if (auto mr = llvm::dyn_cast_or_null<MemRefType>(buf.getType()))
+                  c *= mr.getNumElements();
+              return SimCost::forKernel(c / acc->getNumTaskletsPerDpu(),
+                                        "launch");
+            }
+            return SimCost::forKernel(1.0, "launch");
+          })
+          .Case<arith::ConstantOp, upmem::StaticAllocOp, cinm::YieldOp,
+                memref::SubViewOp>([](auto) { return SimCost{}; })
+          .Default([&](Operation *o) {
+            SimCost c;
+            for (auto &region : o->getRegions())
+              c += costOfRegionCb(region, annotate, cb);
+            return c;
+          });
+
+  if (annotate)
+    op.setAttr(kSimCostAttr,
+               FloatAttr::get(Float64Type::get(op.getContext()), cost.total()));
+  return cost;
+}
+
+static SimCost costOfRegionCb(Region &region, bool annotate,
+                              const WaitForCostFn &cb) {
+  SimCost cost;
+  for (auto &block : region) {
+    for (auto &op : block) {
+      cost += costOfOpCb(op, annotate, cb);
+      if (!cost.isFinite())
+        return cost;
+    }
+  }
+
+  return cost;
+}
+
+struct OpCountSimulator : UpmemSimulator {
+  bool annotateOpCosts;
+  explicit OpCountSimulator(bool annotateOpCosts)
+      : annotateOpCosts(annotateOpCosts) {}
+  OpCountSimulator(OpCountSimulator &&) = default;
+
+  std::unique_ptr<UpmemSimulator> clone() override {
+    return std::make_unique<OpCountSimulator>(annotateOpCosts);
+  }
+  mlir::cinm::utils::Maybe<SimCost> simulate(Region &region) override {
+    // Recursive callback: recurse into the DPU program body with the same
+    // heuristics, divided by tasklet parallelism. The callback returns a
+    // single scalar (kernel-launch time as seen from the host): whatever
+    // happens inside the DPU program body all counts towards the kernel
+    // component of the enclosing upmem.wait_for.
+    std::function<SimCost(Operation *, bool)> waitForCb;
+    waitForCb = [&](Operation *op, bool ann) -> SimCost {
+      auto waitFor = llvm::cast<WaitForOp>(op);
+      auto dpuProgram = waitFor.getDpuProgram();
+      if (!dpuProgram)
+        return {};
+      auto hier =
+          llvm::cast<DeviceHierarchyType>(waitFor.getDpuSet().getType());
+      return SimCost::forKernel(
+          simulateHostRegion(dpuProgram.getBody(), ann, waitForCb).total() /
+              hier.getNumTaskletsPerDpu(),
+          "opcount");
+    };
+    return simulateHostRegionOrFail(region, annotateOpCosts, waitForCb);
+  }
+};
+
+} // namespace
+
+SimCost simulateHostRegion(Region &region, bool annotate,
+                           const WaitForCostFn &waitForCb) {
+  return costOfRegionCb(region, annotate, waitForCb);
+}
+
+mlir::cinm::utils::Maybe<SimCost>
+simulateHostRegionOrFail(Region &region, bool annotate,
+                         const WaitForCostFn &waitForCb) {
+  SimCost cost = costOfRegionCb(region, annotate, waitForCb);
+  if (cost.isFinite())
+    return cost;
+
+  // Name the entry that went non-finite: the whole point of refusing here is
+  // that the number is not a cost, and which model produced it is what a
+  // reader needs to know next.
+  std::string offenders;
+  llvm::raw_string_ostream os(offenders);
+  cost.forEachEntry(
+      [&](CostCategory category, llvm::StringRef label, double value, bool) {
+        if (std::isfinite(value))
+          return;
+        os << (offenders.empty() ? "" : ", ") << costCategoryName(category);
+        if (!label.empty())
+          os << "." << label;
+        os << " = " << value;
+      });
+  Operation *parent = region.getParentOp();
+  return mlir::emitSilenceableFailure(
+             parent ? parent->getLoc() : UnknownLoc::get(region.getContext()))
+         << "cost model produced a non-finite cost (" << offenders
+         << "); the configuration is refused rather than scored, since the "
+            "walk stops at the first such op and the remaining cost -- the "
+            "kernel included -- is never computed";
+}
+
+std::unique_ptr<UpmemSimulator> createOpCountSimulator(bool annotateOpCosts) {
+  return std::make_unique<OpCountSimulator>(annotateOpCosts);
+}
+
+} // namespace mlir::upmem

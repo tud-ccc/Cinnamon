@@ -6,3 +6,4 @@ add_subdirectory(Cnm)
 
 add_subdirectory(Memristor)
 add_subdirectory(UPMEM)
+add_subdirectory(Alpine)

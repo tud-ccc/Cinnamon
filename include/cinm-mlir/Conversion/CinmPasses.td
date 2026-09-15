@@ -1,7 +1,4 @@
 //===- Passes.td - Cinm dialect passes ---------------------*- tablegen -*-===//
-//
-// This is the definitions file for the Cinm dialect conversion passes.
-//
 //===----------------------------------------------------------------------===//
 
 #ifndef CINM_CONVERSION_PASSES
@@ -10,17 +7,104 @@
 
 include "mlir/Pass/PassBase.td"
 
-def ConvertTiledCinmToCnm : Pass<"convert-cinm-to-cnm", operation="func::FuncOp"> {
+def ConvertTiledCinmToCnm : Pass<"convert-cinm-to-cnm"> {
     let summary = "Convert CINM dialect to CNM dialect (may require --cinm-tiling before)";
     let constructor = "mlir::cinm::createConvertTiledCinmToCnmPass()";
-    let dependentDialects = ["cnm::CnmDialect", "func::FuncDialect", 
-        "arith::ArithDialect", "tensor::TensorDialect"];
+    let dependentDialects = ["cnm::CnmDialect", "func::FuncDialect",
+        "arith::ArithDialect", "tensor::TensorDialect", "bufferization::BufferizationDialect"];
+    let options = [
+      Option<"bufferLevel", "cnm-buffer-level", "std::string", [{""}],
+             "Name of the memory level to allocate cnm.buffers in, resolved "
+             "against the accelerator's platform (e.g. `mram` or `wram` for "
+             "UPMEM). The level becomes the buffer type's level and the memory "
+             "space of the launch body's memrefs. Empty means unlevelled "
+             "buffers, which is what the backend conversion assumes when it "
+             "picks the staging itself.">
+    ];
 }
 
-def ConvertTiledCinmToCim : Pass<"convert-cinm-to-cim", operation="func::FuncOp"> {
+def ConvertTiledCinmToCim : Pass<"convert-cinm-to-cim"> {
     let summary = "Convert CINM dialect to CIM dialect (may require --cinm-tiling before)";
     let constructor = "mlir::cinm::createConvertTiledCinmToCimPass()";
     let dependentDialects = ["cim::CimDialect", "func::FuncDialect", "tensor::TensorDialect"];
 }
+
+def ConvertLinalgToCinm
+  : Pass<"convert-linalg-to-cinm"> {
+  let summary = "Convert Linalg matmul/matvec to CINM gemm/gemv (tensor or memref)";
+  let description = [{
+    Rewrites Linalg matrix-multiply kernels to CINM ops.
+
+    Handled patterns (both named ops and, optionally, their canonical
+    linalg.generic forms):
+
+      * `linalg.matmul`
+          - tensor operands/results → `cinm.op.gemm`
+            (fuse bias if the init/outs or an immediate add matches MxN)
+          - memref operands/results → `cinm.gemm_memref` (writes into outs)
+
+      * `linalg.matvec`
+          - tensor operands/results → `cinm.op.gemv`
+            (fuse bias if the init/outs or an immediate add matches M)
+          - memref operands/results → `cinm.gemv_memref` (writes into outs)
+
+    Bias fusion (optional, enabled by default):
+      - If the matmul/matvec uses an `outs`/init tensor/memref produced from a
+        value `B` with matching shape, or the result is consumed by a single
+        elementwise add with a compatible `B`, the pass attaches `B` as the
+        optional `plus` operand on `cinm.op.gemm` / `cinm.op.gemv`. For memref
+        forms, the `out` buffer already carries the initial contents.
+  }];
+
+  let constructor = "mlir::cinm::createConvertLinalgToCinmPass()";
+
+  let dependentDialects = [
+    "cinm::CinmDialect",
+    "linalg::LinalgDialect",
+    "func::FuncDialect",
+    "arith::ArithDialect",
+    "tensor::TensorDialect",
+    "memref::MemRefDialect"
+  ];
+
+  let options = [
+    Option<"fuseBias", "fuse-bias", "bool", "true",
+           "Try to detect/fuse +bias epilogues into CINM ops">,
+    Option<"matchGeneric", "match-generic", "bool", "true",
+           "Also match linalg.generic forms of matmul/matvec">,
+    Option<"foldTransposeOnRhs", "fold-transpose-on-rhs", "bool", "true",
+           "Accept/peel a simple linalg.transpose on RHS when mapping to GEMM">
+  ];
+}
+
+def ConvertCinmOpsToLinalg
+  : Pass<"convert-cinm-ops-to-linalg"> {
+  let summary = "Lower cinm.op.* operations to linalg/arith/math";
+  let description = [{
+    Lowers all cinm.op.* named operations (elementwise, reduce, gemv, gemm,
+    batch_gemm, batch_gemv, activate, transpose) to equivalent linalg, arith,
+    and math ops. The cinm.compute_block / cinm.compute container ops and
+    cinm.yield are left untouched.
+  }];
+  let constructor = "mlir::cinm::createConvertCinmOpsToLinalgPass()";
+  let dependentDialects = [
+    "linalg::LinalgDialect",
+    "math::MathDialect",
+    "arith::ArithDialect",
+    "tensor::TensorDialect"
+  ];
+}
+
+def Im2ColToMatmul
+  : Pass<"im2col-to-matmul"> {
+  let summary = "Turn supported linalg.conv ops into matmul shapes via im2col";
+  let constructor = "mlir::cinm::createIm2ColToMatmulPass()";
+  let dependentDialects = [
+    "linalg::LinalgDialect",
+    "tensor::TensorDialect",
+    "arith::ArithDialect"
+  ];
+}
+
 
 #endif // CINM_CONVERSION_PASSES

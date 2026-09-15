@@ -1,19 +1,28 @@
 .cache
-/.vscode/
-/.idea/
 .directory
-/.venv/
-/third-party/llvm
-/third-party/torch-mlir/
-/third-party/upmem*/
-/.env
-/testbench/gen
+.env
+.idea/
+.venv/
+.pixi/
+.vscode/
+benchmarks/cinm1/gen
+# setuptools metadata, left behind by an editable install of cinm_experiments
+*.egg-info/
+
+# docs/ holds working notes and plan documents, which stay local. Ignored by
+# default so a new one cannot be committed by reflex; the committed few are
+# listed back in. Anything meant for the repository has to be named here.
+docs/*
+!docs/CinmDialect.md
+!docs/MainTodos.md
+!docs/MlirLexer.py
 
 
 # Created by https://www.toptal.com/developers/gitignore/api/cmake
 # Edit at https://www.toptal.com/developers/gitignore?templates=cmake
 
 ### CMake ###
+CMakeUserPresets.json
 CMakeLists.txt.user
 CMakeCache.txt
 CMakeFiles
@@ -32,12 +41,27 @@ _deps
 # End of https://www.toptal.com/developers/gitignore/api/cmake
 build-*
 build
-llvm
 .cache
 sandbox
+
+# Third-party trees that are not submodules: vendor SDKs, generated
+# scaffolding, and scratch checkouts.
+/third-party/upmem
+/third-party/upmem-src
+/third-party/ALPINE/
+/third-party/alpine/
+/third-party/.venv/
+# Unpacked by build-llvm.sh
+/third-party/llvm-prebuilt/
+/third-party/.llvm-prebuilt.*/
 
 python/cinnamon/_resources
 .env
 **/__pycache__
 
+.claude
+.ruff_cache
 
+# Machine-local: where this machine keeps the UPMEM SDK, plus its runtime
+# knobs. Read by .envrc; see .env for the build configuration beside it.
+.upmem_env

@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cinnamon-mlir"
+version = "0.1.0"
+license = "MIT"
+license-files = ["LICENSE"]
+description = "Python bindings for the Cinnamon compiler"
+authors = [{name = "Felix Reißmann"}, {name = "Clément Fournier"}]
+requires-python = ">=3.10"
+# Nothing beyond the standard library: locating an installed build is what
+# this package does for everyone, and it has to resolve in an environment that
+# has no compiler stack -- an analysis-only checkout, say.
+dependencies = []
+
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: POSIX :: Linux x86_64",
+]
+
+# Kept out of the dependency set because torch-mlir
+# is not on PyPI: it is built from third-party/torch-mlir and installed by
+# build-torch.sh, so a resolver asked for it here would fail to find it at
+# all, and every consumer of this package would inherit that.
+[project.optional-dependencies]
+torch = [
+    "torch",
+    "torch-mlir",
+]
+
+[project.urls]
+homepage = "https://github.com/tud-ccc/Cinnamon"
+repository = "https://github.com/tud-ccc/Cinnamon"
+issues = "https://github.com/tud-ccc/Cinnamon/issues"
+
+[tool.setuptools]
+platforms = ["none"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# No package data. The tools, libraries and benchmark suites used to be
+# symlinked in beside these sources; they are installed into the environment
+# now and found through cinnamon.paths, which keeps this distribution pure
+# Python and the same however it was installed.

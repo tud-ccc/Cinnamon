@@ -1,0 +1,4 @@
+sources:
+  "4.8.0":
+    url: "https://github.com/mlpack/mlpack/archive/refs/tags/4.8.0.tar.gz"
+    sha256: "0ab06e5c506c7ed5f072faa4c04477c65624e4a1ff62eee8c0d996ef850ec51c"

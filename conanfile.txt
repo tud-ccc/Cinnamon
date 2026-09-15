@@ -1,0 +1,12 @@
+[requires]
+mlpack/4.8.0
+indicators/2.3
+gtest/1.17.0
+gecode/6.4.0
+
+[generators]
+CMakeDeps
+CMakeToolchain
+
+#[layout]
+#cmake_layout
