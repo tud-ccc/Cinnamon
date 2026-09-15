@@ -61,3 +61,7 @@ python/cinnamon/_resources
 
 .claude
 .ruff_cache
+
+# Machine-local: where this machine keeps the UPMEM SDK, plus its runtime
+# knobs. Read by .envrc; see .env for the build configuration beside it.
+.upmem_env
