@@ -34,7 +34,10 @@ COMPILE_DPU  = $(CINM_BIN)/cinm-compile-dpu
 # whichever family directory holds it -- so the search rather than a fixed
 # path, and an error rather than an empty BENCH_DRIVER and a baffling link.
 PRIM         ?= red
-BENCH_DRIVER ?= $(firstword $(wildcard $(BENCH_DIR)/*/$(PRIM).cpp))
+# Operator suites keep one driver per file under a suite directory; the
+# end-to-end models keep everything about a model -- source, schedule,
+# makefile, driver -- in a directory of its own under models/.
+BENCH_DRIVER ?= $(firstword $(wildcard $(BENCH_DIR)/*/$(PRIM).cpp $(BENCH_DIR)/models/$(PRIM)/$(PRIM).cpp))
 ifeq ($(BENCH_DRIVER),)
   $(error No bench driver for PRIM=$(PRIM) under $(BENCH_DIR)/*/)
 endif
