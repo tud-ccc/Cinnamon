@@ -14,7 +14,8 @@ include "UPMEMBase.td"
 
 def UpmemPlatformAttr: UPMEM_Attr<"UpmemPlatform", [
     OpAsmAttrInterface,
-    DeclareAttrInterfaceMethods<CinmPlatformAttrInterface, ["isOffloadingTarget"]>
+    DeclareAttrInterfaceMethods<CinmPlatformAttrInterface,
+        ["isOffloadingTarget", "evaluateOffload"]>
   ]> {
 
   let summary = "Platform description for upmem";

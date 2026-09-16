@@ -247,7 +247,30 @@ def CinmAssignPlatformsPass : Pass<"cinm-assign-platforms", "mlir::func::FuncOp"
     cinm.op.* operation, queries every listed platform via isOffloadingTarget.
     If at least one platform is interested, the operation is wrapped in a
     cinm.compute op annotated with the interested platforms.
+
+    `require-profitable` adds a second question. isOffloadingTarget asks only
+    whether a platform *can* run the op; with this on, a platform that can
+    must also say it *should*, through its roofline (evaluateOffload). The
+    host numbers the roofline compares against are the two options below.
+
+    It is off by default because it is a real filter: an op with no static
+    operand has nothing to amortize and is rejected, which for the PrIM
+    single-operator set means `va` and `red` stop being offloaded. That is
+    the model working -- neither has a resident operand, so neither can beat
+    the host -- but it is not what those benchmarks are for. Writing a
+    `cinm.compute` around an op by hand overrides the gate: an op that is
+    already inside one is taken as a deliberate instruction to offload and
+    is never asked about profitability.
   }];
+
+  let options = [
+    Option<"requireProfitable", "require-profitable", "bool", "false",
+           "Also require the platform's roofline to predict a win over the host">,
+    Option<"hostOpsPerSecond", "host-ops-per-second", "double", "2.1e12",
+           "Host arithmetic throughput, summed over cores (default: 2x Xeon Silver 4216)">,
+    Option<"hostDramBytesPerSecond", "host-dram-bytes-per-second", "double", "15.0e9",
+           "Host DRAM streaming bandwidth in bytes/s (default: the bench machine's ~15 GB/s)">
+  ];
 
   let dependentDialects = [
     "mlir::cinm::CinmDialect",

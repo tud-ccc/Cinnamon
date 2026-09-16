@@ -5,6 +5,7 @@
 #include "cinm-mlir/Dialect/Cinm/Transforms/CinmTransforms.h"
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
 
+#include <llvm/Support/Format.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/PatternMatch.h>
@@ -47,11 +48,35 @@ struct CinmAssignPlatformsPass
       opsToWrap.push_back(op);
     });
 
+    const cinm::HostModel host{hostOpsPerSecond, hostDramBytesPerSecond};
+
     for (Operation *op : opsToWrap) {
+      // An op the program already put inside a cinm.compute was offloaded on
+      // purpose. Capability still has to hold, but profitability is not
+      // second-guessed: this is the override for the cases the roofline
+      // rejects and the author wants anyway.
+      const bool explicitlyRequested = op->getParentOfType<cinm::ComputeOp>();
+
       SmallVector<Attribute> interested;
       for (auto platform : platforms) {
-        if (platform.isOffloadingTarget(op))
-          interested.push_back(platform);
+        if (!platform.isOffloadingTarget(op))
+          continue;
+        if (requireProfitable && !explicitlyRequested) {
+          cinm::OffloadVerdict verdict = platform.evaluateOffload(op, host);
+          if (!verdict.profitable) {
+            std::string terms;
+            llvm::raw_string_ostream os(terms);
+            os << llvm::format(
+                "work %.3g ops, resident %.3g B, per-call %.3g B, host %.3g s "
+                "vs device %.3g s",
+                verdict.work, verdict.staticBytes, verdict.dynamicBytes,
+                verdict.hostSeconds, verdict.deviceSeconds);
+            op->emitRemark()
+                << "not offloaded: " << verdict.reason << " (" << terms << ")";
+            continue;
+          }
+        }
+        interested.push_back(platform);
       }
       if (interested.empty())
         continue;

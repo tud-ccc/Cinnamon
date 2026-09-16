@@ -113,6 +113,35 @@ def CinmPlatformAttrInterface : AttrInterface<"CinmPlatformAttrInterface", []> {
       /*args=*/(ins "::mlir::Operation*":$op),
       "",
       /*default=*/"return false;"
+    >,
+
+    InterfaceMethod<
+      /*desc=*/[{
+        Whether running `op` here is expected to beat leaving it on `host`.
+
+        Separate from isOffloadingTarget, which asks only whether the
+        platform *can* run the op. This asks whether it *should*, and the
+        two have different answers often enough to be worth keeping apart:
+        every op this platform can run is a candidate, but a candidate whose
+        operands all have to be shipped in afresh loses to a host that can
+        already stream them faster than we can scatter them.
+
+        The default is "unknown", which callers read as "do not reject": a
+        platform with no cost model must not have its ops silently pulled
+        back to the host.
+      }],
+      /*retTy=*/"::mlir::cinm::OffloadVerdict",
+      /*methodName=*/"evaluateOffload",
+      /*args=*/(ins "::mlir::Operation*":$op,
+                    "const ::mlir::cinm::HostModel &":$host),
+      "",
+      /*default=*/[{
+        ::mlir::cinm::OffloadVerdict v;
+        v.unknown = true;
+        v.profitable = true;
+        v.reason = "platform has no offload cost model";
+        return v;
+      }]
     >
 
   ];

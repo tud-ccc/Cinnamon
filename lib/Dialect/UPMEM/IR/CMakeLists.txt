@@ -4,6 +4,7 @@ add_mlir_dialect_library(UPMEMIR
         UPMEMTypes.cpp
         UPMEMAttributes.cpp
         UPMEMOccupancy.cpp
+        UPMEMOffloadRoofline.cpp
         InferIntRangeInterfaceImpls.cpp
 
     DEPENDS
@@ -22,4 +23,5 @@ add_mlir_dialect_library(UPMEMIR
         MLIRMemRefDialect
         MLIRSupport
         CinmIR
+        UpmemCostModel
 )

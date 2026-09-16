@@ -5,6 +5,9 @@
 #pragma once
 
 #include <cinm-mlir/Dialect/Cinm/IR/CinmBase.h>
+// CinmPlatformAttrInterface's evaluateOffload returns an OffloadVerdict and
+// takes a HostModel, so both have to be complete before its .h.inc below.
+#include <cinm-mlir/Dialect/Cinm/IR/CinmOffloadModel.h>
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
 #include <mlir/Dialect/Transform/Utils/DiagnosedSilenceableFailure.h>
 #include <mlir/IR/Attributes.h>
