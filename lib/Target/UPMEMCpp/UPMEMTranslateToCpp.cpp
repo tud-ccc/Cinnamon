@@ -1612,12 +1612,18 @@ static LogicalResult printOperation(CppEmitter &emitter, ModuleOp moduleOp) {
     }
   }
 
-  if (kernels.empty())
-    return failure();
-
   raw_ostream &os = emitter.ostream();
 
   os << "// UPMEM-TRANSLATE: ";
+
+  // A module that holds no kernel -- every op stayed on the host, or the
+  // kernels were folded away -- is a valid outcome, not an error: the header
+  // then names nothing, which cinm-compile-dpu accepts and reports.
+  if (kernels.empty()) {
+    os << "\n";
+    return success();
+  }
+
   for (auto kernel : kernels) {
     // The compilation var is used to compile only one of
     // the kernels when many can be generated into the
