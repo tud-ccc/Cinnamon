@@ -1148,7 +1148,6 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
 
   auto dpus = dpusVar_;
   auto tasklets = taskletsVar_;
-  Type eltTy = asShaped(op.getDpsInits()[0].getType()).getElementType();
 
   // Determine the names of the search params. Each dimension gets one
   // parameter per memory level (a tiling factor).
