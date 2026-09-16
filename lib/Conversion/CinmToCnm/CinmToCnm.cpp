@@ -910,15 +910,21 @@ struct ConvertCinmGemmToCnm : public CinmToCnmPattern<cinm::GemmOp> {
 
     auto transposeRight = transpose(builder, rhs);
 
-    auto elTyBytes = lhs.getType().getElementTypeBitWidth() / 8;
+    // Operands and accumulator may differ in width (i8 x i8 -> i32), so the
+    // two reduction operands and the single accumulator are sized apart: a
+    // leaf holds `reductionSize` elements of A and of B, plus one of C.
+    auto eltTy = lhs.getType().getElementType();
+    Type accTy = cast<cinm::GemmlikeOpInterface>(op.getOperation())
+                     .getAccumulatorElementType();
+    auto elTyBytes = llvm::divideCeil(eltTy.getIntOrFloatBitWidth(), 8);
+    auto accTyBytes = llvm::divideCeil(accTy.getIntOrFloatBitWidth(), 8);
 
     // Check that the tiling pass chose a fitting reduction size.
     auto reductionSize = lhs.getType().getDimSize(1);
-    if (reductionSize * 2 * elTyBytes > level->bytesPerLeaf - elTyBytes) {
+    if (reductionSize * 2 * elTyBytes > level->bytesPerLeaf - accTyBytes) {
       return op->emitOpError(
           "cannot be converted to CINM, reduction size is too large");
     }
-    auto eltTy = lhs.getType().getElementType();
     // buffer type for A and B
     cnm::BufferType bufferType = cnm::BufferType::get(
         {reductionSize}, eltTy, cnmAccelerator, level->space);
@@ -927,9 +933,10 @@ struct ConvertCinmGemmToCnm : public CinmToCnmPattern<cinm::GemmOp> {
     Value bufferB =
         cnm::DeclareBufferOp::create(builder, bufferType, workgroup);
 
-    // C has a single element and no dimensions
+    // C has a single element and no dimensions, and carries the accumulator
+    // type rather than the operand type.
     cnm::BufferType bufferCType =
-        cnm::BufferType::get({}, eltTy, cnmAccelerator, level->space);
+        cnm::BufferType::get({}, accTy, cnmAccelerator, level->space);
     Value bufferC =
         cnm::DeclareBufferOp::create(builder, bufferCType, workgroup);
 

@@ -1204,10 +1204,26 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
   // that would have fitted. That is the direction the bound is meant to err
   // in; the tight test is still done on the lowered program.
   auto operandDims = linalgOperandDims(op);
+  // An op may accumulate into a wider element type than its operands carry
+  // (i8 x i8 -> i32), so operands cannot all be charged at one width. Each is
+  // weighted by its own, in units of the narrowest operand's element: that
+  // keeps the arithmetic integral, and where every operand shares one type it
+  // reduces to weight 1 and the capacity below to getSizeInElements of that
+  // type -- the formula this had before mixed precision, unchanged.
+  //
+  // Bits would be the natural unit but overflow the solver's int32 on the
+  // MRAM level (64 MB is 5.4e8 bits, and the footprint scales that by the
+  // tasklet count).
+  SmallVector<int64_t> operandEltBits;
+  for (Value operand : op->getOperands())
+    operandEltBits.push_back(
+        asShaped(operand.getType()).getElementType().getIntOrFloatBitWidth());
+  const int64_t unitBits = *llvm::min_element(operandEltBits);
+
   // The tile of each operand at one level, as a count of elements: the
   // product of that level's tiling factors over the dimensions the operand is
-  // indexed by. This is both the unit the capacity bound sums and the unit a
-  // transfer moves, which is why the DMA constraint below shares it.
+  // indexed by. This is the unit a transfer moves, which is why the DMA
+  // constraint below uses it directly.
   auto operandTiles = [operandDims](ArrayRef<IntVar> sizes) {
     SmallVector<cinm::IntExpr> operands;
     for (const auto &dims : operandDims) {
@@ -1218,26 +1234,41 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
     }
     return operands;
   };
+  // The same tiles weighted by element width, which is what the capacity
+  // bound sums: a wide accumulator costs more per element than a narrow
+  // operand.
+  auto weightedTiles = [&operandTiles, &operandEltBits,
+                        unitBits](ArrayRef<IntVar> sizes) {
+    SmallVector<cinm::IntExpr> weighted;
+    for (auto [tile, eltBits] :
+         llvm::zip_equal(operandTiles(sizes), operandEltBits))
+      weighted.push_back(tile *
+                         static_cast<cinm::ParmValue>(eltBits / unitBits));
+    return weighted;
+  };
   // The stack a tasklet reserves, in the same unit as the tiles it is added
-  // to and the capacity it is charged against: elements, not bytes. Rounded
-  // up, so a reserve that is not a whole number of elements still fits.
+  // to and the capacity it is charged against. Rounded up, so a reserve that
+  // is not a whole number of units still fits.
   const int64_t stackReserve =
-      llvm::divideCeil(kStackReserveBytes * 8, eltTy.getIntOrFloatBitWidth());
-  auto footprint = [&operandTiles, tasklets,
+      llvm::divideCeil(kStackReserveBytes * 8, unitBits);
+  auto footprint = [&weightedTiles, tasklets,
                     stackReserve](ArrayRef<IntVar> sizes) {
-    return tasklets * (stackReserve + cinm::sum(operandTiles(sizes)));
+    return tasklets * (stackReserve + cinm::sum(weightedTiles(sizes)));
+  };
+  const auto capacity = [unitBits](cinm::CinmLevelDefAttr level) {
+    return level.getSizeInBytes() * 8 / unitBits;
   };
 
   // One bound per level, against the capacity the platform declares for it.
   for (auto [levelIdx, level] : llvm::enumerate(levels))
-    b.require(footprint(perLevel[levelIdx]) <= level.getSizeInElements(eltTy),
+    b.require(footprint(perLevel[levelIdx]) <= capacity(level),
               ("tasklets * sum of operand tiles <= " +
                level.getName().getValue() + " (assuming no sharing)")
                   .str());
   if (!opts.useMRAMTiling) {
     // Note: this is only required for benchmarks that compare
     // against CINM1 codegen. To be removed.
-    b.require(footprint(blocks) <= levels.back().getSizeInElements(eltTy),
+    b.require(footprint(blocks) <= capacity(levels.back()),
               "MRAM tile should be equal to WRAM tile (no tiling in MRAM)");
   }
 
@@ -1268,23 +1299,24 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
   // whatever the tiling, so the constraint would empty the space rather than
   // shape it. Nothing distributes such an operand, so its buffer gets no
   // per-tasklet dimension and every tasklet reaches it at offset 0.
-  const int64_t eltBits = eltTy.getIntOrFloatBitWidth();
   SmallVector<std::string> operandNames = linalgOperandNames(op);
   for (auto [levelIdx, level] : llvm::enumerate(levels)) {
     // The leaf's own tile is left to the coalescing, per the argument above.
     if (levelIdx + 1 == levels.size())
       continue;
     const int64_t granuleBits = level.getAlignment() * 8;
-    // The smallest tile that is a whole number of granules. Counted in bits
-    // so that an element narrower than a byte stays exact.
-    const int64_t elemsPerGranule =
-        granuleBits / std::gcd(granuleBits, eltBits);
-    if (elemsPerGranule <= 1)
-      continue;
     for (auto [idx, name, tile] :
          llvm::zip_equal(llvm::seq<size_t>(0, operandNames.size()),
                          operandNames, operandTiles(perLevel[levelIdx]))) {
       if (operandDims[idx].empty())
+        continue;
+      // The smallest tile that is a whole number of granules, per operand:
+      // operands of different widths reach a granule at different counts, so
+      // a narrow operand is bound more loosely than a wide one. Counted in
+      // bits so that an element narrower than a byte stays exact.
+      const int64_t elemsPerGranule =
+          granuleBits / std::gcd(granuleBits, operandEltBits[idx]);
+      if (elemsPerGranule <= 1)
         continue;
       b.require(cinm::divides(cinm::ParmValue(elemsPerGranule), tile),
                 (name + "'s " + level.getName().getValue() +

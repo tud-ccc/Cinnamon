@@ -551,11 +551,25 @@ struct ConvertBatchGemvToLinalg
         rewriter.getAffineMapArrayAttr(maps), rewriter.getArrayAttr(iterAttrs),
         StringAttr{}, StringAttr{},
         [&](OpBuilder &nb, Location nloc, ValueRange args) {
-          Value mul = isFloat
-                          ? arith::MulFOp::create(nb, nloc, args[0], args[1])
-                                .getResult()
-                          : arith::MulIOp::create(nb, nloc, args[0], args[1])
-                                .getResult();
+          // The accumulator may be wider than the operands (i8 x i8 -> i32).
+          // Widen first, so the products are formed in the accumulator type,
+          // which is what the named linalg contractions do as well.
+          Value lhsV = args[0], rhsV = args[1];
+          if (lhsV.getType() != elemTy) {
+            lhsV =
+                isFloat
+                    ? arith::ExtFOp::create(nb, nloc, elemTy, lhsV).getResult()
+                    : arith::ExtSIOp::create(nb, nloc, elemTy, lhsV)
+                          .getResult();
+            rhsV =
+                isFloat
+                    ? arith::ExtFOp::create(nb, nloc, elemTy, rhsV).getResult()
+                    : arith::ExtSIOp::create(nb, nloc, elemTy, rhsV)
+                          .getResult();
+          }
+          Value mul =
+              isFloat ? arith::MulFOp::create(nb, nloc, lhsV, rhsV).getResult()
+                      : arith::MulIOp::create(nb, nloc, lhsV, rhsV).getResult();
           Value acc =
               isFloat
                   ? arith::AddFOp::create(nb, nloc, mul, args[2]).getResult()

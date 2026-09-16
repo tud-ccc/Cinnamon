@@ -99,6 +99,21 @@ class Cinm_GemmlikeOp<string name, string cppClassName> : Cinm_Op<name,
 
     Note that this difference can lead to slightly different bufferized IRs depending on whether you bufferize or tile first.
 
+    The accumulator may be wider than the operands, which is what an int8
+    checkpoint needs -- a 768-deep dot product of int8 values does not fit in
+    an int8:
+    ```mlir
+        %C = cinm.op.gemm %A, %B : tensor<128x768xi8>, tensor<768x768xi8>
+                                 -> tensor<128x768xi32>
+    ```
+    Both operands must still share one element type; only the accumulator may
+    widen, and only to a wider type of the same domain (integer to integer,
+    float to float). Result types are inferred from the operands, so the
+    widened result has to be written explicitly, and `isCompatibleReturnTypes`
+    is what accepts it. `bias` and `out`, when present, are the accumulator
+    and so carry the wide type. This mirrors `linalg.matmul`, whose `outs` may
+    already be wider than its `ins`, and which is what these ops lower to.
+
   }];
 
   let arguments = (ins
@@ -114,10 +129,23 @@ class Cinm_GemmlikeOp<string name, string cppClassName> : Cinm_Op<name,
   let assemblyFormat =
     "$lhs `,` $rhs (`plus` $bias^)? (`into` $out^)? attr-dict `:` type($lhs) `,` type($rhs) (`plus` type($bias)^)? (`into` type($out)^)? (`->` type($result)^)?";
 
+  let extraClassDeclaration = [{
+    /// Accepts a result whose element type is a legal accumulator for the
+    /// inferred (operand) element type, so that a mixed-precision gemm can
+    /// state its wide result explicitly. Shape, type kind and encoding must
+    /// still match exactly.
+    static bool isCompatibleReturnTypes(::mlir::TypeRange l, ::mlir::TypeRange r);
+  }];
+
   let skipDefaultBuilders = 1;
   let builders = [
+    // Builds with an explicit accumulator element type, for the
+    // mixed-precision case where it cannot be inferred from the operands.
+    OpBuilder<(ins "Value":$left, "Value":$right, "Value":$bias, "Value":$out,
+                   "Type":$accElementType),
+      "buildGemmLikeOp<" # cppClassName # ">($_builder, $_state, left, right, bias, out, accElementType);">,
     OpBuilder<(ins "Value":$left, "Value":$right, "Value":$bias, "Value":$out),
-      "buildGemmLikeOp<" # cppClassName # ">($_builder, $_state, left, right, bias, out);">,
+      "buildGemmLikeOp<" # cppClassName # ">($_builder, $_state, left, right, bias, out, Type{});">,
     OpBuilder<(ins "Value":$left, "Value":$right, "Value":$bias),
       "build($_builder, $_state, left, right, bias, Value{});">,
     OpBuilder<(ins "Value":$left, "Value":$right),
