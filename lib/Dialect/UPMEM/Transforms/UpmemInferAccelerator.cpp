@@ -65,6 +65,7 @@
 #include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/ValueRange.h>
 #include <mlir/Interfaces/TilingInterface.h>
+#include <mlir/Pass/Pass.h>
 #include <mlir/Pass/PassManager.h>
 #include <mlir/Support/LLVM.h>
 #include <mlir/Support/LogicalResult.h>
