@@ -1213,11 +1213,33 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
   // Bits would be the natural unit but overflow the solver's int32 on the
   // MRAM level (64 MB is 5.4e8 bits, and the footprint scales that by the
   // tasklet count).
+  //
+  // One entry per operand, aligned with operandDims below (zip_equal). An
+  // operand that is not a shaped numeric value -- a scalar, or an `index`
+  // element type -- carries 0 here: it occupies no data tile, so it weighs
+  // nothing in the capacity sum and is exempt from the DMA granule bound.
   SmallVector<int64_t> operandEltBits;
-  for (Value operand : op->getOperands())
-    operandEltBits.push_back(
-        asShaped(operand.getType()).getElementType().getIntOrFloatBitWidth());
-  const int64_t unitBits = *llvm::min_element(operandEltBits);
+  for (Value operand : op->getOperands()) {
+    ShapedType shaped = asShaped(operand.getType());
+    Type elem = shaped ? shaped.getElementType() : Type();
+    if (elem && elem.isIntOrFloat()) {
+      operandEltBits.push_back(elem.getIntOrFloatBitWidth());
+    } else {
+      LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] operand "
+                              << operand.getType() << " of " << op->getName()
+                              << " has no numeric element width; not tiled\n");
+      operandEltBits.push_back(0);
+    }
+  }
+  // The unit is the narrowest numeric operand. A 0 must never become the
+  // divisor, and an op with nothing numeric to tile gets an arbitrary unit
+  // -- every weight is then 0 and no bound is charged.
+  int64_t unitBits = 0;
+  for (int64_t bits : operandEltBits)
+    if (bits > 0 && (unitBits == 0 || bits < unitBits))
+      unitBits = bits;
+  if (unitBits == 0)
+    unitBits = 32;
 
   // The tile of each operand at one level, as a count of elements: the
   // product of that level's tiling factors over the dimensions the operand is
