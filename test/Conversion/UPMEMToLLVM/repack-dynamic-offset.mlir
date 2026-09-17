@@ -61,3 +61,24 @@ func.func @expand_to_dynamic_offset(%big: memref<64x256xi32>,
       : memref<8x16xi32> into memref<8x16xi32, strided<[256, 1], offset: ?>>
   return
 }
+
+// -----
+
+// The *target* may sit at a run-time offset too: a slot of a stacked staging
+// buffer, one slot per slice of a static tensor. Its pointer is the stack's
+// base plus the slot's offset, not the base alone.
+
+// CHECK-LABEL: func.func @compact_into_slot
+//       CHECK:   %[[SLOT:.*]] = builtin.unrealized_conversion_cast %subview
+//   CHECK-DAG:   %[[BASE:.*]] = llvm.extractvalue %[[SLOT]][1]
+//   CHECK-DAG:   %[[OFF:.*]] = llvm.extractvalue %[[SLOT]][2]
+//       CHECK:   %[[PTR:.*]] = llvm.getelementptr %[[BASE]][%[[OFF]]]
+//       CHECK:   llvm.call @upmemrt_compact(%[[PTR]],
+func.func @compact_into_slot(%src: memref<8x16xi32, strided<[256, 1]>>,
+                             %stack: memref<4x8x16xi32>, %l: index) {
+  %slot = memref.subview %stack[%l, 0, 0] [1, 8, 16] [1, 1, 1]
+      : memref<4x8x16xi32> to memref<8x16xi32, strided<[16, 1], offset: ?>>
+  cnm.compact_buffer %src into %slot [affine_map<(d0, d1) -> (d0, d1)>]
+      : memref<8x16xi32, strided<[256, 1]>> into memref<8x16xi32, strided<[16, 1], offset: ?>>
+  return
+}

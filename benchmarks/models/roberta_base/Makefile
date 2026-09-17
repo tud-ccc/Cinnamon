@@ -55,7 +55,7 @@ $(OUT)/$(NAME)_linalg.mlir: $(OUT)/$(NAME)_unrolled.mlir $(MK)
 ASSIGN_OPTS ?= require-profitable=true host-ops-per-second=8.6e12
 
 $(OUT)/$(NAME)_with_compute.mlir: $(OUT)/$(NAME)_linalg.mlir $(MK)
-	$(CINM_OPT) $< "--cinm-assign-platforms=$(ASSIGN_OPTS)" \
+	$(CINM_OPT) $< "--cinm-assign-platforms=$(ASSIGN_OPTS)" --cinm-absorb-static-slices \
 	--cinm-isolate-compute-blocks --cinm-expand-compute-scope --cinm-deisolate-compute-blocks --cinm-complete-compute-graph \
    > $@
 

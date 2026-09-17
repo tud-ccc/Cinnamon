@@ -481,8 +481,13 @@ public:
                                  rewriter.getI64IntegerAttr(elemOffset)));
     srcPtr = LLVM::GEPOp::create(rewriter, loc, ptrTy, srcTy.getElementType(),
                                  srcPtr, ValueRange{elemOffsetVal});
+    // The target is contiguous, but need not start at its allocation: a
+    // slot of a stacked staging buffer is a subview at a run-time offset.
+    MemRefDescriptor dstDesc(adaptor.getTarget());
     Value dstPtr =
-        MemRefDescriptor(adaptor.getTarget()).alignedPtr(rewriter, loc);
+        LLVM::GEPOp::create(rewriter, loc, ptrTy, dstTy.getElementType(),
+                            dstDesc.alignedPtr(rewriter, loc),
+                            ValueRange{dstDesc.offset(rewriter, loc)});
 
     auto konst = [&](Type ty, int64_t v) {
       return LLVM::ConstantOp::create(rewriter, loc, ty,
@@ -555,8 +560,13 @@ public:
                                  rewriter.getI64IntegerAttr(elemOffset)));
     dstPtr = LLVM::GEPOp::create(rewriter, loc, ptrTy, dstTy.getElementType(),
                                  dstPtr, ValueRange{elemOffsetVal});
+    // The packed source is contiguous but, like a compact's target, may be
+    // a slot of a larger buffer at a run-time offset.
+    MemRefDescriptor srcDesc(adaptor.getSource());
     Value srcPtr =
-        MemRefDescriptor(adaptor.getSource()).alignedPtr(rewriter, loc);
+        LLVM::GEPOp::create(rewriter, loc, ptrTy, srcTy.getElementType(),
+                            srcDesc.alignedPtr(rewriter, loc),
+                            ValueRange{srcDesc.offset(rewriter, loc)});
 
     auto konst = [&](Type ty, int64_t v) {
       return LLVM::ConstantOp::create(rewriter, loc, ty,

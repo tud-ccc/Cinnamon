@@ -64,7 +64,7 @@ $(OUT)/$(NAME)_linalg.mlir: $(OUT)/$(NAME)_unrolled.mlir $(MK)
    > $@
 
 $(OUT)/$(NAME)_with_compute.mlir: $(OUT)/$(NAME)_linalg.mlir $(MK)
-	$(CINM_OPT) $< "$(ASSIGN_PASS)" \
+	$(CINM_OPT) $< "$(ASSIGN_PASS)" --cinm-absorb-static-slices \
 	--cinm-isolate-compute-blocks --cinm-expand-compute-scope --cinm-deisolate-compute-blocks --cinm-complete-compute-graph \
    > $@
 

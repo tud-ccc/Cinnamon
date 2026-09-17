@@ -598,52 +598,91 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   // The constant travels rather than being baked into the program so that
   // the members' kernels stay identical and --upmem-dedup-kernels keeps one
   // program per class.
+  //
+  // A static operand that is a run-time-indexed slice of a stacked tensor
+  // (cinm::resolveStaticSlice -- the layer's weight inside the layer loop)
+  // adds a second factor: every slice has a slot, so the buffer is `member
+  // slots x slices` wide and this launch lands in slot `member * slices +
+  // index`. Slots are per buffer, since an operand the same on every
+  // iteration (a table shared by the layers) has only the member factor.
   const auto [residencySlot, residencySlots] = residencySlotOf(launch);
-  llvm::DenseSet<Value> staticBuffers;
-  for (auto user : launch.getWg().getUsers())
-    if (auto scatter = llvm::dyn_cast_or_null<cnm::ScatterOp>(user))
-      if (cinm::isStaticValue(scatter.getHostValue()))
-        staticBuffers.insert(scatter.getBuffer());
-  const bool slotted = residencySlots > 1 && !staticBuffers.empty();
-  Value hostSlot;   // the slot, as an index on the host: the scatters' operand
-  Value kernelSlot; // the slot, as an index inside the program
-  if (slotted) {
+  struct BufferSlot {
+    Value host;   // the slot as an index on the host: the scatter's operand
+    Value kernel; // the slot as an index inside the program
+    int64_t slots;
+  };
+  llvm::MapVector<Value, BufferSlot> bufferSlots;
+  // On the host, right after the program load: ahead of every scatter,
+  // which is where the slots are consumed.
+  rewriter.setInsertionPointAfter(loadProgram);
+  for (auto user : launch.getWg().getUsers()) {
+    auto scatter = llvm::dyn_cast_or_null<cnm::ScatterOp>(user);
+    if (!scatter || !cinm::isStaticValue(scatter.getHostValue()))
+      continue;
+    std::optional<cinm::StaticSlice> slice =
+        cinm::resolveStaticSlice(scatter.getHostValue());
+    const int64_t slices = slice ? slice->slots : 1;
+    if (residencySlots * slices <= 1)
+      continue;
+    Location loc = scatter.getLoc();
+    Value host = arith::ConstantIndexOp::create(rewriter, loc, residencySlot);
+    if (slice) {
+      Value stride = arith::ConstantIndexOp::create(rewriter, loc, slices);
+      host = arith::AddIOp::create(
+          rewriter, loc, arith::MulIOp::create(rewriter, loc, host, stride),
+          slice->index);
+    }
+    bufferSlots[scatter.getBuffer()] = {host, Value(), residencySlots * slices};
+  }
+  auto hostSlotOf = [&](Value buffer) -> Value {
+    auto it = bufferSlots.find(buffer);
+    return it == bufferSlots.end() ? Value() : it->second.host;
+  };
+  auto kernelSlotOf = [&](Value buffer) -> Value {
+    auto it = bufferSlots.find(buffer);
+    return it == bufferSlots.end() ? Value() : it->second.kernel;
+  };
+  if (!bufferSlots.empty()) {
+    // One WRAM word per slotted buffer, in a symbol padded to the DMA
+    // granule (a broadcast moves whole granules); the program reads its
+    // entries once at entry, the host fills and broadcasts them before the
+    // scatters.
+    const int64_t words = llvm::alignTo(bufferSlots.size(), 2);
+    Location loc = launch->getLoc();
+    OpBuilder::InsertPoint hostPoint = rewriter.saveInsertionPoint();
+
+    rewriter.setInsertionPointToStart(&dpuProgram.getBody().front());
     auto slotTy =
-        MemRefType::get({2}, rewriter.getI32Type(), MemRefLayoutAttrInterface{},
-                        wramMemspaceAttr);
+        MemRefType::get({words}, rewriter.getI32Type(),
+                        MemRefLayoutAttrInterface{}, wramMemspaceAttr);
     auto slotSym = upmem::StaticAllocOp::create(
-        rewriter, launch->getLoc(), slotTy, upmem::DpuMemSpace::WRAM, "slot",
+        rewriter, loc, slotTy, upmem::DpuMemSpace::WRAM, "slot",
         /*noinit=*/true);
     dpuProgramSymTable.insert(slotSym);
     rewriter.setInsertionPointAfter(slotSym);
-    Value zero = arith::ConstantIndexOp::create(rewriter, launch->getLoc(), 0);
-    Value slotI32 = memref::LoadOp::create(rewriter, launch->getLoc(),
-                                           slotSym.getBuffer(), zero);
-    kernelSlot = arith::IndexCastOp::create(rewriter, launch->getLoc(),
-                                            rewriter.getIndexType(), slotI32);
+    for (auto [k, entry] : llvm::enumerate(bufferSlots)) {
+      Value at = arith::ConstantIndexOp::create(rewriter, loc, k);
+      Value word =
+          memref::LoadOp::create(rewriter, loc, slotSym.getBuffer(), at);
+      entry.second.kernel = arith::IndexCastOp::create(
+          rewriter, loc, rewriter.getIndexType(), word);
+    }
 
-    // On the host, right after the program load: ahead of every scatter,
-    // which is where the slot is consumed. Two i32 rather than one: a
-    // broadcast moves whole DMA granules.
-    rewriter.setInsertionPointAfter(loadProgram);
-    hostSlot = arith::ConstantIndexOp::create(rewriter, launch->getLoc(),
-                                              residencySlot);
-    auto hostSlotBuf =
-        memref::AllocaOp::create(rewriter, launch->getLoc(),
-                                 MemRefType::get({2}, rewriter.getI32Type()));
-    Value hostZero =
-        arith::ConstantIndexOp::create(rewriter, launch->getLoc(), 0);
-    Value slotValue = arith::ConstantOp::create(
-        rewriter, launch->getLoc(),
-        rewriter.getI32IntegerAttr(static_cast<int32_t>(residencySlot)));
-    memref::StoreOp::create(rewriter, launch->getLoc(), slotValue, hostSlotBuf,
-                            hostZero);
+    rewriter.restoreInsertionPoint(hostPoint);
+    auto hostSlotBuf = memref::AllocaOp::create(
+        rewriter, loc, MemRefType::get({words}, rewriter.getI32Type()));
+    for (auto [k, entry] : llvm::enumerate(bufferSlots)) {
+      Value at = arith::ConstantIndexOp::create(rewriter, loc, k);
+      Value word = arith::IndexCastOp::create(
+          rewriter, loc, rewriter.getI32Type(), entry.second.host);
+      memref::StoreOp::create(rewriter, loc, word, hostSlotBuf, at);
+    }
     auto broadcast = upmem::BroadcastOp::create(
-        rewriter, launch->getLoc(), hostSlotBuf, slotSym.getSymNameAttr(),
-        hierarchy, /*slot=*/Value());
+        rewriter, loc, hostSlotBuf, slotSym.getSymNameAttr(), hierarchy,
+        /*slot=*/Value());
     labelTransfer(broadcast, hostSlotBuf, nextTransferId++);
-    rewriter.setInsertionPointToStart(&dpuProgram.getBody().front());
   }
+  rewriter.setInsertionPointToStart(&dpuProgram.getBody().front());
 
   for (auto user : launch.getWg().getUsers()) {
     if (auto alloc = llvm::dyn_cast_or_null<cnm::DeclareBufferOp>(user)) {
@@ -737,12 +776,10 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
         // buffer is broadcasted.
         bufShape.insert(bufShape.begin(), upmemTy.getNumTaskletsPerDpu());
       }
-      // A static operand of a grouped member: one slot per member, ahead of
-      // everything else.
-      const bool bufferSlotted =
-          slotted && staticBuffers.contains(alloc.getResult());
+      // A slotted static operand: its slots ahead of everything else.
+      const bool bufferSlotted = bufferSlots.count(alloc.getResult()) > 0;
       if (bufferSlotted)
-        bufShape.insert(bufShape.begin(), residencySlots);
+        bufShape.insert(bufShape.begin(), bufferSlots[alloc.getResult()].slots);
       (void)memrefTy;
 
       memrefTy = MemRefType::get(bufShape, bufferType.getElementType(),
@@ -752,7 +789,8 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
           rewriter, alloc->getLoc(), memrefTy, upmem::DpuMemSpace::MRAM, "buf",
           opts.useMramNoInit);
       if (bufferSlotted)
-        mrambuf.setSlotsAttr(rewriter.getI64IntegerAttr(residencySlots));
+        mrambuf.setSlotsAttr(
+            rewriter.getI64IntegerAttr(bufferSlots[alloc.getResult()].slots));
       dpuProgramSymTable.insert(mrambuf); // this renames it to a unique name
       buffersToMramBuf[alloc.getResult()] = mrambuf;
     }
@@ -775,7 +813,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       if (!alloc || failed(convertCnmScatterToUpmem(
                         rewriter, scatter, sharedAcrossTasklets, hierarchy,
                         alloc.getSymNameAttr(), nextTransferId++,
-                        slotDimsOf(alloc) ? hostSlot : Value()))) {
+                        hostSlotOf(scatter.getBuffer())))) {
         return failure();
       }
     }
@@ -806,7 +844,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       mapping.map(memref, getTaskletSlice(rewriter, cnmBuf.getLoc(),
                                           buffersToMramBuf[cnmBuf],
                                           cast<MemRefType>(memref.getType()),
-                                          kernelSlot));
+                                          kernelSlotOf(cnmBuf)));
       continue;
     }
     if (pooledWritebackBuffers.contains(cnmBuf)) {
@@ -832,7 +870,8 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
     if (mramLevelBuffers.contains(buf))
       continue;
     auto wramBuf = buffersToWramBufValue[buf];
-    createTransfer(rewriter, true, buf.getLoc(), mramBuf, wramBuf, kernelSlot);
+    createTransfer(rewriter, true, buf.getLoc(), mramBuf, wramBuf,
+                   kernelSlotOf(buf));
     rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
   }
 
@@ -847,7 +886,8 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
     auto wramBuf = buffersToWramBufValue[buf];
     auto mramBuf = buffersToMramBuf[buf];
 
-    createTransfer(rewriter, false, buf.getLoc(), mramBuf, wramBuf, kernelSlot);
+    createTransfer(rewriter, false, buf.getLoc(), mramBuf, wramBuf,
+                   kernelSlotOf(buf));
     rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
   }
 

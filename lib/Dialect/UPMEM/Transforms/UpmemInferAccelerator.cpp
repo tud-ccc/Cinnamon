@@ -404,11 +404,21 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
         wram.dynBytes += tasklets * wramElts * eltBytes;
 
         const int64_t perDpuBytes = tasklets * mramElts * eltBytes;
+        // An operand the block takes from outside: a block argument, or the
+        // slice of one that --cinm-absorb-static-slices moved inside. A
+        // value initialised inside the block (a fill) is never resident.
         auto arg = llvm::dyn_cast<BlockArgument>(opnd.get());
+        if (!arg)
+          if (std::optional<cinm::StaticSlice> slice =
+                  cinm::resolveStaticSlice(opnd.get()))
+            arg = llvm::dyn_cast<BlockArgument>(slice->source);
         const bool isStatic = arg && arg.getOwner()->getParentOp() == block &&
-                              cinm::isStaticValue(arg);
+                              cinm::isStaticValue(opnd.get());
         if (isStatic) {
-          mram.staticBytes += perDpuBytes;
+          // A run-time-indexed slice of a static tensor keeps every slice
+          // resident, one slot each (resolveStaticSlice): the device holds
+          // all of them, not the one this trial moved.
+          mram.staticBytes += perDpuBytes * cinm::staticSlotsOf(opnd.get());
           // What a timeshared placement would pay per inference to restore
           // these weights. scatterBlockCostMs' second parameter is the block
           // one DPU receives, not the whole tensor -- it is what the

@@ -327,11 +327,15 @@ static int rt_transfer_resident(struct dpu_set_t *set, const char *tag,
   }
   if (!isStatic)
     return 0;
+  // Occupancy is per slot -- (symbol, offset) -- not per site: one site
+  // inside a layer loop fills every slot of its buffer in turn, and each of
+  // them stays resident for the next inference.
   for (rt_xfer_record *r = e->xfers; r; r = r->next)
-    if (strncmp(r->tag, tag, sizeof(r->tag)) == 0) {
+    if (symbol && strncmp(r->symbol, symbol, sizeof(r->symbol)) == 0 &&
+        r->symbol_offset == symbol_offset) {
       if (r->host == host && r->bytes == bytes)
         return 1;
-      // Same site, different payload (the host re-materialised its static
+      // Same slot, different payload (the host re-materialised its static
       // operand): run the transfer and remember the new occupant.
       r->host = host;
       r->bytes = bytes;
