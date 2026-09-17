@@ -106,11 +106,19 @@ def compile_one(
     downstream stages tolerate this fine."""
     marker = marker or roots.compile_marker_of(config)
     compiled = compile_run.compile_config(config, compile_root=roots.compile_root)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    error_file = config.dir(roots.compile_root) / "compile_error.txt"
     if not compiled.ok:
         print(
             f"  FAIL compile: {config.system} {config.fn_name} {config.label}: {compiled.error}"
         )
-    marker.parent.mkdir(parents=True, exist_ok=True)
+        # A binary left by an earlier, successful compile of this config
+        # would pass for this one's: the bench would time stale code, and the
+        # retry task would see nothing to retry.
+        roots.bench_bin_of(config).unlink(missing_ok=True)
+        error_file.write_text(f"{compiled.error}\n")
+    else:
+        error_file.unlink(missing_ok=True)
     marker.touch()
     return True
 
@@ -217,6 +225,8 @@ def clear_failed_compiles(configs, roots: MeasureRoots) -> int:
     for c in configs:
         marker = roots.compile_marker_of(c)
         bench_bin = roots.bench_bin_of(c)
+        if not marker.exists():
+            continue  # never compiled: nothing to retry, the next run does it
         if (
             c.dir(roots.compile_root) / "compile_error.txt"
         ).exists() or not bench_bin.exists():

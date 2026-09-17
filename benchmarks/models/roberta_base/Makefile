@@ -17,6 +17,10 @@ NAME ?= roberta_base
 # output behind, and make would take that stub as up to date.
 .DELETE_ON_ERROR:
 
+# Every stage is a pass pipeline spelled out below, so a stage rebuilds when
+# this file changes, not only when its input does.
+MK := $(lastword $(MAKEFILE_LIST))
+
 .PHONY := clean
 
 clean:
@@ -26,14 +30,18 @@ clean:
 # transform ops: cinm-translate does not register that dialect, and a module
 # that reaches host code generation with its schedule still inside fails
 # there. The sidecar is a prerequisite so a schedule edit rebuilds.
-$(OUT)/$(NAME)_unrolled.mlir: $(NAME).mlir $(NAME).schedule.mlir
+$(OUT)/$(NAME)_unrolled.mlir: $(NAME).mlir $(NAME).schedule.mlir $(MK)
 	@mkdir -p $(@D)
 	$(CINM_OPT) $< --transform-preload-library=transform-library-paths=$(NAME).schedule.mlir --transform-interpreter > $@
 
-$(OUT)/$(NAME)_linalg.mlir: $(OUT)/$(NAME)_unrolled.mlir
+# Elementwise chains (requant, GELU, the softmax and LayerNorm pieces) fuse
+# into one generic each, but never into a contraction's input: that would
+# recompute the producer once per reduction step, and hide the GEMM from
+# the offload gate behind an untagged generic.
+$(OUT)/$(NAME)_linalg.mlir: $(OUT)/$(NAME)_unrolled.mlir $(MK)
 	$(CINM_OPT) $< --inline \
 	 --convert-cinm-ops-to-linalg --convert-tensor-to-linalg --linalg-generalize-named-ops \
-	 --linalg-fuse-elementwise-ops  \
+	 --linalg-fuse-elementwise-ops=fuse-with-recompute=false \
 	 --eliminate-empty-tensors --cse \
    > $@
 
@@ -46,11 +54,11 @@ $(OUT)/$(NAME)_linalg.mlir: $(OUT)/$(NAME)_unrolled.mlir
 # sides of this comparison run the quantized model.
 ASSIGN_OPTS ?= require-profitable=true host-ops-per-second=8.6e12
 
-$(OUT)/$(NAME)_with_compute.mlir: $(OUT)/$(NAME)_linalg.mlir
+$(OUT)/$(NAME)_with_compute.mlir: $(OUT)/$(NAME)_linalg.mlir $(MK)
 	$(CINM_OPT) $< "--cinm-assign-platforms=$(ASSIGN_OPTS)" \
 	--cinm-isolate-compute-blocks --cinm-expand-compute-scope --cinm-deisolate-compute-blocks --cinm-complete-compute-graph \
    > $@
 
 
-$(OUT)/$(NAME)_buffered.mlir: $(OUT)/$(NAME)_with_compute.mlir
+$(OUT)/$(NAME)_buffered.mlir: $(OUT)/$(NAME)_with_compute.mlir $(MK)
 	$(CINM_OPT) $< --cnm-isolate-linalg-captures --cinm-isolate-compute-blocks --cinm-simplify-compute-signatures --eliminate-empty-tensors --cse --canonicalize --one-shot-bufferize=function-boundary-type-conversion=identity-layout-map\ bufferize-function-boundaries\ allow-return-allocs-from-loops=false --buffer-loop-hoisting --canonicalize --cse --buffer-results-to-out-params=hoist-static-allocs --cse --canonicalize > $@

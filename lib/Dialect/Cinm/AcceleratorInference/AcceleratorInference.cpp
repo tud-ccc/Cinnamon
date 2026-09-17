@@ -1521,30 +1521,22 @@ profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
            << "no value of '" << param
            << "' in the allocation menu is feasible for this block";
 
-  // Lower-envelope repair (see InferenceOptions::profileRepair). Points are
-  // in menu order, i.e. ascending resource; a running argmin over the
-  // measured costs replaces any point a stalled seed left above the envelope
-  // with the best smaller point's incumbent. The residency travels with the
-  // configuration -- it describes what actually runs -- and rawCostMs keeps
-  // the measurement.
-  for (ProfilePoint &p : points)
-    p.rawCostMs = p.costMs;
+  // Lower envelope (see InferenceOptions::profileRepair). Points are in menu
+  // order, i.e. ascending resource; a point that measured no better than
+  // the best smaller one is a hole, like an infeasible menu value.
   if (opts.profileRepair) {
-    const ProfilePoint *best = nullptr;
+    decltype(points) envelope;
     for (ProfilePoint &p : points) {
-      if (best && best->costMs < p.costMs) {
-        p.costMs = best->costMs;
-        p.config = best->config;
-        p.residency = best->residency;
-        p.repairedFrom = best->resource;
-        LLVM_DEBUG(llvm::dbgs()
-                   << "[cinm-inference]   repaired L(" << p.resource
-                   << ") = " << p.rawCostMs << " -> " << p.costMs << " (from "
-                   << param << "=" << best->resource << ")\n");
-      } else {
-        best = &p;
+      if (!envelope.empty() && envelope.back().costMs <= p.costMs) {
+        LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   dropped L(" << p.resource
+                                << ") = " << p.costMs << ": no better than "
+                                << param << "=" << envelope.back().resource
+                                << " at " << envelope.back().costMs << "\n");
+        continue;
       }
+      envelope.push_back(std::move(p));
     }
+    points = std::move(envelope);
   }
   return points;
 }

@@ -305,14 +305,12 @@ static void dumpProfilesCSV(const std::filesystem::path &path,
   std::ofstream out(path);
   if (!out)
     return;
-  // raw_cost_ms is what this point's own pinned search measured; cost_ms is
-  // what the point offers after lower-envelope repair, and repaired_from
-  // names the smaller resource whose incumbent it carries (empty when the
-  // point kept its own). transfer_share is the incumbent's per-inference
-  // data-movement share (amortized weight scatters excluded); empty when it
-  // was not measured.
+  // A menu value with no row is a hole: infeasible, or dominated by a
+  // smaller value (InferenceOptions::profileRepair). transfer_share is the
+  // incumbent's per-inference data-movement share (amortized weight
+  // scatters excluded); empty when it was not measured.
   out << "class,debug_tag,location,multiplicity,resource,cost_ms,"
-         "raw_cost_ms,repaired_from,transfer_share,weight_scatter_ms,config";
+         "transfer_share,weight_scatter_ms,config";
   for (const std::string &level : levels)
     out << ",static_" << level << ",dyn_" << level;
   out << "\n";
@@ -331,7 +329,7 @@ static void dumpProfilesCSV(const std::filesystem::path &path,
       // A class that stays on the host is kept for the record, with every
       // measured column empty.
       classCols();
-      out << ",,,,,,";
+      out << ",,,,";
       for (size_t i = 0, e = 2 * levels.size(); i < e; ++i)
         out << ",";
       out << "\n";
@@ -355,11 +353,7 @@ static void dumpProfilesCSV(const std::filesystem::path &path,
           ";");
 
       classCols();
-      out << point.resource << "," << point.costMs << "," << point.rawCostMs
-          << ",";
-      if (point.repairedFrom)
-        out << point.repairedFrom;
-      out << ",";
+      out << point.resource << "," << point.costMs << ",";
       if (point.transferShare >= 0)
         out << point.transferShare;
       out << "," << point.residency.weightScatterMs << "," << csvQuote(config);

@@ -265,16 +265,16 @@ struct InferenceOptions {
   /// out-parameter and cost a full search each.
   int profileSeeds = 1;
 
-  /// Graph profiling only: lower-envelope repair of each class's profile.
-  /// A point whose pinned search measured worse than a smaller menu point's
-  /// incumbent takes that incumbent instead (configuration, cost, residency):
-  /// allocating R devices can always run the best configuration found at any
-  /// R' <= R and idle the rest, so the repaired profile is achievable by
-  /// construction and non-increasing in the resource. This is what removes
-  /// the upward cliffs a stalled search seed cuts into a profile -- the
-  /// allocator's greedy optimality argument reads the profile as the
-  /// achievable envelope, not as one seed's luck. ProfilePoint::rawCostMs
-  /// keeps the measurement for diagnostics.
+  /// Graph profiling only: keep each class's profile to its lower envelope.
+  /// A menu point whose pinned search measured no better than a smaller
+  /// point is dropped, leaving a hole like an infeasible menu value:
+  /// allocating R devices can always run the best configuration found at
+  /// any R' < R and idle the rest, so such a point offers nothing the
+  /// smaller one does not, and an allocation that picked it would pin
+  /// devices for a program that runs on fewer. What remains is strictly
+  /// decreasing in the resource, which is what the allocator's greedy
+  /// optimality argument reads it as -- the achievable envelope, whether the
+  /// measured cliff was a stalled search seed or a real scaling limit.
   bool profileRepair = true;
 
   /// Graph profiling only: when > 0, a class whose *best* profile point
@@ -533,10 +533,10 @@ struct InferenceOptions {
 struct ProfilePoint {
   /// The shared-resource value (sharedResourceParam) this point measured.
   int64_t resource;
-  /// Total cost of the best configuration this point offers, in ms. After
-  /// lower-envelope repair (InferenceOptions::profileRepair) this may be a
-  /// smaller point's cost: allocating `resource` devices can always run the
-  /// best configuration found at any smaller value and idle the rest.
+  /// Total cost of the best configuration this point offers, in ms. Within
+  /// a profile these strictly decrease as the resource grows: a point that
+  /// does no better than a smaller one is dropped
+  /// (InferenceOptions::profileRepair).
   double costMs;
   /// The argmin configuration, keyed by space dimension name in the same
   /// currency as InferenceOptions::evalSingleSolution, so it can be replayed
@@ -545,12 +545,6 @@ struct ProfilePoint {
   /// The argmin's residency summary (plugin-measured); consumed by the
   /// graph-level co-residency packing and timeshare pricing.
   ResidencyInfo residency;
-  /// What this point's own pinned search measured, before repair. Equal to
-  /// costMs on an unrepaired point.
-  double rawCostMs = 0;
-  /// The resource whose incumbent this point carries after repair; 0 when
-  /// the point kept its own search's configuration.
-  int64_t repairedFrom = 0;
   /// Share of the incumbent's per-inference cost spent moving data
   /// (Transfer + TransferBack over the non-excluded total, so amortized
   /// weight scatters do not count). A class whose best point is mostly

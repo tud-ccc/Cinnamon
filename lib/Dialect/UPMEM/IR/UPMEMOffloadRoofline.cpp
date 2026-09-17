@@ -198,10 +198,21 @@ double deviceOpsPerSecond(UpmemPlatformAttr platform, Type mulTy, Type accTy) {
 // Reading the op
 //===----------------------------------------------------------------------===//
 
-/// Bytes a shaped value occupies, or nothing when the shape is not static.
+/// Bytes a value occupies: a static shape's elements, or a scalar's own width
+/// (a row maximum or sum handed to an elementwise body travels as one
+/// number). Nothing when the shape is dynamic or the type has no width.
 std::optional<double> bytesOf(Value v) {
-  auto shaped = dyn_cast<ShapedType>(v.getType());
-  if (!shaped || !shaped.hasStaticShape())
+  Type type = v.getType();
+  auto shaped = dyn_cast<ShapedType>(type);
+  if (!shaped) {
+    if (type.isIndex())
+      return 8.0;
+    if (type.isIntOrFloat())
+      return static_cast<double>(
+          llvm::divideCeil(type.getIntOrFloatBitWidth(), 8));
+    return std::nullopt;
+  }
+  if (!shaped.hasStaticShape())
     return std::nullopt;
   Type elem = shaped.getElementType();
   if (!elem.isIntOrFloat())

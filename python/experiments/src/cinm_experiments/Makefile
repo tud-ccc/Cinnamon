@@ -37,7 +37,7 @@ PRIM         ?= red
 # Operator suites keep one driver per file under a suite directory; the
 # end-to-end models keep everything about a model -- source, schedule,
 # makefile, driver -- in a directory of its own under models/.
-BENCH_DRIVER ?= $(firstword $(wildcard $(BENCH_DIR)/*/$(PRIM).cpp $(BENCH_DIR)/models/$(PRIM)/$(PRIM).cpp))
+BENCH_DRIVER ?= $(firstword $(wildcard $(BENCH_DIR)/*/$(PRIM).cpp $(BENCH_DIR)/models/*/$(PRIM).cpp))
 ifeq ($(BENCH_DRIVER),)
   $(error No bench driver for PRIM=$(PRIM) under $(BENCH_DIR)/*/)
 endif

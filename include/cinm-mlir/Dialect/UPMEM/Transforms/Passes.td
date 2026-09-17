@@ -212,14 +212,13 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "merely scale poorly. 0 (default) only surfaces transfer_share "
            "in profiles.csv">,
     Option<"profileRepair", "profile-repair", "bool", "true",
-           "Graph profiling only: lower-envelope repair of each class's cost "
-           "profile. A menu point whose pinned search measured worse than a "
-           "smaller point's incumbent takes that incumbent (config, cost, "
-           "residency) -- allocating R devices can always run the best "
-           "configuration found at any R' <= R and idle the rest -- so the "
-           "profile handed to the allocator is non-increasing by "
-           "construction and search-seed cliffs cannot reach it. "
-           "profiles.csv keeps the raw measurement in raw_cost_ms">,
+           "Graph profiling only: keep each class's cost profile to its "
+           "lower envelope. A menu point whose pinned search measured no "
+           "better than a smaller point is dropped, like an infeasible one: "
+           "allocating R devices can always run the best configuration found "
+           "at any R' < R and idle the rest, so it offers nothing the smaller "
+           "point does not. The profile handed to the allocator is strictly "
+           "decreasing by construction; dropped points are only logged">,
     Option<"profileSeeds", "profile-seeds", "int", "1",
            "Graph allocation only: how many independent searches to run per "
            "menu point, dumped to profile_seeds.csv as a measurement of how "

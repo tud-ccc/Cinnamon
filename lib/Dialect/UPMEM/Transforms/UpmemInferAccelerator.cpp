@@ -470,7 +470,10 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // name. Generalizing here keeps that concern out of the distribution
     // pass itself.
     pm->addPass(createLinalgGeneralizeNamedOpsPass());
-    pm->addPass(createLinalgElementwiseOpFusionPass());
+    // Never fuse a producer into a contraction's input: it would be
+    // recomputed once per reduction step.
+    pm->addPass(
+        createLinalgElementwiseOpFusionPass({.fuseWithRecompute = false}));
     pm->addPass(createCanonicalizerPass());
     if (debug)
       pm->addPass(createPrintIRPass({.label = "after-fusion"}));
@@ -631,7 +634,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     if (debug)
       pm->addPass(createPrintIRPass({.label = "after-tile-mram-buffers"}));
     pm->addPass(createLinalgGeneralizeNamedOpsPass());
-    pm->addPass(createLinalgElementwiseOpFusionPass());
+    pm->addPass(
+        createLinalgElementwiseOpFusionPass({.fuseWithRecompute = false}));
     pm->addPass(createConvertLinalgToAffineLoopsPass());
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());

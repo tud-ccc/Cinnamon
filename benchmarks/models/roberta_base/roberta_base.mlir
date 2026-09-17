@@ -42,7 +42,7 @@
 // op sequence and data movement, which is what the evaluation measures, and
 // is not expected to reproduce GLUE accuracy until real scales are loaded.
 
-#upmem = #upmem.platform<type = v1A, dpus = 2560, tasklets = 24>
+#upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 
 func.func @roberta_base(
 	// per-inference inputs. Token and position ids are i32, as every runtime

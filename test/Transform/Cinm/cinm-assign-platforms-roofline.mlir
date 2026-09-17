@@ -94,3 +94,28 @@ func.func @dynamic_shape(%A: tensor<?x?xi32> {cinm.static},
   %y = cinm.op.gemv %A, %x : tensor<?x?xi32>, tensor<?xi32> -> tensor<?xi32>
   return %y : tensor<?xi32>
 }
+
+// -----
+
+#upmem = #upmem.platform<type = v1A, dpus = 2560, tasklets = 24>
+#id = affine_map<(d0) -> (d0)>
+#scalar = affine_map<(d0) -> ()>
+
+// A scalar operand (a row's maximum handed to the body) is measurable -- it
+// is one number -- so the op is read like any other elementwise op and
+// rejected for having no static operand, not waved through as unknown.
+
+// GATED-LABEL: @scalar_operand
+// GATED-NOT: cinm.compute
+func.func @scalar_operand(%x: tensor<1024xi32>, %m: i32) -> tensor<1024xi32>
+  attributes {cinm.available_platforms = [#upmem]} {
+  %init = tensor.empty() : tensor<1024xi32>
+  // expected-remark @below {{not offloaded: no static operand}}
+  %y = linalg.generic {indexing_maps = [#id, #scalar, #id], iterator_types = ["parallel"]}
+      ins(%x, %m : tensor<1024xi32>, i32) outs(%init : tensor<1024xi32>) {
+  ^bb0(%a: i32, %b: i32, %o: i32):
+    %d = arith.subi %a, %b : i32
+    linalg.yield %d : i32
+  } -> tensor<1024xi32>
+  return %y : tensor<1024xi32>
+}
