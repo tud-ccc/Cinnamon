@@ -165,10 +165,17 @@ $(IR_DIR)/$(BENCH_FN).mlir: $(SRC_MLIR) | $(IR_DIR)
 #
 # Byte-identical to what the four-target chain produced. Keep it that way --
 # the object file ends up in a benchmark whose timings are the results.
+#
+# The medium code model, because the repack staging globals of a model with
+# resident weights add up to more than the 2 GB the small model can address
+# (a 3B decode step stages 3.4 GB of them): data above the large-data
+# threshold moves to .ldata behind 64-bit addressing, which costs one address
+# materialisation per global outside the loops that use it, and everything
+# else -- the runtime's own globals included -- stays where it was.
 $(IR_DIR)/%.o: $(IR_DIR)/%.mlir
 	$(CINM_OPT) $< $(LOWER_PIPELINE) $(TO_LLVM_PIPELINE) -o - \
 	    | $(CINM_TRANS) --allow-unregistered-dialect --mlir-to-llvmir -o - \
-	    | $(CINM_BIN)/opt -O3 | $(CINM_BIN)/llc -O3 -filetype=obj -relocation-model=pic -o $@
+	    | $(CINM_BIN)/opt -O3 | $(CINM_BIN)/llc -O3 -filetype=obj -relocation-model=pic -code-model=medium -o $@
 
 # The stages the rule above pipes through, for when a compile fails and the
 # intermediate IR is what you want to look at. Nothing depends on these; ask
