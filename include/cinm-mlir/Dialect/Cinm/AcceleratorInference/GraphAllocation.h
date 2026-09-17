@@ -37,8 +37,14 @@ namespace mlir::cinm {
 /// in strictly increasing resource order (profileComputeBlock returns them
 /// that way).
 struct ClassProfile {
+  /// How many members the class has: what it pins, since every member's
+  /// static operands stay resident (and a member inside a rolled loop
+  /// already counts the slots of all its iterations in its profile).
   unsigned multiplicity = 1;
   SmallVector<ProfilePoint> points;
+  /// How many times a member runs per inference, on average over the
+  /// members: what it loads its set with, per unit of cost. 1 outside loops.
+  double executionsPerMember = 1;
 };
 
 /// Declared capacity of one memory level of the device, in the same
@@ -114,6 +120,12 @@ struct GraphNode {
   unsigned memberIndex = 0;
   /// Nodes whose results this one consumes.
   SmallVector<unsigned> predecessors;
+  /// How many times the node runs per inference: the trip count of the
+  /// loops around it (a block inside a rolled layer loop runs once per
+  /// layer). Its time on the critical path is that many of its cost; its
+  /// residency is what one execution pins, since the slots of every
+  /// iteration are already in the profile.
+  int64_t executions = 1;
 };
 
 /// Solve the throughput allocation exactly. Returns std::nullopt when no

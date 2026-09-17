@@ -59,6 +59,9 @@ struct BlockNode {
   /// Nodes whose results this block consumes, directly or through ops the
   /// graph does not own. Indices into ComputeGraph::nodes.
   SmallVector<unsigned> predecessors;
+  /// How many times the block runs per inference: the product of the
+  /// constant trip counts of the loops enclosing it, 1 outside any loop.
+  int64_t executions = 1;
 };
 
 /// One group of compute blocks that is optimized as a whole: a connected

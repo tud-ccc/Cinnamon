@@ -147,17 +147,19 @@ private:
       }
       // An op with compute ops nested inside (a loop around an offloaded
       // block) cannot become part of a host block without hiding those
-      // nodes. Either demote them to host code, or leave the op in place as
-      // a hole in the graph.
+      // nodes. Either demote them to host code, or keep the op in place and
+      // complete the graph inside it: the host runs of its body become
+      // blocks of their own, and the graph collection unites the loop's
+      // operands, results and region arguments, so the nodes inside stay
+      // connected to the ones outside (a rolled layer loop is exactly this).
       if (op->getNumRegions() != 0 && containsComputeOp(op)) {
         if (demoteNestedCompute) {
           demoteNestedComputeOps(op, rewriter);
         } else {
-          op->emitWarning(
-              "op contains compute ops and cannot be wrapped into a host "
-              "compute block; the compute graph is disconnected here "
-              "(demote-nested-compute would dissolve them into host code)");
           flush();
+          for (Region &region : op->getRegions())
+            for (Block &nested : region)
+              completeBlock(nested, rewriter);
           continue;
         }
       }

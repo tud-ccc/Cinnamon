@@ -20,6 +20,7 @@
 #include <llvm/Support/Casting.h>
 #include <llvm/Support/Debug.h>
 
+#include <mlir/Dialect/Utils/StaticValueUtils.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/Operation.h>
@@ -28,6 +29,7 @@
 #include <mlir/IR/Visitors.h>
 #include <mlir/Interfaces/ControlFlowInterfaces.h>
 #include <mlir/Interfaces/FunctionInterfaces.h>
+#include <mlir/Interfaces/LoopLikeInterface.h>
 
 #define DEBUG_TYPE "cinm-inference"
 
@@ -156,6 +158,28 @@ producingNodes(ComputeBlockOp block,
 
 } // namespace
 
+/// How many times `block` runs per inference: the product of the constant
+/// trip counts of the loops between it and its function. A loop whose trip
+/// count is not a constant counts as one -- the makespan then undercounts
+/// it, which is the conservative side for a decision about what to pin.
+static int64_t executionsOf(ComputeBlockOp block) {
+  int64_t executions = 1;
+  for (Operation *op = block->getParentOp();
+       op && !isa<FunctionOpInterface>(op); op = op->getParentOp()) {
+    if (auto loop = dyn_cast<LoopLikeOpInterface>(op)) {
+      auto constant = [](std::optional<OpFoldResult> bound) {
+        return bound ? getConstantIntValue(*bound) : std::nullopt;
+      };
+      std::optional<int64_t> lb = constant(loop.getSingleLowerBound());
+      std::optional<int64_t> ub = constant(loop.getSingleUpperBound());
+      std::optional<int64_t> step = constant(loop.getSingleStep());
+      if (lb && ub && step && *step > 0 && *ub > *lb)
+        executions *= (*ub - *lb + *step - 1) / *step;
+    }
+  }
+  return executions;
+}
+
 SmallVector<ComputeGraph> collectComputeGraphs(Operation *root,
                                                StringRef platformName) {
   llvm::EquivalenceClasses<GraphKey> components;
@@ -221,7 +245,8 @@ SmallVector<ComputeGraph> collectComputeGraphs(Operation *root,
       graph.classes.push_back(BlockClass{});
     BlockClass &blockClass = graph.classes[classEntry->second];
     graph.nodes.push_back(BlockNode{block, classEntry->second,
-                                    blockClass.size(), /*predecessors=*/{}});
+                                    blockClass.size(), /*predecessors=*/{},
+                                    executionsOf(block)});
     blockClass.members.push_back(block);
   }
 
@@ -622,7 +647,14 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
       }
     }
     solveIndexOfClass[ci] = static_cast<int>(profiles.size());
-    profiles.push_back({blockClass.size(), std::move(*results[ci].points)});
+    // The load of a member is its cost times how often it runs: a block
+    // inside a rolled loop runs once per iteration.
+    int64_t executions = 0;
+    for (const BlockNode &node : graph.nodes)
+      if (node.classIndex == ci)
+        executions += node.executions;
+    profiles.push_back({blockClass.size(), std::move(*results[ci].points),
+                        double(executions) / double(blockClass.size())});
   }
   if (!baseDumpDir.empty()) {
     auto dir = std::filesystem::path(baseDumpDir.str()) / graphName.str();
@@ -675,7 +707,7 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
       solveIndexOfNode[ni] = static_cast<int>(nodes.size());
       nodes.push_back(
           {static_cast<unsigned>(solveIndexOfClass[node.classIndex]),
-           node.memberIndex, std::move(preds)});
+           node.memberIndex, std::move(preds), node.executions});
     }
   }
   if (opts.latencyObjective)

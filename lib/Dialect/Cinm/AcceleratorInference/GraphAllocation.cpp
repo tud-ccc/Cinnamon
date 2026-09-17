@@ -108,9 +108,11 @@ std::optional<AllocationResult> allocateGraph(ArrayRef<ClassProfile> classes,
     ClassOptions co;
     co.multiplicity = cls.multiplicity;
     double bestPinned = kInf, bestScatter = 0;
+    // A member's load is its cost per execution times its executions per
+    // inference (ClassProfile::executionsPerMember).
     for (const ProfilePoint &p : cls.points) {
       co.options.push_back(
-          {p.resource, p.costMs,
+          {p.resource, p.costMs * cls.executionsPerMember,
            maxCoResidents(p, opts.capacities, cls.multiplicity)});
       if (p.costMs < bestPinned) {
         bestPinned = p.costMs;
@@ -119,9 +121,11 @@ std::optional<AllocationResult> allocateGraph(ArrayRef<ClassProfile> classes,
     }
     if (opts.allowTimeshare && bestPinned < kInf) {
       // Unpinned: borrow the best point's device count transiently; pay the
-      // program switch and the weight re-scatter every inference. Nothing
+      // program switch and the weight re-scatter every execution. Nothing
       // stays resident, so the capacity check does not constrain it.
-      co.options.push_back({0, bestPinned + opts.programReloadMs + bestScatter,
+      co.options.push_back({0,
+                            (bestPinned + opts.programReloadMs + bestScatter) *
+                                cls.executionsPerMember,
                             cls.multiplicity});
     }
     for (const GroupOption &o : co.options)
@@ -218,7 +222,7 @@ double makespanOf(ArrayRef<ClassProfile> classes, ArrayRef<GraphNode> nodes,
   for (const LatencyGroup &group : groups) {
     double each = classes[group.classIndex].points[group.point].costMs;
     for (auto [i, member] : llvm::enumerate(group.members)) {
-      cost[member] = each;
+      cost[member] = each * double(nodes[member].executions);
       if (i)
         prevOnSet[member] = group.members[i - 1];
     }
@@ -252,7 +256,7 @@ llvm::BitVector criticalNodes(ArrayRef<ClassProfile> classes,
   for (const LatencyGroup &group : groups) {
     double each = classes[group.classIndex].points[group.point].costMs;
     for (auto [i, member] : llvm::enumerate(group.members)) {
-      cost[member] = each;
+      cost[member] = each * double(nodes[member].executions);
       if (i) {
         prevOnSet[member] = group.members[i - 1];
         nextOnSet[group.members[i - 1]] = member;
@@ -451,9 +455,11 @@ allocateGraphForLatency(ArrayRef<ClassProfile> classes,
     const ProfilePoint &point = classes[group.classIndex].points[group.point];
     ClassAllocation &alloc = result.perClass[group.classIndex];
     unsigned index = alloc.groups.size();
+    int64_t executions = 0;
+    for (unsigned member : group.members)
+      executions += nodes[member].executions;
     alloc.groups.push_back({static_cast<unsigned>(group.members.size()),
-                            point.resource,
-                            double(group.members.size()) * point.costMs});
+                            point.resource, double(executions) * point.costMs});
     for (unsigned member : group.members)
       result.groupOfNode[member] = index;
   }

@@ -91,9 +91,11 @@ func.func @absorb_loop(%t: tensor<8xf32>) -> tensor<8xf32> {
 
 // -----
 
-// A control flow op with a compute op inside cannot be wrapped: by default it
-// is left in place with a warning, with demote-nested-compute the nested
-// compute op is dissolved and the loop becomes a single host block.
+// A control flow op with a compute op inside cannot be wrapped itself: by
+// default it stays in place and its body is completed like the function's
+// (nothing to wrap here, the body holds only the compute op), with
+// demote-nested-compute the nested compute op is dissolved and the loop
+// becomes a single host block.
 
 // CHECK-LABEL: func @barrier
 // CHECK-NOT:   #cinm.host_platform
@@ -112,7 +114,6 @@ func.func @barrier(%t: tensor<8xf32>) -> tensor<8xf32> {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %c8 = arith.constant 8 : index
-  // expected-warning @below {{op contains compute ops and cannot be wrapped}}
   %r = scf.for %i = %c0 to %c8 step %c1 iter_args(%acc = %t) -> tensor<8xf32> {
     %w = cinm.compute -> tensor<8xf32> {
       %m = cinm.op.elementwise add %acc, %acc : tensor<8xf32>

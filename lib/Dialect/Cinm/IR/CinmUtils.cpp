@@ -31,22 +31,23 @@ static constexpr unsigned kStaticValueDepth = 24;
 
 /// `view` as a static slice (see resolveStaticSlice), whatever its source's
 /// staticness: a single-source view whose leading offset is the one
-/// run-time value, with a unit extent there and constant offsets, sizes and
-/// strides everywhere else.
+/// run-time value, with a unit extent there and every other dimension taken
+/// whole, so that slice `i` is exactly `source[i]`.
 static std::optional<StaticSlice>
 matchSliceAtRuntimeIndex(OffsetSizeAndStrideOpInterface view) {
   if (!view || view->getNumResults() != 1 || view->getNumOperands() != 2)
     return std::nullopt;
+  auto source = llvm::cast<ShapedType>(view->getOperand(0).getType());
+  if (!source.hasStaticShape())
+    return std::nullopt;
   ArrayRef<int64_t> offsets = view.getStaticOffsets();
   if (offsets.empty() || !ShapedType::isDynamic(offsets.front()) ||
-      llvm::any_of(offsets.drop_front(), ShapedType::isDynamic))
+      llvm::any_of(offsets.drop_front(), [](int64_t o) { return o != 0; }))
     return std::nullopt;
   ArrayRef<int64_t> sizes = view.getStaticSizes();
-  if (sizes.front() != 1 || llvm::any_of(sizes, ShapedType::isDynamic) ||
-      llvm::any_of(view.getStaticStrides(), ShapedType::isDynamic))
-    return std::nullopt;
-  auto source = llvm::cast<ShapedType>(view->getOperand(0).getType());
-  if (!source.hasRank() || source.isDynamicDim(0))
+  if (sizes.front() != 1 ||
+      !llvm::equal(sizes.drop_front(), source.getShape().drop_front()) ||
+      llvm::any_of(view.getStaticStrides(), [](int64_t s) { return s != 1; }))
     return std::nullopt;
   auto index = llvm::dyn_cast<Value>(view.getMixedOffsets().front());
   if (!index)

@@ -41,9 +41,9 @@ namespace mlir::cinm {
 bool isStaticValue(Value value);
 
 /// A view that selects one of `slots` slices of `source` along its leading
-/// dimension by the run-time `index`: `source[index, c1, c2, ...]` with a
-/// unit extent in that dimension and every other offset, size and stride
-/// constant. The layer loop of a model produces exactly this -- the layer's
+/// dimension by the run-time `index`: `source[index]`, a unit extent there
+/// and every other dimension taken whole. The layer loop of a model
+/// produces exactly this -- the layer's
 /// weight is `weights[layer]` -- and it is what lets the weights of every
 /// layer stay resident on the device while one program serves them all,
 /// each launch selecting its slot by `index` (`slot` on the UPMEM transfer
