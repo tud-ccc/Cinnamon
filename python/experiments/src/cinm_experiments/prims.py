@@ -187,9 +187,26 @@ PRIMS: dict[str, Prim] = {
         parallel_dims=("K",),
     ),
     # Matrix (MxK) times vector (K); gemv also scales the result. Rows are
-    # handed out to the workgroup; K is reduced within a worker.
+    # handed out to the workgroup; K is reduced within a worker. gemv folds
+    # the scaling into the contraction as one linalg op, recomputing it per
+    # row the way ATiM's schedule does -- its transcribed points map onto
+    # this form. gemv_norecompute is the same computation as two cinm ops
+    # that elementwise fusion keeps apart, so the scaling is distributed on
+    # its own; the two are measured side by side, and the gemv baselines
+    # (PrIM, ATiM, CPU) stand for both, see BASELINE_ALIASES in the
+    # evaluation's assemble.py.
     "gemv": Prim(
         name="gemv",
+        dimensions={
+            "4MB": dict(M=1024, K=1024),
+            "64MB": dict(M=4096, K=4096),
+            "256MB": dict(M=8192, K=8192),
+            "512MB": dict(M=8192, K=16384),
+        },
+        parallel_dims=("M",),
+    ),
+    "gemv_norecompute": Prim(
+        name="gemv_norecompute",
         dimensions={
             "4MB": dict(M=1024, K=1024),
             "64MB": dict(M=4096, K=4096),
