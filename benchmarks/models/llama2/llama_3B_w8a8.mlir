@@ -153,7 +153,11 @@ func.func @llama_3B_w8a8(
 		%f_w = func.call @widen_v(%f) : (tensor<3200xi8>) -> tensor<3200xi32>
 		%x2 = cinm.op.elementwise add %x1, %f_w : tensor<3200xi32>
 
-		scf.yield %x2, %kc1, %vc1 : tensor<3200xi32>, tensor<26x1024x3200xi8>, tensor<26x1024x3200xi8>
+		// The residual stream is loop-carried: pinning the new value into the
+		// iteration's buffer is what lets the loop bufferize in place (the
+		// caches are updated in place by their insert_slices already).
+		%x2m = bufferization.materialize_in_destination %x2 in %x : (tensor<3200xi32>, tensor<3200xi32>) -> tensor<3200xi32>
+		scf.yield %x2m, %kc1, %vc1 : tensor<3200xi32>, tensor<26x1024x3200xi8>, tensor<26x1024x3200xi8>
 	} {unroll_layers}
 
 	// ---- classifier ----------------------------------------------------------

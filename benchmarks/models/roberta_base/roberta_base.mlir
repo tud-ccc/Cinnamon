@@ -213,7 +213,10 @@ func.func @roberta_base(
 		%xf = func.call @ilayernorm(%fr, %fln_g, %fln_b)
 			: (tensor<128x768xi32>, tensor<768xi32>, tensor<768xi32>) -> tensor<128x768xi8>
 
-		scf.yield %xf : tensor<128x768xi8>
+		// The activation is loop-carried: pinning the new value into the
+		// iteration's buffer is what lets the loop bufferize in place.
+		%xfm = bufferization.materialize_in_destination %xf in %x : (tensor<128x768xi8>, tensor<128x768xi8>) -> tensor<128x768xi8>
+		scf.yield %xfm : tensor<128x768xi8>
 	} {unroll_layers}
 
 	// ---- GLUE classification head over the <s> token -----------------------
