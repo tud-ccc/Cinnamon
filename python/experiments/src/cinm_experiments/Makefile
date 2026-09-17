@@ -37,9 +37,15 @@ PRIM         ?= red
 # Operator suites keep one driver per file under a suite directory; the
 # end-to-end models keep everything about a model -- source, schedule,
 # makefile, driver -- in a directory of its own under models/.
-BENCH_DRIVER ?= $(firstword $(wildcard $(BENCH_DIR)/*/$(PRIM).cpp $(BENCH_DIR)/models/*/$(PRIM).cpp))
+# The suites are named rather than globbed: cinm1/ is the original CINM 1.0
+# suite with its own Makefile and drivers of its own conventions (cinm1/va.cpp
+# calls va_8 and va_16), and a glob over every suite directory picked it ahead
+# of prim/va.cpp -- while the CINM 1.0 *arm* of the comparison lowers the PrIM
+# functions and is benched with the PrIM drivers like everything else here.
+BENCH_SUITES ?= prim multiop
+BENCH_DRIVER ?= $(firstword $(wildcard $(foreach s,$(BENCH_SUITES),$(BENCH_DIR)/$(s)/$(PRIM).cpp) $(BENCH_DIR)/models/*/$(PRIM).cpp))
 ifeq ($(BENCH_DRIVER),)
-  $(error No bench driver for PRIM=$(PRIM) under $(BENCH_DIR)/*/)
+  $(error No bench driver for PRIM=$(PRIM) under $(BENCH_DIR)/{$(BENCH_SUITES)}/ or $(BENCH_DIR)/models/*/)
 endif
 
 # Single-function source module, already lowered to the upmem dialect by the
