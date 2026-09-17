@@ -509,6 +509,69 @@ def UpmemAnnotateCostsPass
   ];
 }
 
+def UpmemRegisterTileLoopsPass
+    : Pass<"upmem-register-tile-loops", "::mlir::upmem::DpuProgramOp"> {
+  let summary = "Unroll-and-jam a kernel's inner nests within a register budget";
+  let description = [{
+    Shapes each innermost loop nest of a DPU program for the DPU compiler's
+    register allocator, which is where a naively unrolled kernel loses most
+    of its time.
+
+    A DPU has 24 general registers, and its `mul_sl_sl` multiplies the signed
+    low bytes of two registers directly, so an `i8` operand costs exactly one
+    load whether it is read from its buffer or from a stack slot. Hoisting a
+    load out of a loop therefore only pays while the hoisted value stays in a
+    register. Unrolling the reduction loop of a `y[j] += A[j][k] * x[k]` nest
+    makes every `x[k]` invariant in the `j` loop, and LLVM's loop-invariant
+    code motion hoists all of them -- with no register-pressure check, and
+    with no way to undo it, since a load is not rematerializable -- so all but
+    a dozen are spilled to the stack, which is WRAM, and read back on every
+    trip. Leaving the loads inside the loop in the MLIR changes nothing: LLVM
+    hoists them itself. Fully unrolling `j` does not help either: the
+    clustered loads still spill, because the DPU backend does not reorder
+    them toward their uses.
+
+    What removes the invariants is unroll-and-jam of `j` into `k`: each `x[k]`
+    is then loaded once and used by every jammed copy in the next few
+    instructions, and the only values live across the loop are the copies'
+    accumulators. The jam factor is chosen from a register budget: with `c`
+    loads per copy (accumulators and operands indexed by `j`) and `s` loads
+    shared between copies (indexed by `k` alone, or by neither loop), it is
+    the largest factor `f` with `f * c + s <= register-budget`, preferring one
+    that divides the trip count. The jam is applied only where each copy
+    provably touches locations of its own: the parent loop's body holds
+    nothing but the inner loop and index arithmetic, and every buffer the
+    inner body writes is accessed only at the written address, which moves
+    with the parent's induction variable.
+
+    The innermost loop is then unrolled fully when the trip count is at most
+    `max-unroll` or the unrolled body stays within `max-body-ops`, and
+    otherwise by a factor in [`min-unroll`, `max-unroll`], preferring one
+    dividing the trip count. Beyond a factor of 8 the per-element cost is
+    within a few percent of a full unroll at a fraction of the IRAM, but a
+    short rolled remainder still costs an elementwise kernel a few percent
+    on the hardware -- and the DPU compiler fully unrolls such a loop itself
+    anyway, which left the cost model pricing a loop that did not exist.
+    `max-body-ops` bounds the unrolled body's size in ops.
+  }];
+  let dependentDialects = [
+    "::mlir::upmem::UPMEMDialect",
+    "mlir::affine::AffineDialect",
+    "mlir::arith::ArithDialect"
+  ];
+  let options = [
+    Option<"registerBudget", "register-budget", "unsigned", "12",
+           "Registers the jammed body may keep live: the copies' accumulators "
+           "and per-copy operands plus the operands shared between copies">,
+    Option<"minUnroll", "min-unroll", "unsigned", "8",
+           "Smallest unroll factor for an innermost loop longer than max-unroll">,
+    Option<"maxUnroll", "max-unroll", "unsigned", "16",
+           "Largest unroll factor; a loop this short or shorter is fully unrolled">,
+    Option<"maxBodyOps", "max-body-ops", "unsigned", "1024",
+           "Bound on the unrolled innermost body, in ops">,
+  ];
+}
+
 def UpmemCheckOccupancyPass
     : Pass<"upmem-check-occupancy", "ModuleOp"> {
   let summary = "Fail if a DPU program's buffers do not fit the device";

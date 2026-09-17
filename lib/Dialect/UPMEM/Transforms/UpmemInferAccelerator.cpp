@@ -696,20 +696,21 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // passes above still see affine loops.
     {
       auto &dpuPm = pm->nest<ModuleOp>().nest<DpuProgramOp>();
-      // The DPU compiler unrolls nothing by itself, so a short innermost loop
-      // pays a counter increment, a branch and an address computation per
-      // operand on every iteration -- about half the instructions of a
+      // The DPU compiler unrolls nothing by itself, so a rolled innermost
+      // loop pays a counter increment, a branch and an address computation
+      // per operand on every iteration -- about half the instructions of a
       // multiply-accumulate body. Unrolling here rather than asking the DPU
       // compiler for it keeps the cost model reading the code that runs.
       //
-      // `unrollUpToFactor` is what makes the factor a *bound*: it unrolls by
-      // min(trip count, factor), so a loop shorter than 64 comes out fully
-      // unrolled instead of untouched -- plain `unroll-factor=64` fails
-      // outright on anything shorter (loopUnrollByFactor bails when the trip
-      // count is below the factor). Only innermost loops are considered, and
-      // only once, so an outer loop is never unrolled around a body this has
-      dpuPm.addPass(affine::createLoopUnrollPass(/*unrollFactor=*/129,
-                                                 /*unrollUpToFactor=*/true));
+      // Not a full unroll, though: that made every operand of the enclosing
+      // loop's body invariant, the loop-invariant code motion below (and
+      // LLVM's own, which no IR shape prevents) hoisted the whole operand
+      // vector out, and the DPU compiler spilled it to the stack -- which is
+      // WRAM -- and read it back on every trip. The pass jams the enclosing
+      // loop into the innermost one within a register budget, so an operand
+      // is loaded once and consumed at once, then unrolls the innermost loop
+      // partially. See its description in Passes.td.
+      dpuPm.addPass(createUpmemRegisterTileLoopsPass());
       // Don't do fusion after unrolling, it's very slow
       addAffineOpts(dpuPm, /*fusion=*/false);
       dpuPm.addPass(createLowerAffinePass());

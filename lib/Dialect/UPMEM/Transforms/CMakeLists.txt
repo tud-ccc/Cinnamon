@@ -8,6 +8,7 @@ add_mlir_dialect_library(UPMEMTransforms
     UpmemInferAccelerator.cpp
     UpmemOpCountSimulator.cpp
     UpmemPythonSimulator.cpp
+    UpmemRegisterTileLoops.cpp
     UpmemTileMRAMBuffers.cpp
     SpecializeTransfers.cpp
 
@@ -35,6 +36,8 @@ LINK_LIBS PUBLIC
     MLIRBufferizationTransforms
     MLIRBufferizationPipelines
     MLIRAffineTransforms
+    MLIRAffineAnalysis
+    MLIRAffineUtils
     MLIRMemRefTransforms
     MLIRAffineToStandard
     MLIRLinalgToStandard
