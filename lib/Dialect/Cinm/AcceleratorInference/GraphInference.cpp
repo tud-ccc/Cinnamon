@@ -749,19 +749,39 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
   // ones fell back" is exactly the question the dumps leave open.
   {
     Builder builder(loc.getContext());
-    for (auto [ci, blockClass] : llvm::enumerate(graph.classes))
+    for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
+      // The members of a group share a device set and hold their static
+      // operands resident side by side: `slot` is the member's position in
+      // that layout and `slots` its width, the k the allocator packed
+      // (maxCoResidents). The lowering sizes the resident buffers by
+      // `slots` and lands each member's scatter in its own slot.
+      SmallVector<unsigned> groupSize, slotOfMember(blockClass.members.size());
+      if (solveIndexOfClass[ci] >= 0)
+        for (auto [mi, member] : llvm::enumerate(blockClass.members)) {
+          unsigned gi = groupOfMember[ci][mi];
+          if (gi >= groupSize.size())
+            groupSize.resize(gi + 1, 0);
+          slotOfMember[mi] = groupSize[gi]++;
+        }
       for (auto [mi, member] : llvm::enumerate(blockClass.members)) {
         SmallVector<NamedAttribute> fields{
             builder.getNamedAttr("graph", builder.getStringAttr(graphName)),
             builder.getNamedAttr("class", builder.getI64IntegerAttr(ci)),
             builder.getNamedAttr("member", builder.getI64IntegerAttr(mi)),
         };
-        if (solveIndexOfClass[ci] >= 0)
+        if (solveIndexOfClass[ci] >= 0) {
+          unsigned gi = groupOfMember[ci][mi];
+          fields.push_back(
+              builder.getNamedAttr("group", builder.getI64IntegerAttr(gi)));
           fields.push_back(builder.getNamedAttr(
-              "group", builder.getI64IntegerAttr(groupOfMember[ci][mi])));
+              "slot", builder.getI64IntegerAttr(slotOfMember[mi])));
+          fields.push_back(builder.getNamedAttr(
+              "slots", builder.getI64IntegerAttr(groupSize[gi])));
+        }
         member->setAttr(CinmDialect::GRAPH_ALLOC_NAME,
                         builder.getDictionaryAttr(fields));
       }
+    }
   }
 
   // Materialize each PINNED group's device set once, at the top of its
