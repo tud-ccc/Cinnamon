@@ -15,7 +15,7 @@
 
 // Residency cache, defined below the transfer functions that consult it.
 static int rt_transfer_resident(struct dpu_set_t *set, const char *tag,
-                                void *host, size_t bytes);
+                                const char *symbol, void *host, size_t bytes);
 
 void do_dpu_transfer(dpu_xfer_t xfer_type, struct dpu_set_t *dpu_set,
                      void *host_buffer, size_t copy_bytes, const char *buf_id,
@@ -51,7 +51,7 @@ void upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *hostBuffer,
   (void)element_size;
   (void)num_elements;
   (void)num_elements_per_tasklet;
-  if (rt_transfer_resident(dpu_set, tag, hostBuffer, copy_bytes))
+  if (rt_transfer_resident(dpu_set, tag, bufId, hostBuffer, copy_bytes))
     return;
 #ifdef UPMEM_RT_STATS
   uint64_t t0 = upmemrt_now_ns();
@@ -161,7 +161,7 @@ void upmemrt_dpu_scatter_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
                                 const char *buffer_id,
                                 size_t (*base_offset)(size_t, size_t),
                                 const char *tag) {
-  if (rt_transfer_resident(dpu_set, tag, host_buffer,
+  if (rt_transfer_resident(dpu_set, tag, buffer_id, host_buffer,
                            num_blocks * block_num_elements * element_size))
     return;
   do_sg_xfer(DPU_XFER_TO_DPU, dpu_set, host_buffer, element_size, num_blocks,
@@ -180,7 +180,7 @@ void upmemrt_dpu_gather_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
 void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
                            size_t copy_bytes, const char *buffer_id,
                            const char *tag) {
-  if (rt_transfer_resident(dpu_set, tag, host_buffer, copy_bytes))
+  if (rt_transfer_resident(dpu_set, tag, buffer_id, host_buffer, copy_bytes))
     return;
 #ifdef UPMEM_RT_STATS
   uint64_t t0 = upmemrt_now_ns();
@@ -204,10 +204,10 @@ void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
 // LRU, physically paying realloc + reload + rescatter per operator switch.
 
 /// One "static:"-tagged transfer known resident on a set: the site (tag),
-/// and the payload it holds, so a different payload over the same MRAM
-/// symbol is detected as an overwrite rather than skipped.
+/// the MRAM symbol it occupies, and the payload it holds.
 typedef struct rt_xfer_record {
   char tag[64];
+  char symbol[64];
   void *host;
   size_t bytes;
   struct rt_xfer_record *next;
@@ -290,25 +290,46 @@ static void rt_evict_all(void) {
 /// The transfer-side half of the cache: true when this static transfer's
 /// payload is already resident on the set, in which case the caller skips
 /// it. Recording happens here too, so the caller only ever asks.
+///
+/// A resident payload is a promise the compiler made: the graph allocation
+/// planned MRAM for every member's static operand, and a site's data is
+/// skipped on later inferences because nothing else was to be written over
+/// it. So a transfer -- static or not -- into a symbol that another static
+/// site holds resident on this set is not a cache miss but wrong code
+/// generation (two members given the same slot), and it is refused rather
+/// than let the earlier site silently compute on the later one's data.
 static int rt_transfer_resident(struct dpu_set_t *set, const char *tag,
-                                void *host, size_t bytes) {
-  if (!tag || strncmp(tag, "static:", 7) != 0)
-    return 0;
+                                const char *symbol, void *host, size_t bytes) {
   rt_cache_entry *e = rt_entry_of(set);
   if (!e)
+    return 0;
+  const int isStatic = tag && strncmp(tag, "static:", 7) == 0;
+  for (rt_xfer_record *r = e->xfers; r; r = r->next) {
+    if (symbol && strncmp(r->symbol, symbol, sizeof(r->symbol)) == 0 &&
+        !(isStatic && strncmp(r->tag, tag, sizeof(r->tag)) == 0)) {
+      fprintf(stderr,
+              "upmemrt: transfer '%s' writes MRAM symbol '%s', which site "
+              "'%s' holds resident on the same DPU set: the code generator "
+              "gave two members one slot\n",
+              tag ? tag : "(untagged)", symbol, r->tag);
+      abort();
+    }
+  }
+  if (!isStatic)
     return 0;
   for (rt_xfer_record *r = e->xfers; r; r = r->next)
     if (strncmp(r->tag, tag, sizeof(r->tag)) == 0) {
       if (r->host == host && r->bytes == bytes)
         return 1;
-      // Same site, different payload (another member's weights over the
-      // same symbol): run the transfer and remember the new occupant.
+      // Same site, different payload (the host re-materialised its static
+      // operand): run the transfer and remember the new occupant.
       r->host = host;
       r->bytes = bytes;
       return 0;
     }
   rt_xfer_record *r = (rt_xfer_record *)calloc(1, sizeof(rt_xfer_record));
   snprintf(r->tag, sizeof(r->tag), "%s", tag);
+  snprintf(r->symbol, sizeof(r->symbol), "%s", symbol ? symbol : "");
   r->host = host;
   r->bytes = bytes;
   r->next = e->xfers;
