@@ -1,5 +1,6 @@
 #include "cinm-mlir/Conversion/CnmToUPMEM/CnmToUPMEM.h"
 #include "cinm-mlir/Conversion/CommonPatterns.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmWorkgroupTypeInterface.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmScatterMap.h"
@@ -184,11 +185,13 @@ convertCnmGatherToUpmem(RewriterBase &rewriter, cnm::GatherOp op,
   return success();
 }
 
+/// `slot` is the member's slot of a slotted resident buffer (see
+/// residencySlotOf), null when the buffer is not slotted.
 static LogicalResult
 convertCnmScatterToUpmem(RewriterBase &rewriter, cnm::ScatterOp op,
                          bool sharedAcrossTasklets,
                          TypedValue<upmem::DeviceHierarchyType> hierarchy,
-                         StringAttr refToBuffer, unsigned id) {
+                         StringAttr refToBuffer, unsigned id, Value slot) {
 
   rewriter.setInsertionPoint(op);
   const Value tensor = op.getInput();
@@ -211,8 +214,7 @@ convertCnmScatterToUpmem(RewriterBase &rewriter, cnm::ScatterOp op,
       rewriter, op->getLoc(), inputAsMemref, refToBuffer,
       op.getTransferCountInItems() / perLeaf,
       keepTaskletDimAffineMapCnmToUpmem(map, bufferTy), hierarchy,
-      blocksPerDpu(map, bufferTy, numTasklets, sharedAcrossTasklets),
-      /*slot=*/Value());
+      blocksPerDpu(map, bufferTy, numTasklets, sharedAcrossTasklets), slot);
   // The host value, not the cast of it: a cast is not one of the definitions
   // the staticness derivation walks through.
   labelTransfer(scatter, op.getHostValue(), id);
@@ -235,25 +237,42 @@ static bool isWramShared(TypedValue<MemRefType> wramBuffer) {
   return isa_and_nonnull<upmem::StaticAllocOp>(wramBuffer.getDefiningOp());
 }
 
-// The slice of `mramBuf` belonging to the calling tasklet, shaped like
-// `tileTy`. When the MRAM buffer carries a leading tasklet dimension (i.e. it
-// is not broadcast over threads, see isMramBroadcastOverThreads) that is a
-// subview indexed by the tasklet id; otherwise every tasklet sees the whole
-// buffer and there is nothing to slice.
-static Value getTaskletSlice(RewriterBase &rewriter, Location loc,
-                             upmem::StaticAllocOp mramBuf, MemRefType tileTy) {
-  auto mramBufTy = mramBuf.getBuffer().getType();
-  if (mramBufTy.getRank() != tileTy.getRank() + 1)
-    return mramBuf.getBuffer();
+// The number of leading dimensions of a slotted buffer that hold the group's
+// resident copies: one, or none for an unslotted buffer.
+static int64_t slotDimsOf(upmem::StaticAllocOp mramBuf) {
+  return mramBuf.getNumSlots() > 1 ? 1 : 0;
+}
 
-  auto taskletId = upmem::TaskletDimOp::create(rewriter, loc);
+// The slice of `mramBuf` belonging to the calling tasklet, shaped like
+// `tileTy`. The MRAM buffer may carry two leading dimensions on top of the
+// tile's: the member's slot when the buffer holds a group's resident copies
+// (see residencySlotOf), and the tasklet when the buffer is not broadcast
+// over threads (see isMramBroadcastOverThreads). Each one present is indexed
+// away -- the slot by `slot`, the tasklet by its id; with neither, every
+// tasklet sees the whole buffer and there is nothing to slice.
+static Value getTaskletSlice(RewriterBase &rewriter, Location loc,
+                             upmem::StaticAllocOp mramBuf, MemRefType tileTy,
+                             Value slot) {
+  auto mramBufTy = mramBuf.getBuffer().getType();
+  const int64_t slotDims = slotDimsOf(mramBuf);
+  const int64_t taskletDims = mramBufTy.getRank() - slotDims - tileTy.getRank();
+  assert((taskletDims == 0 || taskletDims == 1) &&
+         "an MRAM buffer is its tile plus at most a slot and a tasklet dim");
+  assert((slotDims == 0 || slot) && "a slotted buffer needs the slot index");
+  if (slotDims == 0 && taskletDims == 0)
+    return mramBuf.getBuffer();
 
   SmallVector<OpFoldResult, 4> offsets(mramBufTy.getRank(),
                                        rewriter.getIndexAttr(0));
-  offsets[0] = taskletId.getResult();
-
   SmallVector<OpFoldResult, 4> sizes;
-  sizes.push_back(rewriter.getIndexAttr(1));
+  if (slotDims) {
+    offsets[0] = slot;
+    sizes.push_back(rewriter.getIndexAttr(1));
+  }
+  if (taskletDims) {
+    offsets[slotDims] = upmem::TaskletDimOp::create(rewriter, loc).getResult();
+    sizes.push_back(rewriter.getIndexAttr(1));
+  }
   for (auto size : tileTy.getShape())
     sizes.push_back(rewriter.getIndexAttr(size));
 
@@ -267,7 +286,8 @@ static Value getTaskletSlice(RewriterBase &rewriter, Location loc,
   MemRefType viewType = MemRefType::get(
       tileTy.getShape(), tileTy.getElementType(),
       rewriter.getAttr<StridedLayoutAttr>(
-          ShapedType::kDynamic, ArrayRef<long>(baseStrides).drop_front()),
+          ShapedType::kDynamic,
+          ArrayRef<long>(baseStrides).drop_front(slotDims + taskletDims)),
       mramBufTy.getMemorySpace());
 
   return memref::SubViewOp::create(rewriter, loc, viewType, mramBuf.getBuffer(),
@@ -287,23 +307,32 @@ static int64_t dmaGranuleBits(cnm::CnmAcceleratorAttrInterface accelerator,
 
 static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
                            upmem::StaticAllocOp mramBuf,
-                           TypedValue<MemRefType> wramBuffer) {
+                           TypedValue<MemRefType> wramBuffer, Value slot) {
 
   auto mramBufTy = mramBuf.getBuffer().getType();
   auto wramBufTy = wramBuffer.getType();
   // The MRAM buffer has an extra leading tasklet dimension whenever it isn't
-  // itself broadcast over threads (see isMramBroadcastOverThreads).
-  bool mramHasTaskletDim = mramBufTy.getRank() == wramBufTy.getRank() + 1;
+  // itself broadcast over threads (see isMramBroadcastOverThreads), on top
+  // of the slot dimension of a slotted buffer.
+  const int64_t slotDims = slotDimsOf(mramBuf);
+  bool mramHasTaskletDim =
+      mramBufTy.getRank() == wramBufTy.getRank() + 1 + slotDims;
+  // What this tasklet moves: its own slice, or the member's slot, or the
+  // whole buffer when there is neither to index.
+  Value mramView =
+      (mramHasTaskletDim || slotDims)
+          ? getTaskletSlice(rewriter, loc, mramBuf, wramBufTy, slot)
+          : mramBuf.getBuffer();
   Value mramBufToScatter;
 
   Operation *insertionPointReset = nullptr;
   if (mramHasTaskletDim) {
-    mramBufToScatter = getTaskletSlice(rewriter, loc, mramBuf, wramBufTy);
+    mramBufToScatter = mramView;
   } else if (isWramShared(wramBuffer)) {
     auto taskletId = upmem::TaskletDimOp::create(rewriter, loc);
     // MRAM buffer corresponds exactly to WRAM buffer, and WRAM is shared:
     // this is a full broadcast (every tasklet reads the same WRAM copy).
-    mramBufToScatter = mramBuf.getBuffer();
+    mramBufToScatter = mramView;
 
     // In that case we need to make only thread 0 call
     // for the transfer
@@ -337,7 +366,7 @@ static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
     assert(toWram && "a broadcast MRAM buffer should never be an output "
                      "(outputs always have a gather, disqualifying MRAM "
                      "broadcast -- see isMramBroadcastOverThreads)");
-    mramBufToScatter = mramBuf.getBuffer();
+    mramBufToScatter = mramView;
   }
 
   if (toWram)
@@ -439,6 +468,26 @@ static LogicalResult lowerBodyStagingOps(RewriterBase &rewriter,
 /// IsolatedFromAbove boundary: a value from outside such a region (the
 /// host function of a trial module, say) is not usable inside it, however
 /// well its shape matches.
+/// The residency slot this launch's member holds in its graph-allocation
+/// group and the group's width, from the stamp on the enclosing compute
+/// block (cinm.graph_alloc, GraphInference); {0, 1} without one -- a block
+/// that was never allocated as part of a graph, or a trial lowering, which
+/// profiles one member and one slot.
+static std::pair<int64_t, int64_t> residencySlotOf(cnm::LaunchOp launch) {
+  auto block = launch->getParentOfType<cinm::ComputeBlockOp>();
+  if (!block)
+    return {0, 1};
+  auto alloc =
+      block->getAttrOfType<DictionaryAttr>(cinm::CinmDialect::GRAPH_ALLOC_NAME);
+  if (!alloc)
+    return {0, 1};
+  auto slot = alloc.getAs<IntegerAttr>("slot");
+  auto slots = alloc.getAs<IntegerAttr>("slots");
+  if (!slot || !slots)
+    return {0, 1};
+  return {slot.getInt(), slots.getInt()};
+}
+
 static FailureOr<Value> findForwardedWorkgroup(cnm::LaunchOp launch,
                                                ArrayRef<int64_t> wgShape) {
   for (Block *block = launch->getBlock(); block;) {
@@ -513,8 +562,8 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
     hierarchy = upmem::AllocDPUsOp::create(rewriter, wgAlloc->getLoc(), upmemTy)
                     .getResult();
   }
-  upmem::LoadProgramOp::create(rewriter, wgAlloc->getLoc(), *programPath,
-                               hierarchy);
+  auto loadProgram = upmem::LoadProgramOp::create(rewriter, wgAlloc->getLoc(),
+                                                  *programPath, hierarchy);
 
   llvm::MapVector<Value, upmem::StaticAllocOp> buffersToMramBuf;
   // llvm::MapVector<Value, upmem::StaticAllocOp> buffersToSharedWramBuf;
@@ -540,6 +589,61 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       rewriter.getAttr<upmem::DpuMemSpaceAttr>(upmem::DpuMemSpace::MRAM);
   auto wramMemspaceAttr =
       rewriter.getAttr<upmem::DpuMemSpaceAttr>(upmem::DpuMemSpace::WRAM);
+
+  // Residency slots. When the graph allocation grouped this launch's member
+  // with others on one set, each member's static operands live in their own
+  // slot of a shared, `slots`-wide MRAM buffer (residencySlotOf), and the
+  // kernel selects the slot at run time: the host broadcasts the member's
+  // slot index into a small WRAM symbol the program reads once at entry.
+  // The constant travels rather than being baked into the program so that
+  // the members' kernels stay identical and --upmem-dedup-kernels keeps one
+  // program per class.
+  const auto [residencySlot, residencySlots] = residencySlotOf(launch);
+  llvm::DenseSet<Value> staticBuffers;
+  for (auto user : launch.getWg().getUsers())
+    if (auto scatter = llvm::dyn_cast_or_null<cnm::ScatterOp>(user))
+      if (cinm::isStaticValue(scatter.getHostValue()))
+        staticBuffers.insert(scatter.getBuffer());
+  const bool slotted = residencySlots > 1 && !staticBuffers.empty();
+  Value hostSlot;   // the slot, as an index on the host: the scatters' operand
+  Value kernelSlot; // the slot, as an index inside the program
+  if (slotted) {
+    auto slotTy =
+        MemRefType::get({2}, rewriter.getI32Type(), MemRefLayoutAttrInterface{},
+                        wramMemspaceAttr);
+    auto slotSym = upmem::StaticAllocOp::create(
+        rewriter, launch->getLoc(), slotTy, upmem::DpuMemSpace::WRAM, "slot",
+        /*noinit=*/true);
+    dpuProgramSymTable.insert(slotSym);
+    rewriter.setInsertionPointAfter(slotSym);
+    Value zero = arith::ConstantIndexOp::create(rewriter, launch->getLoc(), 0);
+    Value slotI32 = memref::LoadOp::create(rewriter, launch->getLoc(),
+                                           slotSym.getBuffer(), zero);
+    kernelSlot = arith::IndexCastOp::create(rewriter, launch->getLoc(),
+                                            rewriter.getIndexType(), slotI32);
+
+    // On the host, right after the program load: ahead of every scatter,
+    // which is where the slot is consumed. Two i32 rather than one: a
+    // broadcast moves whole DMA granules.
+    rewriter.setInsertionPointAfter(loadProgram);
+    hostSlot = arith::ConstantIndexOp::create(rewriter, launch->getLoc(),
+                                              residencySlot);
+    auto hostSlotBuf =
+        memref::AllocaOp::create(rewriter, launch->getLoc(),
+                                 MemRefType::get({2}, rewriter.getI32Type()));
+    Value hostZero =
+        arith::ConstantIndexOp::create(rewriter, launch->getLoc(), 0);
+    Value slotValue = arith::ConstantOp::create(
+        rewriter, launch->getLoc(),
+        rewriter.getI32IntegerAttr(static_cast<int32_t>(residencySlot)));
+    memref::StoreOp::create(rewriter, launch->getLoc(), slotValue, hostSlotBuf,
+                            hostZero);
+    auto broadcast = upmem::BroadcastOp::create(
+        rewriter, launch->getLoc(), hostSlotBuf, slotSym.getSymNameAttr(),
+        hierarchy, /*slot=*/Value());
+    labelTransfer(broadcast, hostSlotBuf, nextTransferId++);
+    rewriter.setInsertionPointToStart(&dpuProgram.getBody().front());
+  }
 
   for (auto user : launch.getWg().getUsers()) {
     if (auto alloc = llvm::dyn_cast_or_null<cnm::DeclareBufferOp>(user)) {
@@ -633,6 +737,12 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
         // buffer is broadcasted.
         bufShape.insert(bufShape.begin(), upmemTy.getNumTaskletsPerDpu());
       }
+      // A static operand of a grouped member: one slot per member, ahead of
+      // everything else.
+      const bool bufferSlotted =
+          slotted && staticBuffers.contains(alloc.getResult());
+      if (bufferSlotted)
+        bufShape.insert(bufShape.begin(), residencySlots);
       (void)memrefTy;
 
       memrefTy = MemRefType::get(bufShape, bufferType.getElementType(),
@@ -641,6 +751,8 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       auto mrambuf = upmem::StaticAllocOp::create(
           rewriter, alloc->getLoc(), memrefTy, upmem::DpuMemSpace::MRAM, "buf",
           opts.useMramNoInit);
+      if (bufferSlotted)
+        mrambuf.setSlotsAttr(rewriter.getI64IntegerAttr(residencySlots));
       dpuProgramSymTable.insert(mrambuf); // this renames it to a unique name
       buffersToMramBuf[alloc.getResult()] = mrambuf;
     }
@@ -656,13 +768,14 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       // per-tasklet leading dimension (isMramBroadcastOverThreads). This is
       // independent of whether WRAM ends up shared.
       bool sharedAcrossTasklets =
-          alloc && alloc.getBuffer().getType().getRank() ==
+          alloc && alloc.getBuffer().getType().getRank() - slotDimsOf(alloc) ==
                        static_cast<int64_t>(
                            scatter.getBuffer().getType().getShape().size());
 
       if (!alloc || failed(convertCnmScatterToUpmem(
                         rewriter, scatter, sharedAcrossTasklets, hierarchy,
-                        alloc.getSymNameAttr(), nextTransferId++))) {
+                        alloc.getSymNameAttr(), nextTransferId++,
+                        slotDimsOf(alloc) ? hostSlot : Value()))) {
         return failure();
       }
     }
@@ -692,7 +805,8 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       // The body computes on MRAM: bind it to this tasklet's slice.
       mapping.map(memref, getTaskletSlice(rewriter, cnmBuf.getLoc(),
                                           buffersToMramBuf[cnmBuf],
-                                          cast<MemRefType>(memref.getType())));
+                                          cast<MemRefType>(memref.getType()),
+                                          kernelSlot));
       continue;
     }
     if (pooledWritebackBuffers.contains(cnmBuf)) {
@@ -704,7 +818,8 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
           getTaskletSlice(rewriter, cnmBuf.getLoc(),
                           cast<upmem::StaticAllocOp>(
                               buffersToWramBufValue[cnmBuf].getDefiningOp()),
-                          cast<MemRefType>(memref.getType())));
+                          cast<MemRefType>(memref.getType()),
+                          /*slot=*/Value()));
       continue;
     }
     auto wrambuf = buffersToWramBufValue.lookup(cnmBuf);
@@ -717,7 +832,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
     if (mramLevelBuffers.contains(buf))
       continue;
     auto wramBuf = buffersToWramBufValue[buf];
-    createTransfer(rewriter, true, buf.getLoc(), mramBuf, wramBuf);
+    createTransfer(rewriter, true, buf.getLoc(), mramBuf, wramBuf, kernelSlot);
     rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
   }
 
@@ -732,7 +847,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
     auto wramBuf = buffersToWramBufValue[buf];
     auto mramBuf = buffersToMramBuf[buf];
 
-    createTransfer(rewriter, false, buf.getLoc(), mramBuf, wramBuf);
+    createTransfer(rewriter, false, buf.getLoc(), mramBuf, wramBuf, kernelSlot);
     rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
   }
 

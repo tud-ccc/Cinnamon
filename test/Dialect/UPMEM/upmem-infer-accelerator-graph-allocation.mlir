@@ -57,14 +57,26 @@ func.func @qk(%Wq: tensor<256x256xi32> {cinm.static}, %Wk: tensor<256x256xi32> {
     -> (tensor<256xi32>, tensor<256xi32>)
     attributes {cinm.available_platforms = [#upmem]} {
   // CHECK: cinm.compute_block on accelerator #upmem.array<[[SHAPE:[0-9x]+]],
+  // Under latency the two members share one set, so their weights sit side
+  // by side in one slotted buffer: each member broadcasts its slot index for
+  // the program to read and scatters its weight into its own slot.
+  // LAT: upmem.broadcast %{{.*}} onto @slot of
+  // LAT: upmem.scatter_on_array %{{.*}} onto @[[BUF:buf_[0-9]+]] slot %c0 of
   %q = cinm.compute -> tensor<256xi32> {
     %g = cinm.op.gemv %Wq, %x : tensor<256x256xi32>, tensor<256xi32> -> tensor<256xi32>
     cinm.yield %g : tensor<256xi32>
   }
   // CHECK: cinm.compute_block on accelerator #upmem.array<[[SHAPE]],
+  // LAT: upmem.broadcast %{{.*}} onto @slot of
+  // LAT: upmem.scatter_on_array %{{.*}} onto @[[BUF]] slot %c1 of
   %k = cinm.compute -> tensor<256xi32> {
     %g = cinm.op.gemv %Wk, %x : tensor<256x256xi32>, tensor<256xi32> -> tensor<256xi32>
     cinm.yield %g : tensor<256xi32>
   }
   return %q, %k : tensor<256xi32>, tensor<256xi32>
 }
+
+// The program the two members share declares the weight buffer with a slot
+// per member, and reads its slot index from the broadcast symbol.
+// LAT: upmem.static_alloc @slot(wram) noinit : memref<2xi32, #upmem.wram>
+// LAT: upmem.static_alloc @[[BUF]](mram) noinit slots 2 : memref<2x
