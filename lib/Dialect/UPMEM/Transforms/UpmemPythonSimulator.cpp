@@ -61,6 +61,12 @@ struct DpuTranslator {
   /// translated program is truncated at that loop, so its cost is not a cost
   /// at all and the caller must refuse it rather than report it.
   bool unresolvedTripCount = false;
+  /// The first op with results that has no translation. A value left
+  /// unmapped silently takes every op downstream of it out of the price --
+  /// an unhandled `arith.extsi` used to drop the multiply, the add and the
+  /// store of every i8 kernel, pricing it at its loads alone -- so an unknown
+  /// op refuses the program instead, like an unresolved trip count.
+  std::string unsupportedOp;
 
   explicit DpuTranslator(ProgramBuilder &b) : builder(b) {}
 
@@ -303,13 +309,60 @@ struct DpuTranslator {
                         ivIndexedIn(op.getIndices()));
   }
 
-  void translateBinArith(Value result, Value lhs, Value rhs, ArithOp op) {
+  void translateBinArith(Value result, Value lhs, Value rhs, ArithOp op,
+                         DType dtype) {
     auto lit = val_map.find(lhs);
     auto rit = val_map.find(rhs);
     if (lit == val_map.end() || rit == val_map.end())
       return;
-    val_map[result] = builder.createArith(op, mlirTypeToDtype(result.getType()),
-                                          lit->second, rit->second);
+    val_map[result] = builder.createArith(op, dtype, lit->second, rit->second);
+  }
+
+  void translateBinArith(Value result, Value lhs, Value rhs, ArithOp op) {
+    translateBinArith(result, lhs, rhs, op, mlirTypeToDtype(result.getType()));
+  }
+
+  /// A type conversion costs nothing on the DPU: a sign extension is folded
+  /// into the load or the multiply (`lbs`, `mul_sl_sl`), an index cast is a
+  /// no-op on a 32-bit machine. The result stands for the same value.
+  void translateAlias(Value from, Value to) {
+    auto it = val_map.find(from);
+    if (it != val_map.end())
+      val_map[to] = it->second;
+  }
+
+  /// The integer type the operand was extended from, when `v` is a sign or
+  /// zero extension of a type of at most 16 bits; the operand's own type
+  /// otherwise.
+  static IntegerType narrowSource(Value v) {
+    Value src = v;
+    if (auto ext = v.getDefiningOp<arith::ExtSIOp>())
+      src = ext.getIn();
+    else if (auto ext = v.getDefiningOp<arith::ExtUIOp>())
+      src = ext.getIn();
+    auto ty = dyn_cast<IntegerType>(src.getType());
+    if (ty && ty.getWidth() <= 16)
+      return ty;
+    return dyn_cast<IntegerType>(v.getType());
+  }
+
+  /// A 32-bit multiply is a library call on the DPU, but one whose operands
+  /// are both extended from 8 or 16 bits is a single `mul_sl_sl`-class
+  /// instruction: the DPU compiler sees through the extensions. Price it at
+  /// the wider source type, so an i8 x i8 -> i32 kernel is not charged the
+  /// call.
+  DType mulDtype(arith::MulIOp op) {
+    IntegerType l = narrowSource(op.getLhs()), r = narrowSource(op.getRhs());
+    auto resTy = dyn_cast<IntegerType>(op.getType());
+    if (!l || !r || !resTy || l.getWidth() > 16 || r.getWidth() > 16)
+      return mlirTypeToDtype(op.getType());
+    bool anySigned = op.getLhs().getDefiningOp<arith::ExtSIOp>() ||
+                     op.getRhs().getDefiningOp<arith::ExtSIOp>() ||
+                     l.isSigned() || r.isSigned();
+    unsigned w = std::max(l.getWidth(), r.getWidth());
+    if (w <= 8)
+      return anySigned ? DType::I8 : DType::U8;
+    return anySigned ? DType::I16 : DType::U16;
   }
 
   // Detect reduction: for iter_args(%acc = %init) { %s = addf %acc, %compute;
@@ -454,7 +507,8 @@ struct DpuTranslator {
     else if (auto o = dyn_cast<arith::MulFOp>(&op))
       translateBinArith(o.getResult(), o.getLhs(), o.getRhs(), ArithOp::MUL);
     else if (auto o = dyn_cast<arith::MulIOp>(&op))
-      translateBinArith(o.getResult(), o.getLhs(), o.getRhs(), ArithOp::MUL);
+      translateBinArith(o.getResult(), o.getLhs(), o.getRhs(), ArithOp::MUL,
+                        mulDtype(o));
     else if (auto o = dyn_cast<arith::SubFOp>(&op))
       translateBinArith(o.getResult(), o.getLhs(), o.getRhs(), ArithOp::SUB);
     else if (auto o = dyn_cast<arith::SubIOp>(&op))
@@ -465,14 +519,42 @@ struct DpuTranslator {
       translateBinArith(o.getResult(), o.getLhs(), o.getRhs(), ArithOp::DIV);
     else if (auto o = dyn_cast<arith::DivSIOp>(&op))
       translateBinArith(o.getResult(), o.getLhs(), o.getRhs(), ArithOp::DIV);
+    else if (auto o = dyn_cast<arith::RemUIOp>(&op))
+      translateBinArith(o.getResult(), o.getLhs(), o.getRhs(), ArithOp::DIV);
+    else if (auto o = dyn_cast<arith::RemSIOp>(&op))
+      translateBinArith(o.getResult(), o.getLhs(), o.getRhs(), ArithOp::DIV);
+    else if (isa<arith::ExtSIOp, arith::ExtUIOp, arith::TruncIOp,
+                 arith::IndexCastOp, arith::IndexCastUIOp, arith::BitcastOp>(
+                 &op))
+      translateAlias(op.getOperand(0), op.getResult(0));
+    // A compare is one ALU instruction on the operands' width; the DPU has
+    // no separate flag-setting cost. The i1 result must not pick the type,
+    // which would fall through to I64.
+    else if (auto o = dyn_cast<arith::CmpIOp>(&op))
+      translateBinArith(o.getResult(), o.getLhs(), o.getRhs(), ArithOp::SUB,
+                        mlirTypeToDtype(o.getLhs().getType()));
+    // A select is a conditional move: one instruction on the chosen values.
+    else if (auto o = dyn_cast<arith::SelectOp>(&op))
+      translateBinArith(o.getResult(), o.getTrueValue(), o.getFalseValue(),
+                        ArithOp::ADD);
+    // Shifts, bit operations and min/max are single ALU instructions too.
+    else if (isa<arith::AndIOp, arith::OrIOp, arith::XOrIOp, arith::ShLIOp,
+                 arith::ShRUIOp, arith::ShRSIOp, arith::MinSIOp, arith::MaxSIOp,
+                 arith::MinUIOp, arith::MaxUIOp>(&op))
+      translateBinArith(op.getResult(0), op.getOperand(0), op.getOperand(1),
+                        ArithOp::ADD);
     else if (auto o = dyn_cast<scf::ForOp>(&op))
       translateFor(o);
     else if (auto o = dyn_cast<scf::IfOp>(&op))
       translateIf(o);
     else if (auto o = dyn_cast<upmem::BarrierOp>(&op))
       builder.createBarrier();
-    // todo add remui, cmpi
-    // others → silently skip
+    else if (op.getNumResults() > 0 && unsupportedOp.empty()) {
+      unsupportedOp = op.getName().getStringRef().str();
+      LLVM_DEBUG(llvm::dbgs() << "[upmem-cpp-sim] no translation for " << op
+                              << "; refusing to price this kernel\n");
+    }
+    // Ops without results and without a case (a yield, a free) cost nothing.
   }
 
   void translateProgram(DpuProgramOp prog) {
@@ -554,6 +636,13 @@ struct CppSimulator : UpmemSimulator {
       if (tr.unresolvedTripCount)
         return SimCost::forKernel(std::numeric_limits<double>::infinity(),
                                   "unresolved-trip-count");
+      if (!tr.unsupportedOp.empty()) {
+        waitFor.emitWarning()
+            << "the kernel simulator has no translation for '"
+            << tr.unsupportedOp << "'; the program is not priced";
+        return SimCost::forKernel(std::numeric_limits<double>::infinity(),
+                                  "unsupported-op");
+      }
 
       if (!dumpDir.empty()) {
         llvm::StringRef name;
