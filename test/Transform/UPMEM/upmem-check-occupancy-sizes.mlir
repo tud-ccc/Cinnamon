@@ -19,7 +19,7 @@ func.func @no_accelerator_in_scope() {
 }
 
 module @kernels {
-  // 8 tasklets x (1024 reserve + 256 of private WRAM) = 10240 bytes, within
+  // 8 tasklets x (256 reserve + 256 of private WRAM) = 4096 bytes, within
   // the 16384 the first RUN line allows.
   // CHECK: upmem.dpu_program @program
   upmem.dpu_program @program() tasklets(8) {

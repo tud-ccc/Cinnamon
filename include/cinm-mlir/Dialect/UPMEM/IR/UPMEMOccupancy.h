@@ -15,10 +15,17 @@
 #include "cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h"
 
 namespace mlir::upmem {
-/// Bytes reserved on every tasklet's stack for the runtime itself (locals,
-/// saved registers, the barrier structures) on top of what the kernel's own
-/// buffers need.
-constexpr int64_t kStackReserveBytes = 1024;
+/// Bytes reserved on every tasklet's stack on top of what the kernel's own
+/// buffers need: the callee-saved registers (32 bytes), main's frame, and the
+/// spill slots the DPU compiler adds. The SDK's stack analyzer puts that at
+/// 0 to 64 bytes over every kernel of the PrIM suite and the model kernels
+/// now that --upmem-register-tile-loops keeps operand vectors out of the
+/// spill area; before it, a fully unrolled reduction spilled up to 512 bytes,
+/// which is what the previous reserve of 1024 was covering. The runtime's own
+/// WRAM (software cache, barrier, .data) is charged separately, see
+/// kRuntimeWramBytes. Set CINM_DPU_STACK_CHECK when compiling the kernels to
+/// have cinm-compile-dpu verify the linked binary against this bound.
+constexpr int64_t kStackReserveBytes = 256;
 
 /// Bytes one tasklet's stack needs: a fixed reserve for the runtime, plus
 /// every `upmem.pwram_alloc` in the program, which the translator emits as a
