@@ -58,16 +58,19 @@ func.func @qk(%Wq: tensor<256x256xi32> {cinm.static}, %Wk: tensor<256x256xi32> {
     attributes {cinm.available_platforms = [#upmem]} {
   // CHECK: cinm.compute_block on accelerator #upmem.array<[[SHAPE:[0-9x]+]],
   // Under latency the two members share one set, so their weights sit side
-  // by side in one slotted buffer: each member broadcasts its slot index for
-  // the program to read and scatters its weight into its own slot.
-  // LAT: upmem.broadcast %{{.*}} onto @slot of
+  // by side in one slotted buffer: each member scatters its weight into its
+  // own slot. Both sit in the function body, so their launches alternate and
+  // the program tells them apart by counting: no slot index is transferred.
+  // LAT-SAME: slot = 0 : i64, slots = 2 : i64
+  // LAT-NOT: onto @slot
   // LAT: upmem.scatter_on_array %{{.*}} onto @[[BUF:buf_[0-9]+]] slot %c0 of
   %q = cinm.compute -> tensor<256xi32> {
     %g = cinm.op.gemv %Wq, %x : tensor<256x256xi32>, tensor<256xi32> -> tensor<256xi32>
     cinm.yield %g : tensor<256xi32>
   }
   // CHECK: cinm.compute_block on accelerator #upmem.array<[[SHAPE]],
-  // LAT: upmem.broadcast %{{.*}} onto @slot of
+  // LAT-SAME: slot = 1 : i64, slots = 2 : i64
+  // LAT-NOT: onto @slot
   // LAT: upmem.scatter_on_array %{{.*}} onto @[[BUF]] slot %c1 of
   %k = cinm.compute -> tensor<256xi32> {
     %g = cinm.op.gemv %Wk, %x : tensor<256x256xi32>, tensor<256xi32> -> tensor<256xi32>
@@ -77,6 +80,8 @@ func.func @qk(%Wq: tensor<256x256xi32> {cinm.static}, %Wk: tensor<256x256xi32> {
 }
 
 // The program the two members share declares the weight buffer with a slot
-// per member, and reads its slot index from the broadcast symbol.
-// LAT: upmem.static_alloc @slot(wram) noinit : memref<2xi32, #upmem.wram>
+// per member, and takes its slot from its launch count modulo the two.
 // LAT: upmem.static_alloc @[[BUF]](mram) noinit slots 2 : memref<2x
+// LAT: upmem.static_alloc @launch_count(wram) zeroinit : memref<4xi32, #upmem.wram>
+// LAT: arith.remui %{{.*}}, %c2
+// LAT-NOT: @slot(wram)

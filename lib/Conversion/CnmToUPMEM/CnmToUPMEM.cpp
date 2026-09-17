@@ -41,6 +41,7 @@
 #include <mlir/IR/PatternMatch.h>
 #include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/ValueRange.h>
+#include <mlir/Interfaces/LoopLikeInterface.h>
 #include <mlir/Support/LLVM.h>
 #include <mlir/Transforms/DialectConversion.h>
 
@@ -54,6 +55,7 @@ namespace {
 struct Opts {
   bool cinm1codegen = false;
   bool useMramNoInit = true;
+  bool launchCounterSlots = true;
 };
 
 template <typename T> T reduceMul(ArrayRef<T> arr) {
@@ -515,6 +517,95 @@ static FailureOr<Value> findForwardedWorkgroup(cnm::LaunchOp launch,
   return Value();
 }
 
+/// The count of launches on a set that its residency slots can be derived
+/// from on the device (see the residency slots in convertCnmLaunchToUpmem),
+/// from the `sequence` field of the block's graph-allocation stamp
+/// (GraphInference), where the whole program was in view: the launches on
+/// the set come in a fixed order, so the n-th launch since the program load
+/// is the launch at position `n mod period` of pass `n div period` over the
+/// members' block, and the pass number gives each enclosing loop's
+/// iteration.
+struct LaunchSequence {
+  int64_t position; ///< this launch's rank among the set's launches per pass
+  int64_t period;   ///< launches on the set per pass over the block
+  struct Loop {
+    int64_t lb, step, trip;
+    int64_t stride; ///< passes per iteration: the product of the inner trips
+    SmallVector<int64_t> operands; ///< block operands carrying the loop's IV
+  };
+  SmallVector<Loop> loops; ///< the enclosing loops, innermost first
+};
+
+/// The loop of `sequence` whose induction variable `index` is: an argument
+/// of `site` that carries it. Null for any other value.
+static const LaunchSequence::Loop *
+loopOf(const LaunchSequence &sequence, cinm::ComputeBlockOp site, Value index) {
+  auto arg = dyn_cast<BlockArgument>(index);
+  if (!arg || arg.getOwner()->getParentOp() != site)
+    return nullptr;
+  for (const LaunchSequence::Loop &loop : sequence.loops)
+    if (llvm::is_contained(loop.operands, arg.getArgNumber()))
+      return &loop;
+  return nullptr;
+}
+
+/// The sequence `launch` counts in; nullopt when its slots are broadcast
+/// instead: no stamp fixes the order of the set's launches, the set is not
+/// one forwarded into the block (a set allocated per launch is loaded per
+/// launch, which would restart the count), the block launches other than
+/// exactly once per pass, or a stacked operand's index is not an enclosing
+/// loop's induction variable.
+static std::optional<LaunchSequence> launchSequenceOf(cnm::LaunchOp launch,
+                                                      Value forwardedSet) {
+  auto site = launch->getParentOfType<cinm::ComputeBlockOp>();
+  if (!site || launch->getParentOp() != site)
+    return std::nullopt;
+  auto set = dyn_cast_or_null<BlockArgument>(forwardedSet);
+  if (!set || set.getOwner()->getParentOp() != site)
+    return std::nullopt;
+  // Converted launches included: a block with two launches has one of them
+  // converted by the time the other is looked at.
+  unsigned launches = 0;
+  site.getBody().walk([&](Operation *op) {
+    if (isa<cnm::LaunchOp, upmem::WaitForOp>(op))
+      ++launches;
+  });
+  if (launches != 1)
+    return std::nullopt;
+
+  auto alloc =
+      site->getAttrOfType<DictionaryAttr>(cinm::CinmDialect::GRAPH_ALLOC_NAME);
+  if (!alloc)
+    return std::nullopt;
+  auto slot = alloc.getAs<IntegerAttr>("slot");
+  auto slots = alloc.getAs<IntegerAttr>("slots");
+  auto stamp = alloc.getAs<DictionaryAttr>("sequence");
+  if (!slot || !slots || !stamp)
+    return std::nullopt;
+  LaunchSequence sequence{slot.getInt(), slots.getInt(), {}};
+  for (Attribute entry : stamp.getAs<ArrayAttr>("loops")) {
+    auto loop = cast<DictionaryAttr>(entry);
+    auto field = [&](StringRef name) {
+      return loop.getAs<IntegerAttr>(name).getInt();
+    };
+    sequence.loops.push_back(
+        {field("lb"), field("step"), field("trip"), field("stride"),
+         SmallVector<int64_t>(
+             loop.getAs<DenseI64ArrayAttr>("operands").asArrayRef())});
+  }
+
+  for (Operation *user : launch.getWg().getUsers()) {
+    auto scatter = dyn_cast<cnm::ScatterOp>(user);
+    if (!scatter || !cinm::isStaticValue(scatter.getHostValue()))
+      continue;
+    std::optional<cinm::StaticSlice> slice =
+        cinm::resolveStaticSlice(scatter.getHostValue());
+    if (slice && !loopOf(sequence, site, slice->index))
+      return std::nullopt;
+  }
+  return sequence;
+}
+
 static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
                                              RewriterBase &rewriter, Opts opts,
                                              SymbolTable rootModule,
@@ -555,6 +646,11 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   FailureOr<Value> forwarded = findForwardedWorkgroup(launch, wg);
   if (failed(forwarded))
     return failure();
+  // Whether this launch counts its residency slots on the device (see the
+  // residency slots below).
+  std::optional<LaunchSequence> sequence;
+  if (opts.launchCounterSlots)
+    sequence = launchSequenceOf(launch, *forwarded);
   TypedValue<upmem::DeviceHierarchyType> hierarchy;
   if (*forwarded) {
     hierarchy = cast<TypedValue<upmem::DeviceHierarchyType>>(*forwarded);
@@ -592,12 +688,26 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
 
   // Residency slots. When the graph allocation grouped this launch's member
   // with others on one set, each member's static operands live in their own
-  // slot of a shared, `slots`-wide MRAM buffer (residencySlotOf), and the
-  // kernel selects the slot at run time: the host broadcasts the member's
-  // slot index into a small WRAM symbol the program reads once at entry.
-  // The constant travels rather than being baked into the program so that
-  // the members' kernels stay identical and --upmem-dedup-kernels keeps one
-  // program per class.
+  // slot of a shared, `slots`-wide MRAM buffer, and the kernel selects the
+  // slot at run time. It learns the slot one of two ways.
+  //
+  // Counted (`sequence`, launchSequenceOf): the program keeps a count of its
+  // launches in WRAM -- zeroed by the load, incremented by every launch --
+  // and derives the slot from it: launch n is the launch at position `n mod
+  // period` of pass `n div period` over the block, and the pass number gives
+  // each enclosing loop's iteration. No transfer at all. The count is per
+  // tasklet so that no tasklet waits for another. This rests on the program
+  // being loaded once per set (--upmem-hoist-load-programs), since a load
+  // restarts the count; the runtime's load cache keeps it that way across
+  // inferences. Members are numbered by their position in the block, which
+  // is the number the device can reconstruct.
+  //
+  // Broadcast (no sequence: the launches on the set are not fixed by the
+  // program text): the host broadcasts the member's slot index
+  // (residencySlotOf) into a small WRAM symbol the program reads once at
+  // entry. The constant travels rather than being baked into the program so
+  // that the members' kernels stay identical and --upmem-dedup-kernels
+  // keeps one program per class.
   //
   // A static operand that is a run-time-indexed slice of a stacked tensor
   // (cinm::resolveStaticSlice -- the layer's weight inside the layer loop)
@@ -606,10 +716,15 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   // index`. Slots are per buffer, since an operand the same on every
   // iteration (a table shared by the layers) has only the member factor.
   const auto [residencySlot, residencySlots] = residencySlotOf(launch);
+  const int64_t member = sequence ? sequence->position : residencySlot;
+  const int64_t members = sequence ? sequence->period : residencySlots;
+  auto site = launch->getParentOfType<cinm::ComputeBlockOp>();
   struct BufferSlot {
     Value host;   // the slot as an index on the host: the scatter's operand
     Value kernel; // the slot as an index inside the program
     int64_t slots;
+    int64_t slices;                   // slots per member: the stack's, or 1
+    const LaunchSequence::Loop *loop; // counted: the loop the stack index is
   };
   llvm::MapVector<Value, BufferSlot> bufferSlots;
   // On the host, right after the program load: ahead of every scatter,
@@ -622,17 +737,23 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
     std::optional<cinm::StaticSlice> slice =
         cinm::resolveStaticSlice(scatter.getHostValue());
     const int64_t slices = slice ? slice->slots : 1;
-    if (residencySlots * slices <= 1)
+    if (members * slices <= 1)
       continue;
+    const LaunchSequence::Loop *loop = nullptr;
+    if (slice && sequence) {
+      loop = loopOf(*sequence, site, slice->index);
+      assert(loop && "launchSequenceOf checked every stack index");
+    }
     Location loc = scatter.getLoc();
-    Value host = arith::ConstantIndexOp::create(rewriter, loc, residencySlot);
+    Value host = arith::ConstantIndexOp::create(rewriter, loc, member);
     if (slice) {
       Value stride = arith::ConstantIndexOp::create(rewriter, loc, slices);
       host = arith::AddIOp::create(
           rewriter, loc, arith::MulIOp::create(rewriter, loc, host, stride),
           slice->index);
     }
-    bufferSlots[scatter.getBuffer()] = {host, Value(), residencySlots * slices};
+    bufferSlots[scatter.getBuffer()] = {host, Value(), members * slices, slices,
+                                        loop};
   }
   auto hostSlotOf = [&](Value buffer) -> Value {
     auto it = bufferSlots.find(buffer);
@@ -642,7 +763,55 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
     auto it = bufferSlots.find(buffer);
     return it == bufferSlots.end() ? Value() : it->second.kernel;
   };
-  if (!bufferSlots.empty()) {
+  if (!bufferSlots.empty() && sequence) {
+    Location loc = launch->getLoc();
+    OpBuilder::InsertPoint hostPoint = rewriter.saveInsertionPoint();
+
+    rewriter.setInsertionPointToStart(&dpuProgram.getBody().front());
+    auto countTy =
+        MemRefType::get({upmemTy.getNumTaskletsPerDpu()}, rewriter.getI32Type(),
+                        MemRefLayoutAttrInterface{}, wramMemspaceAttr);
+    auto count = upmem::StaticAllocOp::create(
+        rewriter, loc, countTy, upmem::DpuMemSpace::WRAM, "launch_count",
+        /*noinit=*/false, /*zeroinit=*/true);
+    dpuProgramSymTable.insert(count);
+    rewriter.setInsertionPointAfter(count);
+    auto index = [&](int64_t value) -> Value {
+      return arith::ConstantIndexOp::create(rewriter, loc, value);
+    };
+    Value tasklet = upmem::TaskletDimOp::create(rewriter, loc);
+    Value n32 =
+        memref::LoadOp::create(rewriter, loc, count.getBuffer(), tasklet);
+    Value one =
+        arith::ConstantOp::create(rewriter, loc, rewriter.getI32IntegerAttr(1));
+    memref::StoreOp::create(rewriter, loc,
+                            arith::AddIOp::create(rewriter, loc, n32, one),
+                            count.getBuffer(), tasklet);
+    Value n =
+        arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), n32);
+    Value position =
+        arith::RemUIOp::create(rewriter, loc, n, index(sequence->period));
+    Value pass =
+        arith::DivUIOp::create(rewriter, loc, n, index(sequence->period));
+    for (auto &[buffer, entry] : bufferSlots) {
+      Value slot =
+          arith::MulIOp::create(rewriter, loc, position, index(entry.slices));
+      if (const LaunchSequence::Loop *loop = entry.loop) {
+        Value iteration = arith::RemUIOp::create(
+            rewriter, loc,
+            arith::DivUIOp::create(rewriter, loc, pass, index(loop->stride)),
+            index(loop->trip));
+        Value iv = arith::AddIOp::create(
+            rewriter, loc,
+            arith::MulIOp::create(rewriter, loc, iteration, index(loop->step)),
+            index(loop->lb));
+        slot = arith::AddIOp::create(rewriter, loc, slot, iv);
+      }
+      entry.kernel = slot;
+    }
+
+    rewriter.restoreInsertionPoint(hostPoint);
+  } else if (!bufferSlots.empty()) {
     // One WRAM word per slotted buffer, in a symbol padded to the DMA
     // granule (a broadcast moves whole granules); the program reads its
     // entries once at entry, the host fills and broadcasts them before the
@@ -951,7 +1120,9 @@ struct ConvertCnmToUPMEMPass
 
   void runOnOperation() final {
     Operation *rootOp = getOperation();
-    Opts opts{.cinm1codegen = cinm1Codegen, .useMramNoInit = !cinm1Codegen};
+    Opts opts{.cinm1codegen = cinm1Codegen,
+              .useMramNoInit = !cinm1Codegen,
+              .launchCounterSlots = launchCounterSlots};
 
     // Determine kernel module name: prefer per-op annotation, else option.
     std::string kmName = kernelModuleName;

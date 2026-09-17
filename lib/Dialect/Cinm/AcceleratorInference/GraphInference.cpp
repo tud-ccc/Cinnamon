@@ -180,6 +180,54 @@ static int64_t executionsOf(ComputeBlockOp block) {
   return executions;
 }
 
+/// The `sequence` field of a group member's stamp (read by the residency
+/// slots of CnmToUPMEM): the loops between the group's block and its
+/// function, innermost first, when the program text fixes the order the
+/// group's launches come in -- its members all in one basic block, so that a
+/// pass over it launches each member once, in stamp order, and every loop
+/// around that block with constant bounds, so that a launch's number gives
+/// each loop's iteration. `operands` lists the member's operands that carry
+/// the loop's induction variable. Null when the order is not fixed.
+static DictionaryAttr launchSequenceOf(Builder &builder, ComputeBlockOp member,
+                                       ArrayRef<ComputeBlockOp> group) {
+  for (ComputeBlockOp other : group)
+    if (other->getBlock() != member->getBlock())
+      return {};
+  SmallVector<Attribute> loops;
+  int64_t stride = 1;
+  for (Operation *op = member->getParentOp();
+       op && !isa<FunctionOpInterface>(op); op = op->getParentOp()) {
+    auto loop = dyn_cast<LoopLikeOpInterface>(op);
+    if (!loop)
+      return {};
+    auto constant = [](std::optional<OpFoldResult> bound) {
+      return bound ? getConstantIntValue(*bound) : std::nullopt;
+    };
+    std::optional<Value> iv = loop.getSingleInductionVar();
+    std::optional<int64_t> lb = constant(loop.getSingleLowerBound());
+    std::optional<int64_t> ub = constant(loop.getSingleUpperBound());
+    std::optional<int64_t> step = constant(loop.getSingleStep());
+    if (!iv || !lb || !ub || !step || *step <= 0 || *ub <= *lb)
+      return {};
+    const int64_t trip = (*ub - *lb + *step - 1) / *step;
+    SmallVector<int64_t> operands;
+    for (auto [k, operand] : llvm::enumerate(member.getOperands()))
+      if (operand == *iv)
+        operands.push_back(k);
+    loops.push_back(builder.getDictionaryAttr({
+        builder.getNamedAttr("lb", builder.getI64IntegerAttr(*lb)),
+        builder.getNamedAttr("step", builder.getI64IntegerAttr(*step)),
+        builder.getNamedAttr("trip", builder.getI64IntegerAttr(trip)),
+        builder.getNamedAttr("stride", builder.getI64IntegerAttr(stride)),
+        builder.getNamedAttr("operands",
+                             builder.getDenseI64ArrayAttr(operands)),
+    }));
+    stride *= trip;
+  }
+  return builder.getDictionaryAttr(
+      {builder.getNamedAttr("loops", builder.getArrayAttr(loops))});
+}
+
 SmallVector<ComputeGraph> collectComputeGraphs(Operation *root,
                                                StringRef platformName) {
   llvm::EquivalenceClasses<GraphKey> components;
@@ -774,11 +822,13 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
             alloc->groupOfNode[solveIndexOfNode[ni]];
   }
 
-  // Record what the solve decided about each block, on the block. Nothing
-  // reads it back: it is what lets the CSV dumps be read against the IR they
-  // describe -- which of 644 compute blocks is the class-12 outlier, which
-  // blocks share a device set. Host classes are stamped too, since "which
-  // ones fell back" is exactly the question the dumps leave open.
+  // Record what the solve decided about each block, on the block. The
+  // lowering reads the residency fields back (`slot`, `slots`, `sequence`:
+  // CnmToUPMEM's residency slots); the rest is what lets the CSV dumps be
+  // read against the IR they describe -- which of 644 compute blocks is the
+  // class-12 outlier, which blocks share a device set. Host classes are
+  // stamped too, since "which ones fell back" is exactly the question the
+  // dumps leave open.
   {
     Builder builder(loc.getContext());
     for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
@@ -786,14 +836,19 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
       // operands resident side by side: `slot` is the member's position in
       // that layout and `slots` its width, the k the allocator packed
       // (maxCoResidents). The lowering sizes the resident buffers by
-      // `slots` and lands each member's scatter in its own slot.
+      // `slots` and lands each member's scatter in its own slot. Members are
+      // numbered in block order, which is the order their launches come in.
       SmallVector<unsigned> groupSize, slotOfMember(blockClass.members.size());
+      SmallVector<SmallVector<ComputeBlockOp>> membersOfGroup;
       if (solveIndexOfClass[ci] >= 0)
         for (auto [mi, member] : llvm::enumerate(blockClass.members)) {
           unsigned gi = groupOfMember[ci][mi];
-          if (gi >= groupSize.size())
+          if (gi >= groupSize.size()) {
             groupSize.resize(gi + 1, 0);
+            membersOfGroup.resize(gi + 1);
+          }
           slotOfMember[mi] = groupSize[gi]++;
+          membersOfGroup[gi].push_back(member);
         }
       for (auto [mi, member] : llvm::enumerate(blockClass.members)) {
         SmallVector<NamedAttribute> fields{
@@ -809,6 +864,9 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
               "slot", builder.getI64IntegerAttr(slotOfMember[mi])));
           fields.push_back(builder.getNamedAttr(
               "slots", builder.getI64IntegerAttr(groupSize[gi])));
+          if (DictionaryAttr sequence =
+                  launchSequenceOf(builder, member, membersOfGroup[gi]))
+            fields.push_back(builder.getNamedAttr("sequence", sequence));
         }
         member->setAttr(CinmDialect::GRAPH_ALLOC_NAME,
                         builder.getDictionaryAttr(fields));

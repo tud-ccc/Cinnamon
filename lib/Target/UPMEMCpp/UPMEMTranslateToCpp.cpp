@@ -1466,7 +1466,7 @@ static LogicalResult printBufferDecl(CppEmitter &emitter,
     out << "[" << sizeInBytes << "]";
   }
   if (op.getZeroinit()) {
-    out << " {0}";
+    out << " = {0}";
   }
 
   out << "; // ";
