@@ -71,7 +71,11 @@ struct CinmAssignPlatformsPass
                 "vs device %.3g s",
                 verdict.work, verdict.staticBytes, verdict.dynamicBytes,
                 verdict.hostSeconds, verdict.deviceSeconds);
-            op->emitRemark()
+            // Anchored to the location, not the op: a diagnostic that
+            // carries the op prints it, and printing verifies and numbers
+            // the whole enclosing function first -- once per rejected op,
+            // that is quadratic in the program.
+            emitRemark(op->getLoc())
                 << "not offloaded: " << verdict.reason << " (" << terms << ")";
             continue;
           }

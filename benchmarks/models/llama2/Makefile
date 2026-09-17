@@ -10,10 +10,10 @@ CINM_OPT ?= cinm-opt
 OUT ?= .
 
 # llama2_110M and llama2_110M_fusedqkv are the f32 models of the RQ4 stacks;
-# llama2_110M_w8a8 and llama2_7B_w8a8 are the integer decode models of the
-# E2E subsection.
+# llama2_110M_w8a8, llama_3B_w8a8 and llama2_7B_w8a8 are the integer decode
+# models of the E2E subsection.
 NAME ?= llama2_110M
-E2E_MODELS := llama2_110M_w8a8 llama2_7B_w8a8
+E2E_MODELS := llama2_110M_w8a8 llama_3B_w8a8 llama2_7B_w8a8
 .DEFAULT_GOAL := $(OUT)/$(NAME)_buffered.mlir
 
 # The schedule is preloaded from a sidecar so the payload never carries
