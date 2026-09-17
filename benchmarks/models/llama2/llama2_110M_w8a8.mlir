@@ -46,9 +46,10 @@
 // 95 MB of i8 (and Q14 i32 tables) that stays resident on the device; the
 // caches (9.4 MB, i8) are per-call state.
 //
-// The layer loop and the per-head loop are unrolled by the schedule in
-// llama2_110M_w8a8.schedule.mlir (the front end preloads it), so that
-// --cinm-complete-compute-graph sees no compute op under a loop.
+// The per-head loop is unrolled by the schedule in
+// llama2_110M_w8a8.schedule.mlir (the front end preloads it); the layer
+// loop stays rolled, each layer's weight being the slice of its stack at
+// the loop index that the compute graph keeps resident for every layer.
 
 #upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 

@@ -54,9 +54,10 @@
 // device call, while wo is 10 MB and below it: this is the size at which a
 // layer is expected to split between the device and the host.
 //
-// The layer loop and the per-head loop are unrolled by the schedule in
-// llama_3B_w8a8.schedule.mlir (the front end preloads it), so that
-// --cinm-complete-compute-graph sees no compute op under a loop.
+// The per-head loop is unrolled by the schedule in
+// llama_3B_w8a8.schedule.mlir (the front end preloads it); the layer loop
+// stays rolled, each layer's weight being the slice of its stack at the
+// loop index that the compute graph keeps resident for every layer.
 
 #upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 

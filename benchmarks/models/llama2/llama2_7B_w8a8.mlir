@@ -53,9 +53,10 @@
 // MB: at these sizes streaming a weight from host DRAM costs more than a
 // device call, which is what makes this the decode model that offloads.
 //
-// The layer loop and the per-head loop are unrolled by the schedule in
-// llama2_7B_w8a8.schedule.mlir (the front end preloads it), so that
-// --cinm-complete-compute-graph sees no compute op under a loop.
+// The per-head loop is unrolled by the schedule in
+// llama2_7B_w8a8.schedule.mlir (the front end preloads it); the layer loop
+// stays rolled, each layer's weight being the slice of its stack at the
+// loop index that the compute graph keeps resident for every layer.
 
 #upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 

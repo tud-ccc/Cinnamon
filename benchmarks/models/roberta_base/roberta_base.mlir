@@ -91,8 +91,7 @@ func.func @roberta_base(
 
 	// ---- embeddings -------------------------------------------------------
 	// The two gathers move rows, they do not compute: keeping the cinm ops
-	// out of the loop bodies is what lets --cinm-complete-compute-graph see
-	// one connected graph after the layer loop is unrolled.
+	// out of their loop bodies keeps the compute graph to the encoder.
 	%emb_init = tensor.empty() : tensor<128x768xi8>
 
 	%we_g = scf.for %t = %c0 to %c128 step %c1 iter_args(%acc = %emb_init) -> (tensor<128x768xi8>) {
@@ -563,7 +562,10 @@ func.func @itanh(%x : tensor<768xi8>) -> tensor<768xi8> {
 // Unrolling
 //
 // The layer loop and the per-head loop carry {unroll_layers} / {unroll_heads}
-// and are fully unrolled by roberta_base.schedule.mlir, which the front end
-// preloads rather than embedding here: a payload that still carries its
-// schedule cannot reach host code generation. See that file.
+// for roberta_base.schedule.mlir, which the front end preloads rather than
+// embedding here: a payload that still carries its schedule cannot reach
+// host code generation. The schedule unrolls the head loop and keeps the
+// layer loop rolled, each layer's weights being slices of the static stacks
+// at the loop index that the compute graph keeps resident for every layer.
+// See that file.
 // ===========================================================================

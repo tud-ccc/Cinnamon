@@ -7,18 +7,18 @@
 // its schedule cannot be turned into host code. Preloading keeps the schedule
 // out of the module it rewrites.
 //
-// --cinm-complete-compute-graph can only connect the graph if no compute op
-// is left under a loop, so the layer loop and the per-head loop are fully
-// unrolled. The two embedding gathers stay rolled: they hold only slice ops.
-// Loops are matched by attribute rather than position, so adding a loop
-// elsewhere in the function does not silently retarget the unrolls.
+// The per-head loop is fully unrolled: its blocks read slices of Q, K and V
+// at constant offsets, which the graph needs as distinct members. The layer
+// loop stays rolled: each layer's weights are slices of the static stacks
+// at the loop index, which the compute graph treats as one block per kernel
+// that runs once per layer with every layer's weight resident
+// (resolveStaticSlice), so unrolling it would only multiply the host code
+// by the layer count. The two embedding gathers stay rolled too: they hold
+// only slice ops. Loops are matched by attribute rather than position, so
+// adding a loop elsewhere in the function does not silently retarget the
+// unroll.
 module attributes {transform.with_named_sequence} {
   transform.named_sequence @__transform_main(%root: !transform.any_op {transform.readonly}) {
-    %layer_loop = transform.structured.match ops{["scf.for"]}
-                attributes{unroll_layers} in %root
-        : (!transform.any_op) -> !transform.any_op
-    transform.loop.unroll %layer_loop { factor = 12 } : !transform.any_op
-
     %head_loop = transform.structured.match ops{["scf.for"]}
                 attributes{unroll_heads} in %root
         : (!transform.any_op) -> !transform.any_op
