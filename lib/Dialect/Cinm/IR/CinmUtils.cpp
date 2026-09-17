@@ -29,6 +29,31 @@ namespace mlir::cinm {
 /// amortisation opportunity and never correctness.
 static constexpr unsigned kStaticValueDepth = 24;
 
+/// `view` as a static slice (see resolveStaticSlice), whatever its source's
+/// staticness: a single-source view whose leading offset is the one
+/// run-time value, with a unit extent there and constant offsets, sizes and
+/// strides everywhere else.
+static std::optional<StaticSlice>
+matchSliceAtRuntimeIndex(OffsetSizeAndStrideOpInterface view) {
+  if (!view || view->getNumResults() != 1 || view->getNumOperands() != 2)
+    return std::nullopt;
+  ArrayRef<int64_t> offsets = view.getStaticOffsets();
+  if (offsets.empty() || !ShapedType::isDynamic(offsets.front()) ||
+      llvm::any_of(offsets.drop_front(), ShapedType::isDynamic))
+    return std::nullopt;
+  ArrayRef<int64_t> sizes = view.getStaticSizes();
+  if (sizes.front() != 1 || llvm::any_of(sizes, ShapedType::isDynamic) ||
+      llvm::any_of(view.getStaticStrides(), ShapedType::isDynamic))
+    return std::nullopt;
+  auto source = llvm::cast<ShapedType>(view->getOperand(0).getType());
+  if (!source.hasRank() || source.isDynamicDim(0))
+    return std::nullopt;
+  auto index = llvm::dyn_cast<Value>(view.getMixedOffsets().front());
+  if (!index)
+    return std::nullopt;
+  return StaticSlice{view->getOperand(0), index, source.getDimSize(0)};
+}
+
 static bool isStaticValueImpl(Value value, unsigned depth) {
   if (depth == 0)
     return false;
@@ -68,6 +93,12 @@ static bool isStaticValueImpl(Value value, unsigned depth) {
         llvm::none_of(view.getStaticSizes(), ShapedType::isDynamic) &&
         llvm::none_of(view.getStaticStrides(), ShapedType::isDynamic)) {
       value = view->getOperand(0);
+      continue;
+    }
+    // One of a known number of slices of the source, selected at run time:
+    // static in the residency sense (see resolveStaticSlice).
+    if (std::optional<StaticSlice> slice = matchSliceAtRuntimeIndex(view)) {
+      value = slice->source;
       continue;
     }
     if (llvm::isa_and_nonnull<bufferization::ToBufferOp,
@@ -139,6 +170,55 @@ static bool isStaticValueImpl(Value value, unsigned depth) {
 
 bool isStaticValue(Value value) {
   return isStaticValueImpl(value, kStaticValueDepth);
+}
+
+std::optional<StaticSlice> resolveStaticSlice(Value value) {
+  for (unsigned depth = 0; depth < kStaticValueDepth; ++depth) {
+    if (auto arg = llvm::dyn_cast<BlockArgument>(value)) {
+      auto block =
+          llvm::dyn_cast<ComputeBlockOp>(arg.getOwner()->getParentOp());
+      if (!block)
+        return std::nullopt;
+      value = block->getOperand(arg.getArgNumber());
+      continue;
+    }
+    Operation *def = value.getDefiningOp();
+    if (!def)
+      return std::nullopt;
+    if (auto view = llvm::dyn_cast<OffsetSizeAndStrideOpInterface>(def)) {
+      if (std::optional<StaticSlice> slice = matchSliceAtRuntimeIndex(view)) {
+        if (!isStaticValue(slice->source))
+          return std::nullopt;
+        return slice;
+      }
+      // A constant window of the source: see through it, the slice may sit
+      // behind.
+      if (view->getNumResults() == 1 && view->getNumOperands() == 1 &&
+          llvm::none_of(view.getStaticOffsets(), ShapedType::isDynamic) &&
+          llvm::none_of(view.getStaticSizes(), ShapedType::isDynamic) &&
+          llvm::none_of(view.getStaticStrides(), ShapedType::isDynamic)) {
+        value = view->getOperand(0);
+        continue;
+      }
+      return std::nullopt;
+    }
+    if (llvm::isa<bufferization::ToBufferOp, bufferization::ToTensorOp,
+                  CastOpInterface, tensor::ExpandShapeOp,
+                  tensor::CollapseShapeOp, tensor::ReshapeOp,
+                  memref::CollapseShapeOp, memref::ReshapeOp,
+                  memref::ExpandShapeOp>(def)) {
+      value = def->getOperand(0);
+      continue;
+    }
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+int64_t staticSlotsOf(Value value) {
+  if (std::optional<StaticSlice> slice = resolveStaticSlice(value))
+    return slice->slots;
+  return 1;
 }
 
 SmallVector<Value> createNestedAffineForLoops(OpBuilder &builder, Location loc,

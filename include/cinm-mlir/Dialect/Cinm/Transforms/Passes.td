@@ -278,6 +278,22 @@ def CinmAssignPlatformsPass : Pass<"cinm-assign-platforms", "mlir::func::FuncOp"
   ];
 }
 
+def CinmAbsorbStaticSlicesPass : Pass<"cinm-absorb-static-slices"> {
+  let summary = "Move a compute op's run-time-indexed slice of a static tensor into its compute region";
+  let description = [{
+    A `cinm.compute` whose body reads one slice of a static tensor selected
+    by a run-time index along its leading dimension (the layer's weight,
+    `weights[layer]`, inside the layer loop -- see resolveStaticSlice) takes
+    the slice from outside, so isolating it would hand the block the slice
+    and hide both the tensor and the index. This pass clones the slicing op
+    into the region, so that the isolated block's signature is the whole
+    static tensor plus the index: what the graph allocation needs to keep
+    every slice resident, and what the lowering needs to select the slot
+    at run time. Slices at constant offsets stay outside: they are the
+    unrolled case, where identical blocks must keep identical signatures.
+  }];
+}
+
 def CinmExpandComputeScopePass : Pass<"cinm-expand-compute-scope"> {
   let summary = "Grow cinm.compute_block regions by absorbing the ops that initialize their operands";
   let description = [{

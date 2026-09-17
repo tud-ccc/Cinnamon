@@ -119,3 +119,29 @@ func.func @scalar_operand(%x: tensor<1024xi32>, %m: i32) -> tensor<1024xi32>
   } -> tensor<1024xi32>
   return %y : tensor<1024xi32>
 }
+
+// -----
+
+#upmem = #upmem.platform<type = v1A, dpus = 2560, tasklets = 24>
+
+// The layer loop: each iteration's weight is one slice of the static stack,
+// selected by the loop index. Every slice can stay resident (one slot each),
+// so the gate prices the slice's bytes against the host exactly as it would
+// an unrolled member's, and the op is offloaded inside the loop.
+
+// GATED-LABEL: @layer_loop
+// GATED: scf.for
+// GATED: cinm.compute
+func.func @layer_loop(%W: tensor<4x8192x8192xi32> {cinm.static},
+                      %x0: tensor<8192xi32>) -> tensor<8192xi32>
+  attributes {cinm.available_platforms = [#upmem]} {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %r = scf.for %l = %c0 to %c4 step %c1 iter_args(%x = %x0) -> (tensor<8192xi32>) {
+    %w = tensor.extract_slice %W[%l, 0, 0] [1, 8192, 8192] [1, 1, 1] : tensor<4x8192x8192xi32> to tensor<8192x8192xi32>
+    %y = cinm.op.gemv %w, %x : tensor<8192x8192xi32>, tensor<8192xi32> -> tensor<8192xi32>
+    scf.yield %y : tensor<8192xi32>
+  }
+  return %r : tensor<8192xi32>
+}
