@@ -106,8 +106,9 @@ Operation *broadcastUniformValue(Op op, RewriterBase &rewriter) {
   Value tile = materializeUniformConstant(
       rewriter, op.getLoc(), op->template getParentOfType<ModuleOp>(),
       targetTy.getShape(), *uniform);
-  auto broadcast = upmem::BroadcastOp::create(
-      rewriter, op.getLoc(), tile, op.getDpuBufRefAttr(), op.getHierarchy());
+  auto broadcast = upmem::BroadcastOp::create(rewriter, op.getLoc(), tile,
+                                              op.getDpuBufRefAttr(),
+                                              op.getHierarchy(), op.getSlot());
   inheritLabels(broadcast, op);
   rewriter.eraseOp(op);
   return broadcast;
@@ -128,9 +129,9 @@ Operation *broadcastWholeBuffer(upmem::ScatterOnArrayOp op,
     return nullptr;
 
   rewriter.setInsertionPoint(op);
-  auto broadcast =
-      upmem::BroadcastOp::create(rewriter, op.getLoc(), op.getHostBuffer(),
-                                 op.getDpuBufRefAttr(), op.getHierarchy());
+  auto broadcast = upmem::BroadcastOp::create(
+      rewriter, op.getLoc(), op.getHostBuffer(), op.getDpuBufRefAttr(),
+      op.getHierarchy(), op.getSlot());
   inheritLabels(broadcast, op);
   rewriter.eraseOp(op);
   return broadcast;
@@ -237,10 +238,11 @@ Operation *collapseBlocksToOneRun(BlockOp op, RewriterBase &rewriter) {
     return nullptr;
 
   rewriter.setInsertionPoint(op);
-  auto flat = FlatOp::create(
-      rewriter, op.getLoc(), op.getHostBuffer(), op.getDpuBufRefAttr(),
-      rewriter.getI64IntegerAttr(total),
-      AffineMapAttr::get(dropBlockDim(op.getScatterMap())), op.getHierarchy());
+  auto flat =
+      FlatOp::create(rewriter, op.getLoc(), op.getHostBuffer(),
+                     op.getDpuBufRefAttr(), rewriter.getI64IntegerAttr(total),
+                     AffineMapAttr::get(dropBlockDim(op.getScatterMap())),
+                     op.getHierarchy(), op.getSlot());
   inheritLabels(flat, op);
   rewriter.eraseOp(op);
   return flat;

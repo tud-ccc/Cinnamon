@@ -234,10 +234,10 @@ getScatterOrGatherFunc(OpBuilder &rewriter, ModuleOp moduleOp,
   auto ptrTy = untypedPtrType(ctx);
   auto sizeTy = tyConverter->getIndexType();
   auto funPtrTy = functionPtrTy(sizeTy, {sizeTy});
-  return LLVM::lookupOrCreateFn(
-      rewriter, moduleOp, name,
-      {ptrTy, ptrTy, sizeTy, sizeTy, sizeTy, sizeTy, ptrTy, funPtrTy, ptrTy},
-      LLVM::LLVMVoidType::get(ctx));
+  return LLVM::lookupOrCreateFn(rewriter, moduleOp, name,
+                                {ptrTy, ptrTy, sizeTy, sizeTy, sizeTy, sizeTy,
+                                 ptrTy, sizeTy, funPtrTy, ptrTy},
+                                LLVM::LLVMVoidType::get(ctx));
 }
 
 /*
@@ -259,14 +259,14 @@ getBlockTransferFunc(OpBuilder &rewriter, ModuleOp moduleOp,
   auto funPtrTy = functionPtrTy(sizeTy, {sizeTy, sizeTy});
   return LLVM::lookupOrCreateFn(
       rewriter, moduleOp, name,
-      {ptrTy, ptrTy, sizeTy, sizeTy, sizeTy, ptrTy, funPtrTy, ptrTy},
+      {ptrTy, ptrTy, sizeTy, sizeTy, sizeTy, ptrTy, sizeTy, funPtrTy, ptrTy},
       LLVM::LLVMVoidType::get(ctx));
 }
 
 /*
 void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
                            size_t copy_bytes, const char *buffer_id,
-                           const char *tag);
+                           size_t symbol_offset, const char *tag);
 */
 static FailureOr<LLVM::LLVMFuncOp>
 getBroadcastFunc(OpBuilder &rewriter, ModuleOp moduleOp,
@@ -275,8 +275,32 @@ getBroadcastFunc(OpBuilder &rewriter, ModuleOp moduleOp,
   auto ptrTy = untypedPtrType(ctx);
   auto sizeTy = tyConverter->getIndexType();
   return LLVM::lookupOrCreateFn(rewriter, moduleOp, "upmemrt_dpu_broadcast",
-                                {ptrTy, ptrTy, sizeTy, ptrTy, ptrTy},
+                                {ptrTy, ptrTy, sizeTy, ptrTy, sizeTy, ptrTy},
                                 LLVM::LLVMVoidType::get(ctx));
+}
+
+/// Where in its MRAM symbol a transfer's payload sits, in bytes: `slot` slot
+/// sizes past the symbol's start for a transfer into a slotted buffer
+/// (upmem.static_alloc ... slots N), zero otherwise. The runtime hands it to
+/// the SDK as the symbol offset and keys residency on it.
+template <class Op>
+static FailureOr<Value> symbolOffsetOf(Op op, typename Op::Adaptor adaptor,
+                                       ImplicitLocOpBuilder &rewriter,
+                                       LLVMTypeConverter const *tyConverter) {
+  if (!adaptor.getSlot())
+    return reifyAsIndex(rewriter, tyConverter, 0);
+  upmem::StaticAllocOp buffer = op.getDpuBuffer();
+  if (!buffer)
+    return op.emitOpError("transfers into a slot of ")
+           << op.getDpuBufRefAttr()
+           << ", which does not resolve to a upmem.static_alloc";
+  if (buffer.getNumSlots() <= 1)
+    return op.emitOpError("transfers into a slot of ")
+           << op.getDpuBufRefAttr() << ", which is not slotted";
+  Value slotBytes =
+      reifyAsIndex(rewriter, tyConverter, buffer.getSlotSizeInBytes());
+  return LLVM::MulOp::create(rewriter, adaptor.getSlot(), slotBytes)
+      .getResult();
 }
 
 static FailureOr<LLVM::LLVMFuncOp>
@@ -873,16 +897,21 @@ static LogicalResult lowerBlockTransfer(Op op, typename Op::Adaptor adaptor,
                                   size_t num_blocks,
                                   size_t block_num_elements,
                                   const char *buffer_id,
+                                  size_t symbol_offset,
                                   size_t (*base_offset)(size_t, size_t),
                                   const char *tag)
   */
+  FailureOr<Value> symbolOffset =
+      symbolOffsetOf(op, adaptor, rewriter, tyConverter);
+  if (failed(symbolOffset))
+    return failure();
   LLVM::CallOp::create(
       rewriter0, loc, *runtimeFun,
       ValueRange{adaptor.getHierarchy(), bareHostBuf,
                  reifyAsIndex(rewriter, tyConverter, elementSize),
                  reifyAsIndex(rewriter, tyConverter, numBlocksPerDpu),
                  reifyAsIndex(rewriter, tyConverter, blockNumElements),
-                 bufferId, funPtrOp.getRes(), tag});
+                 bufferId, *symbolOffset, funPtrOp.getRes(), tag});
 
   rewriter0.eraseOp(op);
   return success();
@@ -914,16 +943,21 @@ static LogicalResult lowerBroadcast(upmem::BroadcastOp op,
   auto numBytesCopied = op.getDpuBufferSizeInBytes();
   numBytesCopied = llvm::alignTo(numBytesCopied, 8);
 
+  FailureOr<Value> symbolOffset =
+      symbolOffsetOf(op, adaptor, rewriter, tyConverter);
+  if (failed(symbolOffset))
+    return failure();
+
   /*
   void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
                              size_t copy_bytes, const char *buffer_id,
-                             const char *tag)
+                             size_t symbol_offset, const char *tag)
   */
   LLVM::CallOp::create(
       rewriter0, loc, *runtimeFun,
       ValueRange{adaptor.getHierarchy(), bareHostBuf,
                  reifyAsIndex(rewriter, tyConverter, numBytesCopied), bufferId,
-                 tag});
+                 *symbolOffset, tag});
 
   rewriter0.eraseOp(op);
   return success();
@@ -992,9 +1026,14 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
                             size_t num_elements_per_tasklet,
                             size_t copy_bytes,
                             const char *bufId,
+                            size_t symbol_offset,
                             size_t (*base_offset)(size_t),
                             const char *tag)
   */
+  FailureOr<Value> symbolOffset =
+      symbolOffsetOf(op, adaptor, rewriter, tyConverter);
+  if (failed(symbolOffset))
+    return failure();
   LLVM::CallOp::create(
       rewriter0, loc, *runtimeScatterFun,
       ValueRange{adaptor.getHierarchy(), bareHostBuf,
@@ -1002,7 +1041,7 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
                  reifyAsIndex(rewriter, tyConverter, numElements),
                  reifyAsIndex(rewriter, tyConverter, numElementsPerTasklet),
                  reifyAsIndex(rewriter, tyConverter, numBytesCopied), bufferId,
-                 funPtrOp.getRes(), tag});
+                 *symbolOffset, funPtrOp.getRes(), tag});
 
   rewriter0.eraseOp(op);
   return success();

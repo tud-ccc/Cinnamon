@@ -170,7 +170,8 @@ convertCnmGatherToUpmem(RewriterBase &rewriter, cnm::GatherOp op,
       op.getTransferCountInItems() / perLeaf,
       keepTaskletDimAffineMapCnmToUpmem(map, bufferTy), hierarchy,
       blocksPerDpu(map, bufferTy, numTasklets,
-                   /*sharedAcrossTasklets=*/false));
+                   /*sharedAcrossTasklets=*/false),
+      /*slot=*/Value());
   labelTransfer(gather, op.getHostValue(), id);
 
   if (!isBufferized) {
@@ -210,7 +211,8 @@ convertCnmScatterToUpmem(RewriterBase &rewriter, cnm::ScatterOp op,
       rewriter, op->getLoc(), inputAsMemref, refToBuffer,
       op.getTransferCountInItems() / perLeaf,
       keepTaskletDimAffineMapCnmToUpmem(map, bufferTy), hierarchy,
-      blocksPerDpu(map, bufferTy, numTasklets, sharedAcrossTasklets));
+      blocksPerDpu(map, bufferTy, numTasklets, sharedAcrossTasklets),
+      /*slot=*/Value());
   // The host value, not the cast of it: a cast is not one of the definitions
   // the staticness derivation walks through.
   labelTransfer(scatter, op.getHostValue(), id);

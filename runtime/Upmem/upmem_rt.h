@@ -24,17 +24,21 @@
 /// originating op's `upmem.timing_tag` attribute) recorded alongside the
 /// transfer's stats, or NULL if the op carried no tag. Ignored unless built
 /// with -DUPMEM_RT_STATS.
+/// `symbol_offset`, on every transfer below, is where in the MRAM symbol the
+/// payload sits: `slot * slot size` for a slotted buffer (upmem.static_alloc
+/// ... slots N), 0 otherwise. The residency cache keys on it, so the members
+/// of a group can hold their weights side by side in one symbol.
 void upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *host_buffer,
                          size_t element_size, size_t num_elements,
                          size_t num_elements_per_tasklet, size_t copy_bytes,
-                         const char *buffer_id, size_t (*base_offset)(size_t),
-                         const char *tag);
+                         const char *buffer_id, size_t symbol_offset,
+                         size_t (*base_offset)(size_t), const char *tag);
 
 void upmemrt_dpu_gather(struct dpu_set_t *dpu_set, void *host_buffer,
                         size_t element_size, size_t num_elements,
                         size_t num_elements_per_tasklet, size_t copy_bytes,
-                        const char *buffer_id, size_t (*base_offset)(size_t),
-                        const char *tag);
+                        const char *buffer_id, size_t symbol_offset,
+                        size_t (*base_offset)(size_t), const char *tag);
 
 /// Transfer several blocks per DPU using the UPMEM SDK's scatter/gather
 /// transfer API (dpu_push_sg_xfer), so that a DPU's blocks may come from
@@ -66,13 +70,14 @@ void upmemrt_dpu_gather(struct dpu_set_t *dpu_set, void *host_buffer,
 void upmemrt_dpu_scatter_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
                                 size_t element_size, size_t num_blocks,
                                 size_t block_num_elements,
-                                const char *buffer_id,
+                                const char *buffer_id, size_t symbol_offset,
                                 size_t (*base_offset)(size_t, size_t),
                                 const char *tag);
 
 void upmemrt_dpu_gather_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
                                size_t element_size, size_t num_blocks,
                                size_t block_num_elements, const char *buffer_id,
+                               size_t symbol_offset,
                                size_t (*base_offset)(size_t, size_t),
                                const char *tag);
 
@@ -88,7 +93,7 @@ void upmemrt_dpu_gather_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
 /// NULL if the op carried no tag. Ignored unless built with -DUPMEM_RT_STATS.
 void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
                            size_t copy_bytes, const char *buffer_id,
-                           const char *tag);
+                           size_t symbol_offset, const char *tag);
 
 /// Allocates and loads a DPU set.
 ///

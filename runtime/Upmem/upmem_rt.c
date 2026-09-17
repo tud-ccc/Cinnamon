@@ -15,11 +15,13 @@
 
 // Residency cache, defined below the transfer functions that consult it.
 static int rt_transfer_resident(struct dpu_set_t *set, const char *tag,
-                                const char *symbol, void *host, size_t bytes);
+                                const char *symbol, size_t symbol_offset,
+                                void *host, size_t bytes);
 
 void do_dpu_transfer(dpu_xfer_t xfer_type, struct dpu_set_t *dpu_set,
                      void *host_buffer, size_t copy_bytes, const char *buf_id,
-                     size_t padding_ratio, size_t (*base_offset)(size_t)) {
+                     size_t symbol_offset, size_t padding_ratio,
+                     size_t (*base_offset)(size_t)) {
   assert(copy_bytes > 0);
 
   // Retrieve results
@@ -39,25 +41,26 @@ void do_dpu_transfer(dpu_xfer_t xfer_type, struct dpu_set_t *dpu_set,
     DPU_ASSERT(dpu_prepare_xfer(dpu, (char *)host_buffer + offset));
   }
 
-  DPU_ASSERT(dpu_push_xfer(*dpu_set, xfer_type, buf_id, 0, copy_bytes,
-                           TRANSFER_FLAGS));
+  DPU_ASSERT(dpu_push_xfer(*dpu_set, xfer_type, buf_id, symbol_offset,
+                           copy_bytes, TRANSFER_FLAGS));
 }
 
 void upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *hostBuffer,
                          size_t element_size, size_t num_elements,
                          size_t num_elements_per_tasklet, size_t copy_bytes,
-                         const char *bufId, size_t (*base_offset)(size_t),
-                         const char *tag) {
+                         const char *bufId, size_t symbol_offset,
+                         size_t (*base_offset)(size_t), const char *tag) {
   (void)element_size;
   (void)num_elements;
   (void)num_elements_per_tasklet;
-  if (rt_transfer_resident(dpu_set, tag, bufId, hostBuffer, copy_bytes))
+  if (rt_transfer_resident(dpu_set, tag, bufId, symbol_offset, hostBuffer,
+                           copy_bytes))
     return;
 #ifdef UPMEM_RT_STATS
   uint64_t t0 = upmemrt_now_ns();
 #endif
-  do_dpu_transfer(DPU_XFER_TO_DPU, dpu_set, hostBuffer, copy_bytes, bufId, 1,
-                  base_offset);
+  do_dpu_transfer(DPU_XFER_TO_DPU, dpu_set, hostBuffer, copy_bytes, bufId,
+                  symbol_offset, 1, base_offset);
 #ifdef UPMEM_RT_STATS
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
@@ -69,20 +72,20 @@ void upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *hostBuffer,
 void upmemrt_dpu_gather(struct dpu_set_t *dpu_set, void *host_buffer,
                         size_t element_size, size_t num_elements,
                         size_t num_elements_per_tasklet, size_t copy_bytes,
-                        const char *bufid, size_t (*base_offset)(size_t),
-                        const char *tag) {
+                        const char *bufid, size_t symbol_offset,
+                        size_t (*base_offset)(size_t), const char *tag) {
   (void)num_elements_per_tasklet;
 #ifdef UPMEM_RT_STATS
   uint64_t t0 = upmemrt_now_ns();
 #endif
   if (num_elements * element_size >= 8) {
     do_dpu_transfer(DPU_XFER_FROM_DPU, dpu_set, host_buffer, copy_bytes, bufid,
-                    1, base_offset);
+                    symbol_offset, 1, base_offset);
   } else {
     void *padded_result =
         malloc(num_elements * element_size * (8 / element_size));
     do_dpu_transfer(DPU_XFER_FROM_DPU, dpu_set, padded_result, copy_bytes,
-                    bufid, 8 / element_size, base_offset);
+                    bufid, symbol_offset, 8 / element_size, base_offset);
     for (size_t i = 0; i < num_elements; i++) {
       memcpy(host_buffer + i * element_size, padded_result + i * 8,
              element_size);
@@ -123,7 +126,7 @@ static bool get_sg_xfer_block(struct sg_block_info *out, uint32_t dpu_index,
 static void do_sg_xfer(dpu_xfer_t xfer_type, struct dpu_set_t *dpu_set,
                        void *host_buffer, size_t element_size,
                        size_t num_blocks, size_t block_num_elements,
-                       const char *buffer_id,
+                       const char *buffer_id, size_t symbol_offset,
                        size_t (*base_offset)(size_t, size_t), const char *tag) {
 #ifdef UPMEM_RT_STATS
   uint64_t t0 = upmemrt_now_ns();
@@ -139,8 +142,8 @@ static void do_sg_xfer(dpu_xfer_t xfer_type, struct dpu_set_t *dpu_set,
       .f = get_sg_xfer_block, .args = &ctx, .args_size = sizeof(ctx)};
 
   size_t length = num_blocks * block_num_elements * element_size;
-  DPU_ASSERT(dpu_push_sg_xfer(*dpu_set, xfer_type, buffer_id, 0, length,
-                              &get_block_info, DPU_SG_XFER_DEFAULT));
+  DPU_ASSERT(dpu_push_sg_xfer(*dpu_set, xfer_type, buffer_id, symbol_offset,
+                              length, &get_block_info, DPU_SG_XFER_DEFAULT));
 #ifdef UPMEM_RT_STATS
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
@@ -158,35 +161,37 @@ static void do_sg_xfer(dpu_xfer_t xfer_type, struct dpu_set_t *dpu_set,
 void upmemrt_dpu_scatter_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
                                 size_t element_size, size_t num_blocks,
                                 size_t block_num_elements,
-                                const char *buffer_id,
+                                const char *buffer_id, size_t symbol_offset,
                                 size_t (*base_offset)(size_t, size_t),
                                 const char *tag) {
-  if (rt_transfer_resident(dpu_set, tag, buffer_id, host_buffer,
+  if (rt_transfer_resident(dpu_set, tag, buffer_id, symbol_offset, host_buffer,
                            num_blocks * block_num_elements * element_size))
     return;
   do_sg_xfer(DPU_XFER_TO_DPU, dpu_set, host_buffer, element_size, num_blocks,
-             block_num_elements, buffer_id, base_offset, tag);
+             block_num_elements, buffer_id, symbol_offset, base_offset, tag);
 }
 
 void upmemrt_dpu_gather_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
                                size_t element_size, size_t num_blocks,
                                size_t block_num_elements, const char *buffer_id,
+                               size_t symbol_offset,
                                size_t (*base_offset)(size_t, size_t),
                                const char *tag) {
   do_sg_xfer(DPU_XFER_FROM_DPU, dpu_set, host_buffer, element_size, num_blocks,
-             block_num_elements, buffer_id, base_offset, tag);
+             block_num_elements, buffer_id, symbol_offset, base_offset, tag);
 }
 
 void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
                            size_t copy_bytes, const char *buffer_id,
-                           const char *tag) {
-  if (rt_transfer_resident(dpu_set, tag, buffer_id, host_buffer, copy_bytes))
+                           size_t symbol_offset, const char *tag) {
+  if (rt_transfer_resident(dpu_set, tag, buffer_id, symbol_offset, host_buffer,
+                           copy_bytes))
     return;
 #ifdef UPMEM_RT_STATS
   uint64_t t0 = upmemrt_now_ns();
 #endif
-  DPU_ASSERT(dpu_broadcast_to(*dpu_set, buffer_id, 0, host_buffer, copy_bytes,
-                              TRANSFER_FLAGS));
+  DPU_ASSERT(dpu_broadcast_to(*dpu_set, buffer_id, symbol_offset, host_buffer,
+                              copy_bytes, TRANSFER_FLAGS));
 #ifdef UPMEM_RT_STATS
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
@@ -208,6 +213,7 @@ void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
 typedef struct rt_xfer_record {
   char tag[64];
   char symbol[64];
+  size_t symbol_offset; // the slot: where in the symbol the payload sits
   void *host;
   size_t bytes;
   struct rt_xfer_record *next;
@@ -297,21 +303,25 @@ static void rt_evict_all(void) {
 /// it. So a transfer -- static or not -- into a symbol that another static
 /// site holds resident on this set is not a cache miss but wrong code
 /// generation (two members given the same slot), and it is refused rather
-/// than let the earlier site silently compute on the later one's data.
+/// than let the earlier site silently compute on the later one's data. A
+/// slotted symbol holds several payloads at distinct offsets, so the
+/// occupancy is per (symbol, offset).
 static int rt_transfer_resident(struct dpu_set_t *set, const char *tag,
-                                const char *symbol, void *host, size_t bytes) {
+                                const char *symbol, size_t symbol_offset,
+                                void *host, size_t bytes) {
   rt_cache_entry *e = rt_entry_of(set);
   if (!e)
     return 0;
   const int isStatic = tag && strncmp(tag, "static:", 7) == 0;
   for (rt_xfer_record *r = e->xfers; r; r = r->next) {
     if (symbol && strncmp(r->symbol, symbol, sizeof(r->symbol)) == 0 &&
+        r->symbol_offset == symbol_offset &&
         !(isStatic && strncmp(r->tag, tag, sizeof(r->tag)) == 0)) {
       fprintf(stderr,
-              "upmemrt: transfer '%s' writes MRAM symbol '%s', which site "
-              "'%s' holds resident on the same DPU set: the code generator "
-              "gave two members one slot\n",
-              tag ? tag : "(untagged)", symbol, r->tag);
+              "upmemrt: transfer '%s' writes MRAM symbol '%s' at offset %zu, "
+              "which site '%s' holds resident on the same DPU set: the code "
+              "generator gave two members one slot\n",
+              tag ? tag : "(untagged)", symbol, symbol_offset, r->tag);
       abort();
     }
   }
@@ -330,6 +340,7 @@ static int rt_transfer_resident(struct dpu_set_t *set, const char *tag,
   rt_xfer_record *r = (rt_xfer_record *)calloc(1, sizeof(rt_xfer_record));
   snprintf(r->tag, sizeof(r->tag), "%s", tag);
   snprintf(r->symbol, sizeof(r->symbol), "%s", symbol ? symbol : "");
+  r->symbol_offset = symbol_offset;
   r->host = host;
   r->bytes = bytes;
   r->next = e->xfers;

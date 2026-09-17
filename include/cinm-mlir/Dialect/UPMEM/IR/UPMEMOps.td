@@ -104,11 +104,19 @@ def StaticAllocOp : Upmem_Op<"static_alloc", [//Symbol,
 
     Non-static (tasklet-local) allocations can be done in WRAM with `memref.alloca`.
 
+    A buffer declared with `slots N` holds N resident copies of its payload
+    side by side: its leading dimension has extent N, and a host transfer
+    into it names the slot it lands in (`slot %i` on `upmem.scatter_*` and
+    `upmem.broadcast`). This is how the members of a graph-allocation group
+    keep their static operands resident together on one set while sharing
+    one program: the kernel selects the slot at run time.
+
     Example 1:
 
     ```mlir
     %buf = upmem.static_alloc(wram) : memref<100x100xf32, "wram">
     %buf = upmem.static_alloc @bufname(mram) : memref<100x100xf32, "mram">
+    %w = upmem.static_alloc @weights(mram) slots 32 : memref<32x16x64xi8, "mram">
     ```
   }];
 
@@ -116,7 +124,8 @@ def StaticAllocOp : Upmem_Op<"static_alloc", [//Symbol,
         UPMEM_DpuMemSpaceAttr:$memSpace,
         DefaultValuedAttr<UnitAttr, "false">:$noinit,
         DefaultValuedAttr<UnitAttr, "false">:$zeroinit,
-        OptionalAttr<SymbolNameAttr>:$sym_name);
+        OptionalAttr<SymbolNameAttr>:$sym_name,
+        OptionalAttr<I64Attr>:$slots);
 
   // Effects are hand-written (see UPMEMOps.cpp): a named allocation is one the
   // host addresses through its symbol, which no SSA use records, so it needs
@@ -134,7 +143,7 @@ def StaticAllocOp : Upmem_Op<"static_alloc", [//Symbol,
       CArg<"bool", "false">:$zeroinit
     )>
   ];
-  let assemblyFormat = "($sym_name^)? `(` $memSpace `)` (`noinit` $noinit^)? (`zeroinit` $zeroinit^)? attr-dict `:` type($buffer)";
+  let assemblyFormat = "($sym_name^)? `(` $memSpace `)` (`noinit` $noinit^)? (`zeroinit` $zeroinit^)? (`slots` $slots^)? attr-dict `:` type($buffer)";
 
   let extraClassDeclaration = [{
 
@@ -146,6 +155,16 @@ def StaticAllocOp : Upmem_Op<"static_alloc", [//Symbol,
 
     bool isWram() {
       return getMemSpace() == DpuMemSpace::WRAM;
+    }
+
+    /// Number of resident slots the buffer holds, 1 when it is not slotted.
+    int64_t getNumSlots() { return getSlots().value_or(1); }
+
+    /// Bytes of one slot on one DPU: the whole buffer when it is not slotted.
+    int64_t getSlotSizeInBytes() {
+      auto type = getBuffer().getType();
+      return type.getNumElements() * type.getElementTypeBitWidth() / 8 /
+             getNumSlots();
     }
 
   }];
@@ -214,7 +233,8 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
                   FlatSymbolRefAttr:$dpuBufRef,
                   I64Attr:$transferCount,
                   AffineMapAttr:$scatterMap,
-                  DeviceHierarchyType:$hierarchy);
+                  DeviceHierarchyType:$hierarchy,
+                  Optional<Index>:$slot);
 
   let results = (outs);
 
@@ -225,6 +245,10 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
     `dpuBufRef` is the symbol name of a `upmem.static_alloc` declared inside the
     body of the `upmem.dpu_program` loaded by the `hierarchy`. The verifier checks
     that the symbol exists and refers to a `upmem.static_alloc`.
+
+    `slot`, when given, selects which resident copy of a slotted buffer
+    (`upmem.static_alloc ... slots N`) the transfer addresses: the block lands
+    `slot` slot-sizes past the symbol's start on every DPU.
 
     `transferCount` is the number of elements (not bytes) to copy per DPU.
 
@@ -250,12 +274,15 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
 
     /// Return the DpuProgramOp loaded on this hierarchy, or null.
     DpuProgramOp getDpuProgram();
+
+    /// The `upmem.static_alloc` the symbol names in that program, or null.
+    StaticAllocOp getDpuBuffer();
   }];
 
   let hasVerifier = 1;
   let hasCanonicalizer = 1;
   let assemblyFormat =
-     "$hostBuffer `[` $transferCount `elts` `,` $scatterMap `]` `" # kw # "` $dpuBufRef `of` $hierarchy attr-dict"
+     "$hostBuffer `[` $transferCount `elts` `,` $scatterMap `]` `" # kw # "` $dpuBufRef (`slot` $slot^)? `of` $hierarchy attr-dict"
      # "`:` type($hostBuffer) `" # kw # "` qualified(type($hierarchy))";
 }
 
@@ -335,7 +362,8 @@ class BlockTransferLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
                   I64Attr:$transferCount,
                   AffineMapAttr:$scatterMap,
                   DeviceHierarchyType:$hierarchy,
-                  I64Attr:$numBlocksPerDpu);
+                  I64Attr:$numBlocksPerDpu,
+                  Optional<Index>:$slot);
 
   let results = (outs);
 
@@ -350,12 +378,15 @@ class BlockTransferLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
 
     /// Return the DpuProgramOp loaded on this hierarchy, or null.
     DpuProgramOp getDpuProgram();
+
+    /// The `upmem.static_alloc` the symbol names in that program, or null.
+    StaticAllocOp getDpuBuffer();
   }];
 
   let hasVerifier = 1;
   let hasCanonicalizer = 1;
   let assemblyFormat =
-    "$hostBuffer `[` $transferCount `elts` `,` $scatterMap `,` $numBlocksPerDpu `blocks` `]` `" # kw # "` $dpuBufRef `of` $hierarchy attr-dict"
+    "$hostBuffer `[` $transferCount `elts` `,` $scatterMap `,` $numBlocksPerDpu `blocks` `]` `" # kw # "` $dpuBufRef (`slot` $slot^)? `of` $hierarchy attr-dict"
     # "`:` type($hostBuffer) `" # kw # "` qualified(type($hierarchy))";
 }
 
@@ -421,7 +452,8 @@ def BroadcastOp: Upmem_Op<"broadcast", [
 
   let arguments = (ins Arg<AnyMemRef, "", [MemRead]>:$hostBuffer,
                   FlatSymbolRefAttr:$dpuBufRef,
-                  DeviceHierarchyType:$hierarchy);
+                  DeviceHierarchyType:$hierarchy,
+                  Optional<Index>:$slot);
 
   let results = (outs);
 
@@ -440,11 +472,14 @@ def BroadcastOp: Upmem_Op<"broadcast", [
 
     /// Return the DpuProgramOp loaded on this hierarchy, or null.
     DpuProgramOp getDpuProgram();
+
+    /// The `upmem.static_alloc` the symbol names in that program, or null.
+    StaticAllocOp getDpuBuffer();
   }];
 
   let hasVerifier = 1;
   let assemblyFormat = [{
-    $hostBuffer `onto` $dpuBufRef `of` $hierarchy attr-dict
+    $hostBuffer `onto` $dpuBufRef (`slot` $slot^)? `of` $hierarchy attr-dict
     `:` type($hostBuffer) `onto` qualified(type($hierarchy))
   }];
 }
