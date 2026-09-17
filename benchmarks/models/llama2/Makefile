@@ -10,8 +10,10 @@ CINM_OPT ?= cinm-opt
 OUT ?= .
 
 # llama2_110M and llama2_110M_fusedqkv are the f32 models of the RQ4 stacks;
-# llama2_110M_w8a8 is the integer decode model of the E2E subsection.
+# llama2_110M_w8a8 and llama2_7B_w8a8 are the integer decode models of the
+# E2E subsection.
 NAME ?= llama2_110M
+E2E_MODELS := llama2_110M_w8a8 llama2_7B_w8a8
 .DEFAULT_GOAL := $(OUT)/$(NAME)_buffered.mlir
 
 # The schedule is preloaded from a sidecar so the payload never carries
@@ -31,7 +33,7 @@ endif
 # offloaded graph. The host figure is the int8 one -- Cascade Lake's VNNI
 # does 64 int8 MACs per instruction, four times the int32 rate the default
 # assumes -- because both sides of the E2E comparison run quantized.
-ifeq ($(NAME),llama2_110M_w8a8)
+ifneq (,$(filter $(NAME),$(E2E_MODELS)))
 ASSIGN_OPTS ?= require-profitable=true host-ops-per-second=8.6e12
 endif
 ASSIGN_OPTS ?=
