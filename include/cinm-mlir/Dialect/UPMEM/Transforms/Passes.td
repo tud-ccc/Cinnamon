@@ -542,7 +542,12 @@ def UpmemRegisterTileLoopsPass
     loads per copy (accumulators and operands indexed by `j`) and `s` loads
     shared between copies (indexed by `k` alone, or by neither loop), it is
     the largest factor `f` with `f * c + s <= register-budget`, preferring one
-    that divides the trip count. The jam is applied only where each copy
+    that divides the trip count. A body that calls into the runtime library
+    -- a multiply wider than 16 bits, any integer division, any
+    floating-point arithmetic -- gets `call-register-budget` instead: what is
+    live across a call must sit in one of the 8 callee-saved registers, so a
+    jam sized for all 24 spills the copies' accumulators around every call.
+    The jam is applied only where each copy
     provably touches locations of its own: the parent loop's body holds
     nothing but the inner loop, index arithmetic, and loads and stores, and
     every buffer written in it -- inside the inner loop or around it, as an
@@ -569,6 +574,10 @@ def UpmemRegisterTileLoopsPass
     Option<"registerBudget", "register-budget", "unsigned", "12",
            "Registers the jammed body may keep live: the copies' accumulators "
            "and per-copy operands plus the operands shared between copies">,
+    Option<"callRegisterBudget", "call-register-budget", "unsigned", "8",
+           "The register budget of a body that calls into the runtime library "
+           "(wide multiplies, divisions, floating point): the callee-saved "
+           "registers, the only ones a value keeps across a call">,
     Option<"minUnroll", "min-unroll", "unsigned", "8",
            "Smallest unroll factor for an innermost loop longer than max-unroll">,
     Option<"maxUnroll", "max-unroll", "unsigned", "16",

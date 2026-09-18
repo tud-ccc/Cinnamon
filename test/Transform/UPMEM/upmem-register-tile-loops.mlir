@@ -5,8 +5,10 @@
 // anchored on `upmem.dpu_program` and given on the command line only visits
 // the top-level module's direct children. The pipeline nests it explicitly.
 
-// The gemv nest linalg lowers to: y[j] += A[j][k] * x[k]. Per copy of j the
-// inner body loads A[j][k] and y[j]; x[k] is shared. With a budget of 12,
+// The gemv nest linalg lowers to: y[j] += A[j][k] * x[k]. The operands are
+// bytes widened to i32, which the DPU multiplies inline, so the whole register
+// file is available. Per copy of j the inner body loads A[j][k] and y[j]; x[k]
+// is shared. With a budget of 12,
 // f * 2 + 1 <= 12 gives f = 5, and the largest divisor of 16 below that is
 // 4. The reduction loop of 512 is unrolled by 16.
 //
@@ -27,6 +29,37 @@
 //   BUDGET5-NOT:       arith.muli
 //       BUDGET5:     }
   upmem.dpu_program @gemv() tasklets(1) {
+    %A = memref.alloca() : memref<16x512xi8, #upmem.wram>
+    %x = memref.alloca() : memref<512xi8, #upmem.wram>
+    %y = memref.alloca() : memref<16xi32, #upmem.wram>
+    affine.for %j = 0 to 16 {
+      affine.for %k = 0 to 512 {
+        %a = affine.load %A[%j, %k] : memref<16x512xi8, #upmem.wram>
+        %xv = affine.load %x[%k] : memref<512xi8, #upmem.wram>
+        %acc = affine.load %y[%j] : memref<16xi32, #upmem.wram>
+        %ae = arith.extsi %a : i8 to i32
+        %xe = arith.extsi %xv : i8 to i32
+        %p = arith.muli %ae, %xe : i32
+        %s = arith.addi %acc, %p : i32
+        affine.store %s, %y[%j] : memref<16xi32, #upmem.wram>
+      }
+    }
+    upmem.return
+  }
+
+// -----
+
+// The same gemv on i32 operands: the multiply is a call to `__mulsi3`, and
+// what is live across it must sit in the 8 callee-saved registers. With the
+// call budget of 8, f * 2 + 1 <= 8 gives f = 3, and the largest divisor of 16
+// below that is 2.
+//
+// CHECK-LABEL: upmem.dpu_program @gemv_i32
+//       CHECK:   affine.for %{{.*}} = 0 to 16 step 2 {
+//  CHECK-NEXT:     affine.for %{{.*}} = 0 to 512 step 16 {
+// CHECK-COUNT-32: arith.muli
+//   CHECK-NOT:       arith.muli
+  upmem.dpu_program @gemv_i32() tasklets(1) {
     %A = memref.alloca() : memref<16x512xi32, #upmem.wram>
     %x = memref.alloca() : memref<512xi32, #upmem.wram>
     %y = memref.alloca() : memref<16xi32, #upmem.wram>
@@ -60,19 +93,56 @@
 //       CHECK:     }
 // CHECK-COUNT-4:   affine.store %{{.*}} : memref<16xi32, #upmem.wram>
   upmem.dpu_program @gemv_promoted() tasklets(1) {
-    %A = memref.alloca() : memref<16x512xi32, #upmem.wram>
-    %x = memref.alloca() : memref<512xi32, #upmem.wram>
+    %A = memref.alloca() : memref<16x512xi8, #upmem.wram>
+    %x = memref.alloca() : memref<512xi8, #upmem.wram>
     %y = memref.alloca() : memref<16xi32, #upmem.wram>
     affine.for %j = 0 to 16 {
       %init = affine.load %y[%j] : memref<16xi32, #upmem.wram>
       %r = affine.for %k = 0 to 512 iter_args(%acc = %init) -> (i32) {
-        %a = affine.load %A[%j, %k] : memref<16x512xi32, #upmem.wram>
-        %xv = affine.load %x[%k] : memref<512xi32, #upmem.wram>
-        %p = arith.muli %a, %xv : i32
+        %a = affine.load %A[%j, %k] : memref<16x512xi8, #upmem.wram>
+        %xv = affine.load %x[%k] : memref<512xi8, #upmem.wram>
+        %ae = arith.extsi %a : i8 to i32
+        %xe = arith.extsi %xv : i8 to i32
+        %p = arith.muli %ae, %xe : i32
         %s = arith.addi %acc, %p : i32
         affine.yield %s : i32
       }
       affine.store %r, %y[%j] : memref<16xi32, #upmem.wram>
+    }
+    upmem.return
+  }
+
+// -----
+
+// Eight rows over a reduction of 32: the jam takes 4 rows, leaving the row
+// loop with two trips. A full unroll of the reduction fits max-body-ops, but it
+// would make all 32 x[k] invariant in the row loop, which loop-invariant code
+// motion then hoists -- 32 values, far past the register budget. The
+// reduction is unrolled by 16 instead, keeping two trips over which x[k]
+// moves.
+//
+// CHECK-LABEL: upmem.dpu_program @jammed_short_reduction
+//       CHECK:   affine.for %{{.*}} = 0 to 8 step 4 {
+//       CHECK:     affine.for %{{.*}} = 0 to 32 step 16 iter_args(
+// CHECK-COUNT-64: arith.muli
+//   CHECK-NOT:       arith.muli
+//       CHECK:     }
+  upmem.dpu_program @jammed_short_reduction() tasklets(1) {
+    %A = memref.alloca() : memref<8x32xi8, #upmem.wram>
+    %x = memref.alloca() : memref<32xi8, #upmem.wram>
+    %y = memref.alloca() : memref<8xi32, #upmem.wram>
+    affine.for %j = 0 to 8 {
+      %init = affine.load %y[%j] : memref<8xi32, #upmem.wram>
+      %r = affine.for %k = 0 to 32 iter_args(%acc = %init) -> (i32) {
+        %a = affine.load %A[%j, %k] : memref<8x32xi8, #upmem.wram>
+        %xv = affine.load %x[%k] : memref<32xi8, #upmem.wram>
+        %ae = arith.extsi %a : i8 to i32
+        %xe = arith.extsi %xv : i8 to i32
+        %p = arith.muli %ae, %xe : i32
+        %s = arith.addi %acc, %p : i32
+        affine.yield %s : i32
+      }
+      affine.store %r, %y[%j] : memref<8xi32, #upmem.wram>
     }
     upmem.return
   }

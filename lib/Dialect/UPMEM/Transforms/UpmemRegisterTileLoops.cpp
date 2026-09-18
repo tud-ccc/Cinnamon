@@ -17,10 +17,12 @@
 #include <mlir/Dialect/Affine/Analysis/LoopAnalysis.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Affine/LoopUtils.h>
+#include <mlir/Dialect/Arith/IR/Arith.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/IR/Operation.h>
 #include <mlir/IR/Value.h>
 #include <mlir/Interfaces/SideEffectInterfaces.h>
+#include <mlir/Interfaces/ViewLikeInterface.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -114,6 +116,48 @@ static unsigned countBodyOps(AffineForOp forOp) {
   return n;
 }
 
+/// The bits of `v` that can be significant: those of the value it was
+/// extended from, if it was.
+static unsigned significantBits(Value v) {
+  if (Operation *def = v.getDefiningOp();
+      def && isa<arith::ExtSIOp, arith::ExtUIOp>(def))
+    v = def->getOperand(0);
+  return getElementTypeOrSelf(v.getType()).getIntOrFloatBitWidth();
+}
+
+/// Whether the DPU compiler lowers `op` to a call into its runtime library:
+/// integer multiplies of operands wider than 16 bits (`__mulsi3`,
+/// `__muldi3`; up to 16 bits, even extended to a wider product, it composes
+/// the 8x8 `mul_*` instructions), integer division and remainder of any
+/// width, and all floating-point arithmetic, which is software-emulated.
+static bool lowersToCall(Operation *op) {
+  if (auto mul = dyn_cast<arith::MulIOp>(op))
+    return significantBits(mul.getLhs()) > 16 ||
+           significantBits(mul.getRhs()) > 16;
+  if (isa<arith::DivSIOp, arith::DivUIOp, arith::RemSIOp, arith::RemUIOp,
+          arith::CeilDivSIOp, arith::CeilDivUIOp, arith::FloorDivSIOp>(op))
+    return true;
+  Dialect *dialect = op->getDialect();
+  if (!dialect || isa<arith::ConstantOp>(op) ||
+      !(isa<arith::ArithDialect>(dialect) || dialect->getNamespace() == "math"))
+    return false;
+  auto isFloat = [](Type t) { return isa<FloatType>(getElementTypeOrSelf(t)); };
+  return llvm::any_of(op->getOperandTypes(), isFloat) ||
+         llvm::any_of(op->getResultTypes(), isFloat);
+}
+
+/// The registers `forOp`'s body may keep live. A value live across a call
+/// has to be in a callee-saved register, of which the DPU ABI has 8
+/// (r14-r21) out of 24; a body making calls gets `callRegisterBudget`.
+static unsigned bodyRegisterBudget(AffineForOp forOp, unsigned registerBudget,
+                                   unsigned callRegisterBudget) {
+  WalkResult calls = forOp.getBody()->walk([](Operation *op) {
+    return lowersToCall(op) ? WalkResult::interrupt() : WalkResult::advance();
+  });
+  return calls.wasInterrupted() ? std::min(registerBudget, callRegisterBudget)
+                                : registerBudget;
+}
+
 /// The unroll-and-jam factor for `parent` over its only inner loop `inner`,
 /// or 0 when jamming is unsafe or pointless. Safe means each copy touches
 /// locations of its own: every buffer written in the parent's body, inside
@@ -205,19 +249,94 @@ static uint64_t chooseJamFactor(AffineForOp parent, AffineForOp inner,
   return maxFactor;
 }
 
+/// The allocation or block argument `v` is a view of.
+static Value viewRoot(Value v) {
+  while (auto view = v.getDefiningOp<ViewLikeOpInterface>())
+    v = view.getViewSource();
+  return v;
+}
+
+/// Whether an op in `loop`'s body may write a view of `root`. An op whose
+/// effects are unknown, or that writes without saying where, may.
+static bool mayBeWrittenIn(AffineForOp loop, Value root) {
+  WalkResult walk = loop.getBody()->walk([&](Operation *op) {
+    if (op->hasTrait<OpTrait::HasRecursiveMemoryEffects>())
+      return WalkResult::advance();
+    auto iface = dyn_cast<MemoryEffectOpInterface>(op);
+    if (!iface)
+      return WalkResult::interrupt();
+    SmallVector<MemoryEffects::EffectInstance> effects;
+    iface.getEffects(effects);
+    for (const MemoryEffects::EffectInstance &effect : effects)
+      if (isa<MemoryEffects::Write>(effect.getEffect()) &&
+          (!effect.getValue() || viewRoot(effect.getValue()) == root))
+        return WalkResult::interrupt();
+    return WalkResult::advance();
+  });
+  return walk.wasInterrupted();
+}
+
+/// How many values a full unroll of the innermost loop `forOp` makes
+/// invariant in the loop around it, per iteration of `forOp`: the distinct
+/// loads addressed by `forOp`'s induction variable and not by the parent's,
+/// from a buffer the parent does not write. Unrolled, each iteration's copy
+/// of such a load holds still across the parent's trips, and loop-invariant
+/// code motion hoists it -- all of them, whatever the registers. 0 when there
+/// is no enclosing loop left to hoist into.
+static unsigned invariantLoadsAfterFullUnroll(AffineForOp forOp) {
+  auto parent = dyn_cast<AffineForOp>(forOp->getParentOp());
+  if (!parent)
+    return 0;
+  std::optional<uint64_t> parentTrip = affine::getConstantTripCount(parent);
+  if (parentTrip && *parentTrip < 2)
+    return 0;
+  Value iv = forOp.getInductionVar();
+  Value parentIV = parent.getInductionVar();
+  SmallVector<Access> loads;
+  forOp.getBody()->walk([&](Operation *op) {
+    std::optional<Access> access = Access::of(op);
+    if (!access || access->isStore || !access->dependsOn(iv) ||
+        access->dependsOn(parentIV))
+      return;
+    if (llvm::any_of(loads,
+                     [&](const Access &a) { return a.sameAddressAs(*access); }))
+      return;
+    if (mayBeWrittenIn(parent, viewRoot(access->memref)))
+      return;
+    loads.push_back(*access);
+  });
+  return loads.size();
+}
+
 /// The unroll factor for the innermost loop `forOp`: its trip count when that
 /// is at most `maxUnroll` or the fully unrolled body fits `maxBodyOps`, else
 /// the largest factor in [minUnroll, maxUnroll] dividing the trip count, else
 /// `maxUnroll` with a cleanup loop. Lowered while the unrolled body would
 /// exceed `maxBodyOps`.
+///
+/// Not a full unroll when it would hoist more values out of the enclosing loop
+/// than `registerBudget`, as a full unroll of the reduction loop under a
+/// partially jammed row loop does with its whole operand vector. The loop is
+/// then unrolled by a factor that leaves it at least two trips, so that its
+/// loads keep moving with it.
 static uint64_t chooseUnrollFactor(AffineForOp forOp, unsigned minUnroll,
-                                   unsigned maxUnroll, unsigned maxBodyOps) {
+                                   unsigned maxUnroll, unsigned maxBodyOps,
+                                   unsigned registerBudget) {
   std::optional<uint64_t> trip = affine::getConstantTripCount(forOp);
   if (!trip || *trip < 2)
     return 1;
   unsigned bodyOps = countBodyOps(forOp);
   uint64_t factor;
-  if (*trip <= maxUnroll || *trip * bodyOps <= maxBodyOps) {
+  if (*trip * invariantLoadsAfterFullUnroll(forOp) > registerBudget) {
+    uint64_t cap = std::min<uint64_t>(maxUnroll, *trip / 2);
+    factor = cap;
+    for (uint64_t f = cap; f >= 2; --f) {
+      if (*trip % f == 0) {
+        factor = f;
+        break;
+      }
+    }
+  } else if (*trip <= maxUnroll || *trip * bodyOps <= maxBodyOps) {
     factor = *trip;
   } else {
     factor = maxUnroll;
@@ -252,7 +371,9 @@ struct UpmemRegisterTileLoopsPass
       auto parent = dyn_cast<AffineForOp>(inner->getParentOp());
       if (!parent)
         continue;
-      uint64_t factor = chooseJamFactor(parent, inner, registerBudget);
+      uint64_t factor = chooseJamFactor(
+          parent, inner,
+          bodyRegisterBudget(inner, registerBudget, callRegisterBudget));
       if (factor < 2)
         continue;
       LLVM_DEBUG(llvm::dbgs()
@@ -269,8 +390,9 @@ struct UpmemRegisterTileLoopsPass
         innermostLoops.push_back(forOp);
     });
     for (AffineForOp inner : innermostLoops) {
-      uint64_t factor =
-          chooseUnrollFactor(inner, minUnroll, maxUnroll, maxBodyOps);
+      uint64_t factor = chooseUnrollFactor(
+          inner, minUnroll, maxUnroll, maxBodyOps,
+          bodyRegisterBudget(inner, registerBudget, callRegisterBudget));
       if (factor < 2)
         continue;
       LLVM_DEBUG(llvm::dbgs()
