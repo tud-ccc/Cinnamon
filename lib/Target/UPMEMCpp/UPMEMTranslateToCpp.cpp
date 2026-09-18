@@ -282,8 +282,13 @@ static LogicalResult printOperation(CppEmitter &emitter,
     return failure();
   }
 
-  size_t size = res_type.getNumElements();
-  size = llvm::alignTo(size, 8);
+  // Padded to the 8-byte transfer granularity, in elements. This is the size
+  // upmem::taskletStackBytes charges for the array; the two must agree, or the
+  // SDK is given a stack too small for the kernel.
+  int64_t eltWidthBytes =
+      std::max<int64_t>(1, res_type.getElementTypeBitWidth() / 8);
+  int64_t size = llvm::alignTo(res_type.getNumElements(),
+                               std::max<int64_t>(1, 8 / eltWidthBytes));
   os << " " << emitter.getOrCreateName(wramAllocOp.getResult()) << "[" << size
      << "]";
 
