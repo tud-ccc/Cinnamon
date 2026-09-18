@@ -710,6 +710,18 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       // loop into the innermost one within a register budget, so an operand
       // is loaded once and consumed at once, then unrolls the innermost loop
       // partially. See its description in Passes.td.
+      //
+      // Before it, a reduction scaled by a loop-invariant value -- a scalar
+      // operand fused into the kernel -- has the scale hoisted out of the
+      // loop. Left in, the unrolled body is a chain LLVM's Reassociate
+      // factors the scale out of by summing every product at its root, after
+      // the last one, so that all of them are live at once and the DPU
+      // compiler spills them. The factoring matches reductions carried by
+      // iteration arguments, which scalar replacement promotes the
+      // accumulators to first.
+      dpuPm.addPass(affine::createAffineScalarReplacementPass());
+      dpuPm.addPass(affine::createAffineFactorReductionScale(
+          {.allowFloatReassociation = opts.allowFloatReassociation}));
       dpuPm.addPass(createUpmemRegisterTileLoopsPass());
       // Don't do fusion after unrolling, it's very slow
       addAffineOpts(dpuPm, /*fusion=*/false);

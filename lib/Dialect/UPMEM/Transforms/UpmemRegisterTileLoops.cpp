@@ -116,21 +116,31 @@ static unsigned countBodyOps(AffineForOp forOp) {
 
 /// The unroll-and-jam factor for `parent` over its only inner loop `inner`,
 /// or 0 when jamming is unsafe or pointless. Safe means each copy touches
-/// locations of its own: every buffer the inner body writes is accessed only
-/// at the written address, and that address moves with the parent's
-/// induction variable. Pointless means no operand is shared between copies.
+/// locations of its own: every buffer written in the parent's body, inside
+/// the inner loop or around it, is accessed only at the written address, and
+/// that address moves with the parent's induction variable. Pointless means
+/// no operand is shared between copies.
 static uint64_t chooseJamFactor(AffineForOp parent, AffineForOp inner,
                                 unsigned registerBudget) {
   std::optional<uint64_t> trip = affine::getConstantTripCount(parent);
   if (!trip || *trip < 2 || parent.getNumIterOperands() > 0)
     return 0;
 
-  // The parent's own body: the inner loop and index arithmetic only. A
-  // transfer or an allocation duplicated per copy would not be the same
-  // program.
+  // The parent's own body: the inner loop, index arithmetic, and loads and
+  // stores -- such as those of an accumulator promoted to the inner loop's
+  // iteration arguments, loaded before it and stored after. The jam groups
+  // every copy's accesses before the inner loop ahead of it, and every copy's
+  // accesses after it behind it, which the check on written buffers below
+  // makes sound. A transfer or an allocation duplicated per copy would not be
+  // the same program.
+  SmallVector<Access> outerAccesses;
   for (Operation &op : parent.getBody()->without_terminator()) {
     if (&op == inner.getOperation())
       continue;
+    if (auto access = Access::of(&op)) {
+      outerAccesses.push_back(*access);
+      continue;
+    }
     if (!isMemoryEffectFree(&op))
       return 0;
   }
@@ -152,12 +162,13 @@ static uint64_t chooseJamFactor(AffineForOp parent, AffineForOp inner,
   if (!safe)
     return 0;
 
-  for (const Access &store : accesses) {
+  auto allAccesses = llvm::concat<const Access>(accesses, outerAccesses);
+  for (const Access &store : allAccesses) {
     if (!store.isStore)
       continue;
     if (!store.dependsOn(parentIV))
       return 0;
-    for (const Access &other : accesses)
+    for (const Access &other : allAccesses)
       if (other.memref == store.memref && !other.sameAddressAs(store))
         return 0;
   }

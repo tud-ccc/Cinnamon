@@ -53,6 +53,10 @@ def UpmemCoalesceLocalTransfersPass: Pass<"upmem-coalesce-local-transfers"> {
     between, so one read before the loop and one write after move the same
     data. That is what makes an output tile cheap under a reduction -- the
     reduction updates it every trip and only the final value has to travel.
+    A staging that is only read is hoisted the same way when nothing in the
+    loop writes its source or its buffer and the read precedes every other use
+    of the buffer -- the staging of a scalar operand fused into the kernel,
+    which the tiling places in the innermost loop using it.
 
     A staging whose tile advances by one step per trip is **coalesced**: the
     loop is split into a strip loop and a walk over the strip, and the transfer
@@ -540,9 +544,11 @@ def UpmemRegisterTileLoopsPass
     the largest factor `f` with `f * c + s <= register-budget`, preferring one
     that divides the trip count. The jam is applied only where each copy
     provably touches locations of its own: the parent loop's body holds
-    nothing but the inner loop and index arithmetic, and every buffer the
-    inner body writes is accessed only at the written address, which moves
-    with the parent's induction variable.
+    nothing but the inner loop, index arithmetic, and loads and stores, and
+    every buffer written in it -- inside the inner loop or around it, as an
+    accumulator promoted to the inner loop's iteration arguments is -- is
+    accessed only at the written address, which moves with the parent's
+    induction variable.
 
     The innermost loop is then unrolled fully when the trip count is at most
     `max-unroll` or the unrolled body stays within `max-body-ops`, and

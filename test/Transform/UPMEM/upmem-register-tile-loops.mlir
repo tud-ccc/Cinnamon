@@ -45,6 +45,66 @@
 
 // -----
 
+// The same gemv with the accumulator promoted to the reduction loop's
+// iteration arguments, as scalar replacement leaves it: y[j] is loaded before
+// the inner loop and stored after it. Each copy's load and store are at its
+// own y[j], so the jam applies as above -- the accumulator is an iteration
+// argument per copy now, still one register each.
+//
+// CHECK-LABEL: upmem.dpu_program @gemv_promoted
+//       CHECK:   affine.for %{{.*}} = 0 to 16 step 4 {
+// CHECK-COUNT-4:   affine.load %{{.*}} : memref<16xi32, #upmem.wram>
+//       CHECK:     affine.for %{{.*}} = 0 to 512 step 16 iter_args(
+// CHECK-COUNT-64: arith.muli
+//   CHECK-NOT:       arith.muli
+//       CHECK:     }
+// CHECK-COUNT-4:   affine.store %{{.*}} : memref<16xi32, #upmem.wram>
+  upmem.dpu_program @gemv_promoted() tasklets(1) {
+    %A = memref.alloca() : memref<16x512xi32, #upmem.wram>
+    %x = memref.alloca() : memref<512xi32, #upmem.wram>
+    %y = memref.alloca() : memref<16xi32, #upmem.wram>
+    affine.for %j = 0 to 16 {
+      %init = affine.load %y[%j] : memref<16xi32, #upmem.wram>
+      %r = affine.for %k = 0 to 512 iter_args(%acc = %init) -> (i32) {
+        %a = affine.load %A[%j, %k] : memref<16x512xi32, #upmem.wram>
+        %xv = affine.load %x[%k] : memref<512xi32, #upmem.wram>
+        %p = arith.muli %a, %xv : i32
+        %s = arith.addi %acc, %p : i32
+        affine.yield %s : i32
+      }
+      affine.store %r, %y[%j] : memref<16xi32, #upmem.wram>
+    }
+    upmem.return
+  }
+
+// -----
+
+// A store around the inner loop that every copy would make to the same
+// address: the copies do not touch locations of their own, so no jam.
+//
+// CHECK-LABEL: upmem.dpu_program @shared_outer_store
+//       CHECK:   affine.for %{{.*}} = 0 to 16 {
+//       CHECK:     affine.for %{{.*}} = 0 to 512 step 16 iter_args(
+  upmem.dpu_program @shared_outer_store() tasklets(1) {
+    %A = memref.alloca() : memref<16x512xi32, #upmem.wram>
+    %x = memref.alloca() : memref<512xi32, #upmem.wram>
+    %y = memref.alloca() : memref<16xi32, #upmem.wram>
+    %c0_i32 = arith.constant 0 : i32
+    affine.for %j = 0 to 16 {
+      %r = affine.for %k = 0 to 512 iter_args(%acc = %c0_i32) -> (i32) {
+        %a = affine.load %A[%j, %k] : memref<16x512xi32, #upmem.wram>
+        %xv = affine.load %x[%k] : memref<512xi32, #upmem.wram>
+        %p = arith.muli %a, %xv : i32
+        %s = arith.addi %acc, %p : i32
+        affine.yield %s : i32
+      }
+      affine.store %r, %y[0] : memref<16xi32, #upmem.wram>
+    }
+    upmem.return
+  }
+
+// -----
+
 // A trip count of 2 on the reuse loop takes the whole loop into the jam, and
 // the promoted single iteration leaves the reduction loop directly under the
 // row loop. 128 is unrolled by 16. The row loop, whose body stages tiles, is

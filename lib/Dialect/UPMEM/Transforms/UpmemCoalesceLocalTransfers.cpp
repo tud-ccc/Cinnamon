@@ -18,6 +18,8 @@
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/IR/PatternMatch.h>
+#include <mlir/Interfaces/SideEffectInterfaces.h>
+#include <mlir/Interfaces/ViewLikeInterface.h>
 #include <numeric>
 
 namespace mlir::upmem {
@@ -105,9 +107,9 @@ SmallVector<Staging> collectStagings(affine::AffineForOp loop) {
 /// the reduction updates it every trip, and only the final value has to reach
 /// the far level.
 ///
-/// Read and write must both be present. A tile only read is already hoistable
-/// by loop-invariant code motion, and one only written would need the loop to
-/// write every byte of it -- which the pass cannot see from here.
+/// Read and write must both be present. A tile only read is hoisted by
+/// hoistInvariantRead, and one only written would need the loop to write
+/// every byte of it -- which the pass cannot see from here.
 LogicalResult hoistInvariant(IRRewriter &rewriter, affine::AffineForOp loop,
                              Staging staging) {
   if (!staging.read || !staging.write)
@@ -120,6 +122,81 @@ LogicalResult hoistInvariant(IRRewriter &rewriter, affine::AffineForOp loop,
   rewriter.moveOpBefore(staging.read, loop);
   rewriter.moveOpAfter(staging.write, loop);
   return success();
+}
+
+/// The allocation or block argument `v` is a view of.
+Value viewRoot(Value v) {
+  while (auto view = v.getDefiningOp<ViewLikeOpInterface>())
+    v = view.getViewSource();
+  return v;
+}
+
+/// Whether an op in `loop`'s body other than `except` may write a view of
+/// `root`. Distinct roots -- allocations, and the launch's buffer arguments --
+/// do not overlap. An op whose effects are unknown, or that writes without
+/// saying where, may write anything.
+bool writtenIn(affine::AffineForOp loop, Value root, Operation *except) {
+  WalkResult walk = loop.getBody()->walk([&](Operation *op) {
+    if (op == except || op->hasTrait<OpTrait::HasRecursiveMemoryEffects>())
+      return WalkResult::advance();
+    auto iface = dyn_cast<MemoryEffectOpInterface>(op);
+    if (!iface)
+      return WalkResult::interrupt();
+    SmallVector<MemoryEffects::EffectInstance> effects;
+    iface.getEffects(effects);
+    for (const MemoryEffects::EffectInstance &effect : effects) {
+      if (!isa<MemoryEffects::Write>(effect.getEffect()))
+        continue;
+      if (!effect.getValue() || viewRoot(effect.getValue()) == root)
+        return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return walk.wasInterrupted();
+}
+
+/// Hoist a read-only staging whose source does not change in the loop: a
+/// transfer into a buffer the body allocates, from a far-level buffer -- or a
+/// tile of it -- addressed the same on every trip.
+///
+/// Every trip then reads the same bytes into the same buffer, so one read
+/// before the loop does. That holds when nothing in the loop writes the source,
+/// nothing but the read writes the buffer, and the read comes before every
+/// other use of the buffer in the body, so that no trip sees the buffer as the
+/// previous one left it. This is the staging of a scalar operand fused into
+/// the kernel, which the tiling places in the innermost loop that uses it.
+LogicalResult hoistInvariantRead(IRRewriter &rewriter,
+                                 affine::AffineForOp loop) {
+  Block *body = loop.getBody();
+  for (Operation &op : body->without_terminator()) {
+    auto read = dyn_cast<cnm::LocalTransferOp>(&op);
+    if (!read)
+      continue;
+    auto buffer = read.getTarget().getDefiningOp<memref::AllocaOp>();
+    if (!buffer || buffer->getBlock() != body)
+      continue;
+    Value source = read.getSource();
+    auto tile = source.getDefiningOp<memref::SubViewOp>();
+    if (tile ? !definedOutside(tile->getOperands(), loop)
+             : !definedOutside(ValueRange{source}, loop))
+      continue;
+    bool readFirst = llvm::all_of(buffer->getUsers(), [&](Operation *user) {
+      Operation *inBody = body->findAncestorOpInBlock(*user);
+      return user == read || (inBody && read->isBeforeInBlock(inBody));
+    });
+    if (!readFirst)
+      continue;
+    if (writtenIn(loop, viewRoot(source), nullptr) ||
+        writtenIn(loop, buffer.getResult(), read))
+      continue;
+
+    rewriter.moveOpBefore(buffer, loop);
+    if (tile && tile->getBlock() == body)
+      rewriter.moveOpBefore(tile, loop);
+    rewriter.moveOpBefore(read, loop);
+    return success();
+  }
+  return failure();
 }
 
 /// The dimension of `tile` addressed by `loop`'s induction variable, when the
@@ -330,6 +407,10 @@ struct UpmemCoalesceLocalTransfersPass
     while (changed) {
       changed = false;
       launch.walk<WalkOrder::PreOrder>([&](affine::AffineForOp loop) {
+        if (succeeded(hoistInvariantRead(rewriter, loop))) {
+          changed = true;
+          return WalkResult::interrupt();
+        }
         SmallVector<Staging> stagings = collectStagings(loop);
         for (Staging staging : stagings) {
           if (succeeded(hoistInvariant(rewriter, loop, staging))) {
