@@ -26,17 +26,19 @@ func.func @gemv_resident_weight(%A: tensor<8192x8192xi32> {cinm.static},
 
 #upmem = #upmem.platform<type = v1A, dpus = 2560, tasklets = 24>
 
-// The same gemv with the matrix streamed in. Nothing to amortize, so the
-// host's faster path to DRAM decides it.
+// The same gemv with the matrix streamed in. Nothing to amortize, and the
+// result is 32 KB, so the verdict rests on scatter against the host's DRAM
+// path alone. At the top of the array the calibrated scatter edges DRAM by
+// a few percent (16.2 GB/s at 2560 DPUs against 15), so this passes -- by
+// that margin, and only because nothing sizeable comes back; see @va.
 
 // OPEN-LABEL: @gemv_streamed_weight
 // OPEN: cinm.compute
 // GATED-LABEL: @gemv_streamed_weight
-// GATED-NOT: cinm.compute
+// GATED: cinm.compute
 func.func @gemv_streamed_weight(%A: tensor<8192x8192xi32>,
                                 %x: tensor<8192xi32>) -> tensor<8192xi32>
   attributes {cinm.available_platforms = [#upmem]} {
-  // expected-remark @below {{not offloaded: no static operand}}
   %y = cinm.op.gemv %A, %x : tensor<8192x8192xi32>, tensor<8192xi32> -> tensor<8192xi32>
   return %y : tensor<8192xi32>
 }
@@ -45,8 +47,10 @@ func.func @gemv_streamed_weight(%A: tensor<8192x8192xi32>,
 
 #upmem = #upmem.platform<type = v1A, dpus = 2560, tasklets = 24>
 
-// Vector add: pure traffic, no reuse, no resident operand. This is `va`, and
-// rejecting it is the model agreeing with what PrIM measured.
+// Vector add: pure traffic, no reuse, no resident operand, and a result as
+// large as each input, so the gather -- the slow direction -- is paid in
+// full. This is `va`, and rejecting it is the model agreeing with what PrIM
+// measured.
 
 // OPEN-LABEL: @va
 // OPEN: cinm.compute

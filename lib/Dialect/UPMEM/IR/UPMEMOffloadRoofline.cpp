@@ -4,19 +4,21 @@
 // whether an op should be offloaded at all.
 //
 // The shape of the answer is forced by two facts about this machine. The
-// host out-computes the whole array by orders of magnitude, and at the DPU
-// counts worth using its path to DRAM is faster than the host-to-DPU
-// scatter -- 15 GB/s against 9.6 at 2560 DPUs. So for an op whose every
-// operand has to be shipped in afresh, the host wins: it reads the same
-// bytes from DRAM faster than we can push them over the wire, and then does
-// the arithmetic faster too.
+// host out-computes the whole array by orders of magnitude, and its path to
+// DRAM, 15 GB/s, is about as fast as the host-to-DPU scatter at the DPU
+// counts worth using (12.9 GB/s at 1024 DPUs, 17.2 at 2048, 16.2 at 2560 by
+// the calibrated model) and faster than the gather back (6 to 9 GB/s). So
+// for an op whose every operand has to be shipped in afresh the host wins
+// unless the op moves almost nothing back: it reads the same bytes from
+// DRAM as fast as we push them over the wire, does the arithmetic faster,
+// and never pays the return trip.
 //
-// The second fact is the weaker of the two and is worth not overstating.
-// Scatter bandwidth is not monotonic in DPU count -- it peaks near 1024
-// DPUs at 17.9 GB/s, above the host -- so at small array sizes the traffic
-// terms roughly cancel and the decision rests on the compute term alone.
-// scatterBytesPerSecond reads the rate off the calibrated model for the
-// array actually in use rather than assuming either ordering.
+// The second fact is the weaker of the two and is worth not overstating: at
+// the top of the array the scatter edges DRAM by a few percent, so an op
+// that streams a large operand in and a small result out (a gemv with a
+// streamed matrix) can pass on traffic alone, by that margin. The rates
+// come from the calibrated transfer model for the array actually in use
+// rather than from an assumed ordering.
 //
 // What is left is amortization. An operand that is the same on every
 // invocation -- a weight matrix, anything `cinm.static` -- can be scattered
@@ -111,26 +113,26 @@ constexpr double kPipelineDepth = 11.0;
 /// paid once per op and not once per chain.
 ///
 /// That fixed cost is the term that decides most of these verdicts, and it
-/// is large: 0.43 ms to reach 2560 DPUs whatever the size, against a
-/// RoBERTa projection kernel of 0.17 ms. Pricing only the slope would have
-/// quietly assumed the residency the compiler does not provide, and would
-/// have accepted a great many ops whose transfers dominate them.
+/// is large: 0.44 ms to reach 2048 DPUs and 0.75 ms to reach 2560 whatever
+/// the size, against a RoBERTa projection kernel of 0.17 ms. Pricing only
+/// the slope would have quietly assumed the residency the compiler does not
+/// provide, and would have accepted a great many ops whose transfers
+/// dominate them.
 ///
-/// The slope matters too, and is not guessable: it is not monotonic in DPU
-/// count, running 11.8 GB/s at 512 DPUs, peaking at 17.9 at 1024, then
-/// falling to 14.5 at 2048 and 9.6 at 2560. Since the gate is a comparison
-/// against the host's ~15 GB/s, a flat constant would have flipped verdicts
-/// at one end or the other.
+/// The slope matters too, and is not guessable: the scatter runs 8.3 GB/s
+/// at 512 DPUs, 12.9 at 1024, 17.2 at 2048 and 16.2 at 2560, the gather
+/// 4.2, 6.1, 9.2 and 6.8. Since the gate is a comparison against the host's
+/// ~15 GB/s, a flat constant would have flipped verdicts at one end or the
+/// other.
 ///
-/// One guard on the way out. Both fits are trees whose finest block-size
-/// splits stop below 2 KB, and above that each is a single linear leaf
-/// extrapolating without bound. Scatter extrapolates sanely, converging to
-/// ~14.5 GB/s at 2048 DPUs; gather does not, reaching 44 GB/s -- three
-/// times the scatter rate and three times host DRAM. That ordering is not
-/// just implausible, it is backwards: on this hardware DPU-to-host is the
-/// slower direction, not the faster one. So a gather is never priced below
-/// the scatter of the same geometry, which bounds the extrapolation with
-/// the better-behaved fit rather than with a number invented here.
+/// The trees behind these numbers are fitted on the scatter_cost sweep of
+/// isca-artifact (1 to 2048 DPUs, 8 bytes to 1 MB per DPU), so within that
+/// range they interpolate; 2560 DPUs is the one extrapolation the gate
+/// asks of them. One guard stays on the way out: a gather is never priced
+/// below the scatter of the same geometry. On this hardware DPU-to-host is
+/// the slower direction, and the fit says so everywhere it was measured,
+/// so the guard only ever binds where an extrapolation would have inverted
+/// that.
 double transferSeconds(double bytes, int64_t dpus, bool toDevice) {
   if (bytes <= 0.0 || dpus <= 0)
     return 0.0;
