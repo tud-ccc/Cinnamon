@@ -69,17 +69,30 @@ def _measured_terms(
     return raw, charged
 
 
+def _config_knobs(config_csv: pathlib.Path) -> dict[str, float]:
+    """The two knobs every benchmark's space has, so that the frame stays
+    rectangular across benchmarks -- the rest of config.csv is per-benchmark
+    (tile sizes, loop order) and has no common column. They are what the
+    reporting layer groups the residuals by: dpus is the fan-out the transfer
+    model extrapolates along, tasklets the kernel model's."""
+    if not config_csv.exists():
+        return {"dpus": float("nan"), "tasklets": float("nan")}
+    meta = pd.read_csv(config_csv).iloc[0].to_dict()
+    return {k: meta.get(k, float("nan")) for k in ("dpus", "tasklets")}
+
+
 def fidelity_frame(compile_root: pathlib.Path, run_root: pathlib.Path) -> pd.DataFrame:
     """One row per (fn_name, label, term) with predicted_ms, measured_ms and
     the two measured times the paper's share-of-time weighting is a ratio of:
     charged_ms (what this term contributes to measured combined) over net_ms
     (measured combined itself, repeated on every term's row). The share is
     left to the reporting layer to divide, so that it can total the two sums
-    over a set of configs rather than average per-config ratios. Configs
-    missing either side are skipped: a compile without a bench has no measured
-    truth, a bench whose compile predates cost.csv has no prediction. Empty
-    frame when nothing joins -- the assemble layer turns that into a MISSING
-    note, not an error."""
+    over a set of configs rather than average per-config ratios. Each row also
+    carries the config's dpus and tasklets, the two knobs fig:fidelity reads
+    the residuals against. Configs missing either side are skipped: a compile
+    without a bench has no measured truth, a bench whose compile predates
+    cost.csv has no prediction. Empty frame when nothing joins -- the assemble
+    layer turns that into a MISSING note, not an error."""
     rows = []
     for fn_name, config_dir in iter_config_dirs(pathlib.Path(run_root)):
         compile_dir = pathlib.Path(compile_root) / fn_name / config_dir.name
@@ -88,6 +101,7 @@ def fidelity_frame(compile_root: pathlib.Path, run_root: pathlib.Path) -> pd.Dat
         if predicted is None or measured is None:
             continue
         raw, charged = measured
+        knobs = _config_knobs(compile_dir / "config.csv")
         for term in ("transfer", "kernel", "combined"):
             rows.append(
                 {
@@ -98,6 +112,7 @@ def fidelity_frame(compile_root: pathlib.Path, run_root: pathlib.Path) -> pd.Dat
                     "measured_ms": raw[term],
                     "charged_ms": charged[term],
                     "net_ms": raw["combined"],
+                    **knobs,
                 }
             )
     columns = [
@@ -108,5 +123,7 @@ def fidelity_frame(compile_root: pathlib.Path, run_root: pathlib.Path) -> pd.Dat
         "measured_ms",
         "charged_ms",
         "net_ms",
+        "dpus",
+        "tasklets",
     ]
     return pd.DataFrame(rows, columns=columns)
