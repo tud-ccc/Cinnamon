@@ -12,6 +12,7 @@ import csv
 import dataclasses
 import pathlib
 import shlex
+import shutil
 import subprocess
 from typing import Callable
 
@@ -235,6 +236,16 @@ def run_config(
     output_dir = (
         pathlib.Path(run_root) / cfg.system / cfg.fn_name / cfg.label / "output"
     )
+    # Everything this config left behind last time goes, before the hardware
+    # gets a chance to leave nothing: a run that fails writes no CSVs, so
+    # anything surviving here would be read as this run's measurement. That is
+    # worse than a hole -- measurements.net_time_ms() finds a number,
+    # clear_failed_bench() therefore never retries the config, and the stale
+    # timing (from a different build) reaches the aggregate unnoticed.
+    error_txt = output_dir.parent / "run_error.txt"
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    error_txt.unlink(missing_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     err = None
