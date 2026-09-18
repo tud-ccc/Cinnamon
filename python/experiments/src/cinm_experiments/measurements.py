@@ -7,6 +7,7 @@ elapsed time minus alloc/free overhead, averaged over iterations."""
 from __future__ import annotations
 
 from typing import Union
+import functools
 import pathlib
 
 from math import isnan
@@ -19,9 +20,44 @@ def _iter_col(df: pd.DataFrame) -> str:
     return "iter" if "iter" in df.columns else "iteration"
 
 
-def _read_iters(csv_path, drop_first: bool) -> pd.DataFrame:
-    """One measurement CSV with its iteration column normalised, minus
-    iteration 0 when `drop_first` asks for steady state. Under the runtime
+def _tables(
+    output_dir: Union[pathlib.Path, RunResult],
+) -> tuple[tuple[str, pd.DataFrame], ...]:
+    """(csv type, frame) for every measurement CSV in output_dir, in the order
+    the directory lists them, each frame with its iteration column named
+    `iteration`.
+
+    Every reader below asks for the same few files, and a caller computing
+    several measurements of one run -- the assemble layer takes eight --
+    would otherwise parse each of them once per measurement. The files are
+    parsed once per version of the directory: the cache key is every file's
+    name, mtime and size, so a run that rewrites its output is read afresh.
+    The frames are shared between callers, so nothing here may modify one in
+    place."""
+    directory = _output_dir(output_dir)
+    listing = tuple(
+        (path.name, stat.st_mtime_ns, stat.st_size)
+        for path in directory.glob("*.csv")
+        for stat in [path.stat()]
+    )
+    return _parse_tables(str(directory), listing)
+
+
+@functools.lru_cache(maxsize=64)
+def _parse_tables(
+    directory: str, listing: tuple[tuple[str, int, int], ...]
+) -> tuple[tuple[str, pd.DataFrame], ...]:
+    tables = []
+    for name, _, _ in listing:
+        df = pd.read_csv(pathlib.Path(directory, name))
+        df = df.rename(columns={_iter_col(df): "iteration"})
+        tables.append((_csv_type(pathlib.Path(name)), df))
+    return tuple(tables)
+
+
+def _iters(df: pd.DataFrame, drop_first: bool) -> pd.DataFrame:
+    """One measurement table minus iteration 0 when `drop_first` asks for
+    steady state. Under the runtime
     residency cache (UPMEM_RT_CACHE=1) the first inference pays the one-time
     alloc / program-load / static-scatter costs that later inferences keep
     resident, so steady-state numbers start at iteration 1 -- and a cost
@@ -30,8 +66,6 @@ def _read_iters(csv_path, drop_first: bool) -> pd.DataFrame:
     a single recorded iteration therefore has no steady state: its total
     comes back empty and net_time_ms reports None rather than passing the
     warmup off as the answer."""
-    df = pd.read_csv(csv_path)
-    df = df.rename(columns={_iter_col(df): "iteration"})
     if drop_first:
         df = df[df["iteration"] > 0]
     return df
@@ -67,8 +101,8 @@ def _amortizable_index(df: pd.DataFrame) -> pd.Index:
     static = df[tag.notna() & tag.str.startswith("static:")]
     if static.empty:
         return df.index[[]]
-    once = static.groupby(["iteration", "tag"]).filter(lambda g: len(g) == 1)
-    return once.index
+    once = static.groupby(["iteration", "tag"])["tag"].transform("size") == 1
+    return static.index[once.to_numpy()]
 
 
 def amortizable_ns(df: pd.DataFrame) -> pd.Series:
@@ -114,9 +148,8 @@ def net_time_ms(
     load_ns = pd.Series(dtype=float)
     static_ns: list[pd.Series] = []
 
-    for csv_path in _output_dir(output_dir).glob("*.csv"):
-        t = _csv_type(csv_path)
-        df = _read_iters(csv_path, drop_first)
+    for t, df in _tables(output_dir):
+        df = _iters(df, drop_first)
         if t == "total":
             total_df = df
         elif t == "alloc":
@@ -153,10 +186,10 @@ def _sum_time_ms(
     """Mean per-iteration total time in ms spent in the given csv_type
     (summed over however many calls of that type happen within an
     iteration), or None if no matching csv-type file is present."""
-    for csv_path in _output_dir(output_dir).glob("*.csv"):
-        if _csv_type(csv_path) != csv_type:
+    for t, df in _tables(output_dir):
+        if t != csv_type:
             continue
-        df = _read_iters(csv_path, drop_first)
+        df = _iters(df, drop_first)
         mean = float(df.groupby("iteration")["elapsed_ns"].sum().mean())
         if isnan(mean):
             return None
@@ -223,10 +256,10 @@ def amortizable_time_ms(
 ) -> float:
     """Mean per-iteration time in ms that amortizable_ns identifies in the
     given csv_type. 0.0 when there is nothing to amortize."""
-    for csv_path in _output_dir(output_dir).glob("*.csv"):
-        if _csv_type(csv_path) != csv_type:
+    for t, df in _tables(output_dir):
+        if t != csv_type:
             continue
-        df = _read_iters(csv_path, drop_first)
+        df = _iters(df, drop_first)
         series = amortizable_ns(df)
         if series.empty:
             return 0.0
@@ -261,11 +294,9 @@ def amortizable_transfer_bytes(
 
     The counterpart of amortizable_time_ms, and averaged the same way for the
     same reason, so that the two divide into a bandwidth."""
-    for csv_path in _output_dir(output_dir).glob("*.csv"):
-        if _csv_type(csv_path) != csv_type:
+    for t, df in _tables(output_dir):
+        if t != csv_type:
             continue
-        df = pd.read_csv(csv_path)
-        df = df.rename(columns={_iter_col(df): "iteration"})
         series = amortizable_bytes(df)
         if series.empty:
             return 0.0
@@ -291,11 +322,9 @@ def charged_array_scatter_ms(output_dir: Union[pathlib.Path, RunResult]) -> floa
     when every array scatter is already amortized. This is the term the
     assemble layer moves between the two timing conventions on the
     benchmarks where they disagree."""
-    for csv_path in _output_dir(output_dir).glob("*.csv"):
-        if _csv_type(csv_path) != "scatter":
+    for t, df in _tables(output_dir):
+        if t != "scatter":
             continue
-        df = pd.read_csv(csv_path)
-        df = df.rename(columns={_iter_col(df): "iteration"})
         rows = _charged_array_scatter(df)
         if rows.empty:
             return 0.0
@@ -309,11 +338,9 @@ def charged_array_scatter_bytes(output_dir: Union[pathlib.Path, RunResult]) -> f
     """Mean per-iteration wire bytes of _charged_array_scatter in
     scatter.csv, counted like amortizable_bytes (per DPU reached), so the
     two compose into one excluded-bytes figure."""
-    for csv_path in _output_dir(output_dir).glob("*.csv"):
-        if _csv_type(csv_path) != "scatter":
+    for t, df in _tables(output_dir):
+        if t != "scatter":
             continue
-        df = pd.read_csv(csv_path)
-        df = df.rename(columns={_iter_col(df): "iteration"})
         rows = _charged_array_scatter(df)
         if rows.empty:
             return 0.0
@@ -337,10 +364,10 @@ def _sum_time_ms_by_kind(
 
     With drop_amortizable, the rows net_time_ms has already taken out of the
     total are left out here too, so the buckets still sum to net."""
-    for csv_path in _output_dir(output_dir).glob("*.csv"):
-        if _csv_type(csv_path) != csv_type:
+    for t, df in _tables(output_dir):
+        if t != csv_type:
             continue
-        df = _read_iters(csv_path, drop_first)
+        df = _iters(df, drop_first)
         if "kind" not in df.columns:
             return {}
         iterations = df["iteration"].unique()
