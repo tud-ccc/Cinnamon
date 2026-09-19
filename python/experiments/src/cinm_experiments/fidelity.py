@@ -12,6 +12,7 @@ measurements.PREDICTED_TO_MEASURED and stays available for debugging.
 from __future__ import annotations
 
 import pathlib
+from typing import Callable
 
 import pandas as pd
 
@@ -81,7 +82,37 @@ def _config_knobs(config_csv: pathlib.Path) -> dict[str, float]:
     return {k: meta.get(k, float("nan")) for k in ("dpus", "tasklets")}
 
 
-def fidelity_frame(compile_root: pathlib.Path, run_root: pathlib.Path) -> pd.DataFrame:
+def config_rows(job: tuple[str, pathlib.Path, pathlib.Path]) -> list[dict]:
+    """fidelity_frame's three rows for one (fn_name, compile_dir, config_dir)
+    job, none when either side is missing. A top-level function of one
+    argument, so that a caller can map it over a process pool."""
+    fn_name, compile_dir, config_dir = job
+    predicted = _predicted_terms(compile_dir / "ir" / "cost.csv")
+    measured = _measured_terms(config_dir / "output")
+    if predicted is None or measured is None:
+        return []
+    raw, charged = measured
+    knobs = _config_knobs(compile_dir / "config.csv")
+    return [
+        {
+            "fn_name": fn_name,
+            "label": config_dir.name,
+            "term": term,
+            "predicted_ms": predicted[term],
+            "measured_ms": raw[term],
+            "charged_ms": charged[term],
+            "net_ms": raw["combined"],
+            **knobs,
+        }
+        for term in ("transfer", "kernel", "combined")
+    ]
+
+
+def fidelity_frame(
+    compile_root: pathlib.Path,
+    run_root: pathlib.Path,
+    map_jobs: Callable[[Callable, list], list] = lambda fn, jobs: list(map(fn, jobs)),
+) -> pd.DataFrame:
     """One row per (fn_name, label, term) with predicted_ms, measured_ms and
     the two measured times the paper's share-of-time weighting is a ratio of:
     charged_ms (what this term contributes to measured combined) over net_ms
@@ -92,29 +123,16 @@ def fidelity_frame(compile_root: pathlib.Path, run_root: pathlib.Path) -> pd.Dat
     the residuals against. Configs missing either side are skipped: a compile
     without a bench has no measured truth, a bench whose compile predates
     cost.csv has no prediction. Empty frame when nothing joins -- the assemble
-    layer turns that into a MISSING note, not an error."""
-    rows = []
-    for fn_name, config_dir in iter_config_dirs(pathlib.Path(run_root)):
-        compile_dir = pathlib.Path(compile_root) / fn_name / config_dir.name
-        predicted = _predicted_terms(compile_dir / "ir" / "cost.csv")
-        measured = _measured_terms(config_dir / "output")
-        if predicted is None or measured is None:
-            continue
-        raw, charged = measured
-        knobs = _config_knobs(compile_dir / "config.csv")
-        for term in ("transfer", "kernel", "combined"):
-            rows.append(
-                {
-                    "fn_name": fn_name,
-                    "label": config_dir.name,
-                    "term": term,
-                    "predicted_ms": predicted[term],
-                    "measured_ms": raw[term],
-                    "charged_ms": charged[term],
-                    "net_ms": raw["combined"],
-                    **knobs,
-                }
-            )
+    layer turns that into a MISSING note, not an error.
+
+    `map_jobs(config_rows, jobs)` measures the config dirs; it must return the
+    results in job order, as the serial default does. The assemble layer
+    passes one that spreads them over processes."""
+    jobs = [
+        (fn_name, pathlib.Path(compile_root) / fn_name / config_dir.name, config_dir)
+        for fn_name, config_dir in iter_config_dirs(pathlib.Path(run_root))
+    ]
+    rows = [row for rows in map_jobs(config_rows, jobs) for row in rows]
     columns = [
         "fn_name",
         "label",
