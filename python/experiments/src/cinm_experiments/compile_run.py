@@ -205,7 +205,9 @@ def recompute_cost(config_dir: pathlib.Path, *, prim: str) -> str | None:
     The pass is forced (-B): its input is unchanged and only cinm-opt itself
     is newer, which make cannot see. CINM_OPT is passed rather than left to
     the Makefile's own default so that the binary priced against is the one
-    the caller can name as a dependency."""
+    the caller can name as a dependency, paths.cinm_opt(). It runs through
+    the client beside it: pricing one config takes milliseconds, starting
+    cinm-opt half a second."""
     lowered = config_dir / "lowered.mlir"
     if not lowered.exists():
         return f"no lowered.mlir in {config_dir}"
@@ -216,7 +218,7 @@ def recompute_cost(config_dir: pathlib.Path, *, prim: str) -> str | None:
         config_dir / "ir",
         lowered,
         target="costs-only",
-        extra_vars={"CINM_OPT": str(paths.cinm_opt())},
+        extra_vars={"CINM_OPT": str(paths.cinm_opt_client())},
         force=True,
         write_script=False,
     )

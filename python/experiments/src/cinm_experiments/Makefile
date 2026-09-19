@@ -25,7 +25,11 @@ CINM_BIN    ?= $(error CINM_BIN is not set)
 BENCH_DIR   ?= $(error BENCH_DIR is not set)
 RT_INCLUDE  ?= $(CINM_BIN)/../include/cinm-mlir/runtime/Upmem
 RT_LIB_DIR  ?= $(CINM_BIN)/../lib
-CINM_OPT     = $(CINM_BIN)/cinm-opt
+# Each cinm-opt call below applies a few passes, so cinm-opt's half-second
+# startup dominates it. cinm-opt-client runs the call in a cinm-opt fork
+# server that has already paid it, and runs cinm-opt directly whenever there
+# is no server to use. An install older than the client has only cinm-opt.
+CINM_OPT     = $(or $(wildcard $(CINM_BIN)/cinm-opt-client),$(CINM_BIN)/cinm-opt)
 CINM_TRANS   = $(CINM_BIN)/cinm-translate
 COMPILE_DPU  = $(CINM_BIN)/cinm-compile-dpu
 

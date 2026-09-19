@@ -1,4 +1,5 @@
 add_subdirectory(cinm-opt)
+add_subdirectory(cinm-opt-client)
 add_subdirectory(cinm-translate)
 add_subdirectory(cinm-lsp-server)
 if (CINM_BUILD_GPU_SUPPORT)

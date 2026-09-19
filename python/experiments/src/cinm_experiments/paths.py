@@ -41,6 +41,17 @@ def cinm_opt() -> pathlib.Path:
     return _cinnamon().tool("cinm-opt")
 
 
+def cinm_opt_client() -> pathlib.Path:
+    """How to run cinm_opt() when a call is short enough for its half-second
+    startup to dominate: cinm-opt-client, which runs the cinm-opt beside it
+    in a fork server that has already paid that startup, and runs it directly
+    whenever there is no server to use. Either way the compiler is
+    cinm_opt(). An install older than the client has only cinm-opt, which
+    this then returns."""
+    client = cinm_opt().with_name("cinm-opt-client")
+    return client if client.is_file() else cinm_opt()
+
+
 def bin_dir() -> pathlib.Path:
     """Where cinm-opt and the tools beside it are: cinm-translate and
     cinm-compile-dpu, plus the opt and llc of the LLVM this was built

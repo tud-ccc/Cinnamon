@@ -8,6 +8,7 @@ project(cinm-opt)
 
 add_executable(${PROJECT_NAME}
     cinm-opt.cpp
+    OptServer.cpp
 )
 
 # Link all standard MLIR dialect and conversion libs.
