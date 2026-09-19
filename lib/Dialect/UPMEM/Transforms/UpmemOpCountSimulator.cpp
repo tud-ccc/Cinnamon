@@ -93,59 +93,134 @@ static SimCost scatterCost(Operation *op, double ms, llvm::StringRef label) {
 }
 
 static SimCost costOfRegionCb(Region &region, bool annotate,
-                              const WaitForCostFn &cb);
+                              const WaitForCostFn &cb,
+                              const cinm::HostModel &host);
 
-static SimCost costOfOpCb(Operation &op, bool annotate,
-                          const WaitForCostFn &cb) {
+static int64_t tripCountOf(LoopLikeOpInterface forOp) {
+  if (auto tc = forOp.getStaticTripCount())
+    return tc->getZExtValue();
+  // In the dynamic case, for now we assume a big number divided by
+  // the loop step We should use integer range analysis
+  int64_t step = 1;
+  if (auto steps = forOp.getLoopSteps())
+    if (!steps->empty())
+      if (auto sv = mlir::getConstantIntValue(steps->front()))
+        step = *sv;
+  return std::max(1L, 2048 / std::max(1L, step));
+}
+
+/// Whether `loop` is a host loop nest of plain arithmetic over memrefs --
+/// the shape of the loops that combine a split reduction's partial results
+/// -- which LLVM vectorizes, and whose cost is therefore not the sum of its
+/// ops at scalar latency. Anything else under the loop (a transfer, a
+/// launch, a call) keeps the loop on the per-op path.
+static bool isHostArithmeticNest(Operation *loop) {
+  if (loop->getParentOfType<DpuProgramOp>())
+    return false;
+  WalkResult walk = loop->walk([&](Operation *op) {
+    if (op == loop)
+      return WalkResult::advance();
+    llvm::StringRef ns =
+        op->getDialect() ? op->getDialect()->getNamespace() : llvm::StringRef();
+    if (ns == "arith" || ns == "affine" || ns == "scf" ||
+        llvm::isa<memref::LoadOp, memref::StoreOp>(op))
+      return WalkResult::advance();
+    return WalkResult::interrupt();
+  });
+  return !walk.wasInterrupted();
+}
+
+/// Vector-instruction time and bytes of memory traffic of the ops in
+/// `region`, each multiplied out by `trips`, the product of the trip counts
+/// of the loops it sits in. Index arithmetic (affine.apply, and the loops'
+/// own induction) folds into addressing and is not counted.
+static void accumulateHostNestWork(Region &region, double trips,
+                                   const cinm::HostModel &host,
+                                   double &computeNs, double &bytes) {
+  for (Operation &op : region.getOps()) {
+    if (auto loop = llvm::dyn_cast<LoopLikeOpInterface>(&op)) {
+      double inner = trips * static_cast<double>(tripCountOf(loop));
+      for (Region *body : loop.getLoopRegions())
+        accumulateHostNestWork(*body, inner, host, computeNs, bytes);
+      continue;
+    }
+    if (llvm::isa<affine::AffineLoadOp, memref::LoadOp>(op)) {
+      bytes += trips * elementBytes(op.getResult(0).getType());
+    } else if (auto store = llvm::dyn_cast<affine::AffineStoreOp>(op)) {
+      bytes += trips * elementBytes(store.getValueToStore().getType());
+    } else if (auto store = llvm::dyn_cast<memref::StoreOp>(op)) {
+      bytes += trips * elementBytes(store.getValueToStore().getType());
+    } else if (op.getDialect() && op.getDialect()->getNamespace() == "arith" &&
+               !llvm::isa<arith::ConstantOp>(op) && op.getNumResults() == 1) {
+      computeNs += trips * host.vectorOpNs *
+                   elementBytes(op.getResult(0).getType()) / host.vectorBytes;
+    }
+    for (Region &nested : op.getRegions())
+      accumulateHostNestWork(nested, trips, host, computeNs, bytes);
+  }
+}
+
+/// A host arithmetic nest, priced as a roofline on one core: the larger of
+/// its vectorized arithmetic and its memory traffic at streaming bandwidth.
+/// The partial-sum loops this is for are bound by the traffic by a wide
+/// margin, so charging each add at scalar latency overprices them several
+/// times over, and by more the more ways the reduction was split.
+static SimCost hostArithmeticNestCost(LoopLikeOpInterface loop,
+                                      const cinm::HostModel &host) {
+  double computeNs = 0.0, bytes = 0.0;
+  double trips = static_cast<double>(tripCountOf(loop));
+  for (Region *body : loop.getLoopRegions())
+    accumulateHostNestWork(*body, trips, host, computeNs, bytes);
+  double memoryNs = bytes / host.streamBytesPerSecond * 1e9;
+  return SimCost::forCpu(std::max(computeNs, memoryNs) / 1e6, "other");
+}
+
+/// A repack between a host buffer's layout and a transfer's, at the host's
+/// copy bandwidth. `shaped` is either side: both hold the same elements.
+static double repackMs(ShapedType shaped, const cinm::HostModel &host) {
+  double bytes = static_cast<double>(staticElementCount(shaped)) *
+                 elementBytes(shaped.getElementType());
+  return bytes / host.copyBytesPerSecond * 1e3;
+}
+
+static SimCost costOfOpCb(Operation &op, bool annotate, const WaitForCostFn &cb,
+                          const cinm::HostModel &host) {
   SimCost cost =
       llvm::TypeSwitch<Operation *, SimCost>(&op)
           .Case([&](LoopLikeOpInterface forOp) {
-            int64_t tripCount;
-            if (auto tc = forOp.getStaticTripCount()) {
-              tripCount = tc->getZExtValue();
-            } else {
-              // In the dynamic case, for now we assume a big number divided by
-              // the loop step We should use integer range analysis
-              int64_t step = 1;
-              if (auto steps = forOp.getLoopSteps())
-                if (!steps->empty())
-                  if (auto sv = mlir::getConstantIntValue(steps->front()))
-                    step = *sv;
-              tripCount = std::max(1L, 2048 / std::max(1L, step));
-            }
+            if (isHostArithmeticNest(forOp))
+              return hostArithmeticNestCost(forOp, host);
+            int64_t tripCount = tripCountOf(forOp);
             SimCost bodyCost =
-                costOfRegionCb(*forOp.getLoopRegions()[0], annotate, cb);
+                costOfRegionCb(*forOp.getLoopRegions()[0], annotate, cb, host);
             // Scale each cost component independently by the trip count,
             // rather than collapsing to a single aggregate first.
             return bodyCost * static_cast<double>(tripCount);
           })
-          .Case<arith::AddIOp>([](auto) {
-            // Between 1.6 and 10 ns on chios.
-            // It's lower with more iterations of the enclosing loop
-            return SimCost::forCpu(3e-6, "other");
+          .Case<arith::AddIOp>([&](arith::AddIOp addOp) {
+            // Inside a DPU program this is the op-count simulator's flat
+            // per-op charge, which has nothing to do with the host.
+            if (addOp->getParentOfType<DpuProgramOp>())
+              return SimCost::forCpu(3e-6, "other");
+            return SimCost::forCpu(host.scalarOpNs / 1e6, "other");
           })
-          .Case<cnm::CompactBufferOp>([](cnm::CompactBufferOp op) {
-            // Use the same rule as memref,
-            // the allocation is put out of the hot path
-            // by statically allocating.
-            // The point here is just to put _some_ cost on the compaction.
-            auto hostTy = op.getSource().getType();
-            double bytes = static_cast<double>(staticElementCount(hostTy)) *
-                           elementBytes(hostTy.getElementType());
-            double time_ns = 0.63 * pow(bytes, 0.907);
-            auto cost = SimCost::forCpu(time_ns / 1e6, "compact"); // ns -> ms
+          .Case<cnm::CompactBufferOp>([&](cnm::CompactBufferOp op) {
+            auto cost = SimCost::forCpu(
+                repackMs(op.getSource().getType(), host), "compact");
             if (cinm::isStaticValue(op.getSource()))
               cost.markExcluded();
             return cost;
           })
-          .Case<memref::CopyOp>([](memref::CopyOp copyOp) {
-            // Experiment: try to account for the copy happening
-            // LLVM O3 usually unroll the tile copy loop
-            auto hostTy = copyOp.getSource().getType();
-            double bytes = static_cast<double>(staticElementCount(hostTy)) *
-                           elementBytes(hostTy.getElementType());
-            double time_ns = 0.63 * pow(bytes, 0.907);
-            return SimCost::forCpu(time_ns / 1e6, "copy"); // ns -> ms
+          .Case<cnm::ExpandBufferOp>([&](cnm::ExpandBufferOp op) {
+            // Writes a gathered result into the host's layout, so it recurs
+            // on every inference: never excluded, unlike a compact of
+            // static data.
+            return SimCost::forCpu(repackMs(op.getSource().getType(), host),
+                                   "expand");
+          })
+          .Case<memref::CopyOp>([&](memref::CopyOp copyOp) {
+            return SimCost::forCpu(repackMs(copyOp.getSource().getType(), host),
+                                   "copy");
           })
           // .Case<memref::LoadOp, memref::StoreOp>([](auto) { return 1e-7; })
           .Case<upmem::ScatterOnArrayOp>(
@@ -235,7 +310,7 @@ static SimCost costOfOpCb(Operation &op, bool annotate,
           .Default([&](Operation *o) {
             SimCost c;
             for (auto &region : o->getRegions())
-              c += costOfRegionCb(region, annotate, cb);
+              c += costOfRegionCb(region, annotate, cb, host);
             return c;
           });
 
@@ -246,11 +321,12 @@ static SimCost costOfOpCb(Operation &op, bool annotate,
 }
 
 static SimCost costOfRegionCb(Region &region, bool annotate,
-                              const WaitForCostFn &cb) {
+                              const WaitForCostFn &cb,
+                              const cinm::HostModel &host) {
   SimCost cost;
   for (auto &block : region) {
     for (auto &op : block) {
-      cost += costOfOpCb(op, annotate, cb);
+      cost += costOfOpCb(op, annotate, cb, host);
       if (!cost.isFinite())
         return cost;
     }
@@ -291,17 +367,25 @@ struct OpCountSimulator : UpmemSimulator {
   }
 };
 
+/// The host `region` runs on, as the nearest #cinm.host_platform around it
+/// declares it.
+static cinm::HostModel hostOf(Region &region) {
+  if (Operation *parent = region.getParentOp())
+    return cinm::HostPlatformAttr::getInScope(parent).getModel();
+  return cinm::HostModel{};
+}
+
 } // namespace
 
 SimCost simulateHostRegion(Region &region, bool annotate,
                            const WaitForCostFn &waitForCb) {
-  return costOfRegionCb(region, annotate, waitForCb);
+  return costOfRegionCb(region, annotate, waitForCb, hostOf(region));
 }
 
 mlir::cinm::utils::Maybe<SimCost>
 simulateHostRegionOrFail(Region &region, bool annotate,
                          const WaitForCostFn &waitForCb) {
-  SimCost cost = costOfRegionCb(region, annotate, waitForCb);
+  SimCost cost = costOfRegionCb(region, annotate, waitForCb, hostOf(region));
   if (cost.isFinite())
     return cost;
 

@@ -1,26 +1,45 @@
-//===- CinmOffloadModel.h - roofline inputs for the offload gate -*- C++
-//-*-===//
+//===- CinmOffloadModel.h - What the host costs -----------------*- C++ -*-===//
 //
-// The host side of the offload decision, and the verdict a platform returns
-// when asked whether running an op on it would beat leaving it where it is.
+// The host side of the offload decision and of the cost model, and the
+// verdict a platform returns when asked whether running an op on it would
+// beat leaving it where it is.
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef CINM_OFFLOAD_MODEL_H
 #define CINM_OFFLOAD_MODEL_H
 
+#include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/bit.h"
 
 namespace mlir::cinm {
 
-/// What the host the accelerator hangs off can sustain. Both numbers are
-/// properties of the machine, not of the program, so they are supplied by
-/// whoever runs the pass rather than derived from the IR.
+/// What the host the accelerators hang off can sustain, and what running
+/// code on it costs. These are properties of the machine, not of the
+/// program: they are the parameters of the `#cinm.host_platform` in scope
+/// (HostPlatformAttr::getInScope). The defaults are the bench machine; the
+/// attribute's description says where each number comes from, under the
+/// same name in snake case.
 struct HostModel {
+  // The offload roofline.
+
   /// Arithmetic throughput summed over every core, in ops per second.
-  double opsPerSecond;
+  double opsPerSecond = 2.1e12;
   /// Bandwidth from DRAM to those cores, in bytes per second.
-  double dramBytesPerSecond;
+  double dramBytesPerSecond = 15.0e9;
+
+  // The cost model's host code.
+
+  /// One scalar add in straight-line code, in ns.
+  double scalarOpNs = 3.0;
+  /// One vector instruction, in ns, and the bytes it operates on.
+  double vectorOpNs = 0.5;
+  double vectorBytes = 64.0;
+  /// What one core streams through a loop nest, in bytes per second.
+  double streamBytesPerSecond = 8.0e9;
+  /// The rate of a strided repack between two layouts, in bytes per second.
+  double copyBytesPerSecond = 0.63e9;
 
   /// The arithmetic intensity at which the two balance. Below it the host is
   /// bandwidth-bound and an accelerator has something to beat; above it the
@@ -28,36 +47,18 @@ struct HostModel {
   /// magnitude, nothing on the device side can win.
   double ridgeOpsPerByte() const { return opsPerSecond / dramBytesPerSecond; }
 
-  /// The bench machine: an Intel R2312WFTZSR holding 2x Xeon Silver 4216,
-  /// 16 Cascade Lake cores each at 2.1 GHz, alongside 20 PIM modules.
-  ///
-  /// Arithmetic depends on the element type, and by a factor of four. An
-  /// int32 multiply-add uses 16 AVX-512 lanes; Cascade Lake also has
-  /// AVX512-VNNI, whose vpdpbusd does 64 int8 multiply-accumulates in one
-  /// instruction. So the host sustains ~2.1e12 int32 ops/s but ~8.6e12 int8
-  /// ops/s, and an experiment has to pass whichever matches its own
-  /// numerics. The default below is the int32 figure.
-  ///
-  /// Bandwidth is the number to be careful with, for a reason particular to
-  /// PIM machines: the PIM modules occupy DIMM slots. This one has 4x 64 GB
-  /// DDR4 populating 2 slots per socket, so 4 of the 12 memory channels
-  /// carry host DRAM, and the 4216's controller caps DDR4 at 2400 MT/s
-  /// whatever the DIMMs are rated for -- 76.8 GB/s of peak, against the
-  /// ~230 GB/s the same sockets would reach fully populated. That is not a
-  /// handicapped baseline, it is what a PIM-heavy build costs, and the
-  /// comparison is only honest if it is stated rather than discovered.
-  ///
-  /// The 15 GB/s kept here is the figure cpu_baseline.py quotes, which is
-  /// 20% of that peak and so is almost certainly not a pure streaming
-  /// measurement. It is retained as the default because it is the
-  /// conservative end: a gate errs toward offloading, and every plausible
-  /// measured value is higher, which only makes the host stronger. The
-  /// verdicts this decides are insensitive across that whole range -- a
-  /// RoBERTa projection needs the host below 6.4 GB/s, 8% of peak, before
-  /// it would rather be on the array -- so replacing this with a real
-  /// STREAM number is worth doing but will not move the answers.
-  static HostModel benchMachine() { return {2.1e12, 15.0e9}; }
+  bool operator==(const HostModel &) const = default;
 };
+
+/// Lets a HostModel be an attribute parameter: attribute storage is uniqued
+/// by hash, and llvm::hash_value has no overload for double.
+inline llvm::hash_code hash_value(const HostModel &m) {
+  auto bits = [](double d) { return llvm::bit_cast<uint64_t>(d); };
+  return llvm::hash_combine(bits(m.opsPerSecond), bits(m.dramBytesPerSecond),
+                            bits(m.scalarOpNs), bits(m.vectorOpNs),
+                            bits(m.vectorBytes), bits(m.streamBytesPerSecond),
+                            bits(m.copyBytesPerSecond));
+}
 
 /// The terms of one offload decision. Kept whole rather than reduced to a
 /// bool so the decision can be printed: a gate that silently drops an op

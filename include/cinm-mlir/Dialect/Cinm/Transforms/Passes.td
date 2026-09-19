@@ -266,10 +266,10 @@ def CinmAssignPlatformsPass : Pass<"cinm-assign-platforms", "mlir::func::FuncOp"
   let options = [
     Option<"requireProfitable", "require-profitable", "bool", "false",
            "Also require the platform's roofline to predict a win over the host">,
-    Option<"hostOpsPerSecond", "host-ops-per-second", "double", "2.1e12",
-           "Host arithmetic throughput, summed over cores (default: 2x Xeon Silver 4216)">,
-    Option<"hostDramBytesPerSecond", "host-dram-bytes-per-second", "double", "15.0e9",
-           "Host DRAM streaming bandwidth in bytes/s (default: the bench machine's ~15 GB/s)">
+    Option<"hostOpsPerSecond", "host-ops-per-second", "double", "0",
+           "Override the host platform's ops_per_second (0: take it from the #cinm.host_platform in scope)">,
+    Option<"hostDramBytesPerSecond", "host-dram-bytes-per-second", "double", "0",
+           "Override the host platform's dram_bytes_per_second (0: take it from the #cinm.host_platform in scope)">
   ];
 
   let dependentDialects = [

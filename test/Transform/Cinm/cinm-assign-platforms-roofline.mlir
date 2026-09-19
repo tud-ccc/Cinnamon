@@ -47,6 +47,27 @@ func.func @gemv_streamed_weight(%A: tensor<8192x8192xi32>,
 
 #upmem = #upmem.platform<type = v1A, dpus = 2560, tasklets = 24>
 
+// The same streamed gemv on a host that declares a faster DRAM path. The
+// margin above was a few percent, so 20 GB/s is enough to lose it: the host
+// description is read from the function's platform list, and an entry for
+// the host there is not a candidate for offloading.
+
+// OPEN-LABEL: @gemv_streamed_weight_fast_host
+// OPEN: cinm.compute
+// GATED-LABEL: @gemv_streamed_weight_fast_host
+// GATED-NOT: cinm.compute
+func.func @gemv_streamed_weight_fast_host(%A: tensor<8192x8192xi32>,
+                                          %x: tensor<8192xi32>) -> tensor<8192xi32>
+  attributes {cinm.available_platforms = [#cinm.host_platform<dram_bytes_per_second = 2.0e10>, #upmem]} {
+  // expected-remark @below {{not offloaded: no static operand}}
+  %y = cinm.op.gemv %A, %x : tensor<8192x8192xi32>, tensor<8192xi32> -> tensor<8192xi32>
+  return %y : tensor<8192xi32>
+}
+
+// -----
+
+#upmem = #upmem.platform<type = v1A, dpus = 2560, tasklets = 24>
+
 // Vector add: pure traffic, no reuse, no resident operand, and a result as
 // large as each input, so the gather -- the slow direction -- is paid in
 // full. This is `va`, and rejecting it is the model agreeing with what PrIM

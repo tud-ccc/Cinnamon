@@ -48,7 +48,11 @@ struct CinmAssignPlatformsPass
       opsToWrap.push_back(op);
     });
 
-    const cinm::HostModel host{hostOpsPerSecond, hostDramBytesPerSecond};
+    cinm::HostModel host = HostPlatformAttr::getInScope(func).getModel();
+    if (hostOpsPerSecond > 0)
+      host.opsPerSecond = hostOpsPerSecond;
+    if (hostDramBytesPerSecond > 0)
+      host.dramBytesPerSecond = hostDramBytesPerSecond;
 
     for (Operation *op : opsToWrap) {
       // An op the program already put inside a cinm.compute was offloaded on

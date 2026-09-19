@@ -11,6 +11,7 @@
 #include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.h"
 #include <cstdint>
 #include <llvm/ADT/SmallVector.h>
+#include <llvm/ADT/StringSet.h>
 #include <llvm/ADT/TypeSwitch.h>
 #include <llvm/Support/Casting.h>
 #include <llvm/Support/LogicalResult.h>
@@ -189,7 +190,87 @@ void CinmDialect::printAttribute(Attribute attr, DialectAsmPrinter &out) const {
   (void)generatedAttributePrinter(attr, out);
 }
 
-Attribute HostPlatformAttr::parse(::mlir::AsmParser &parser, ::mlir::Type) {
-  return get(parser.getContext());
+/// Calls `fn(key, field, default)` for each HostModel field of `model`, with
+/// its textual key, in print order.
+template <typename Fn> static void forEachHostField(HostModel &model, Fn fn) {
+  const HostModel def;
+  fn("ops_per_second", model.opsPerSecond, def.opsPerSecond);
+  fn("dram_bytes_per_second", model.dramBytesPerSecond, def.dramBytesPerSecond);
+  fn("scalar_op_ns", model.scalarOpNs, def.scalarOpNs);
+  fn("vector_op_ns", model.vectorOpNs, def.vectorOpNs);
+  fn("vector_bytes", model.vectorBytes, def.vectorBytes);
+  fn("stream_bytes_per_second", model.streamBytesPerSecond,
+     def.streamBytesPerSecond);
+  fn("copy_bytes_per_second", model.copyBytesPerSecond, def.copyBytesPerSecond);
 }
-void HostPlatformAttr::print(::mlir::AsmPrinter &) const {}
+
+/// `#cinm.host_platform` is the default machine; any parameter that differs
+/// is given as `<key = value, ...>`, and only those are printed.
+Attribute HostPlatformAttr::parse(::mlir::AsmParser &parser, ::mlir::Type) {
+  HostModel model;
+  if (succeeded(parser.parseOptionalLess())) {
+    llvm::StringSet<> seen;
+    auto parseEntry = [&]() -> ParseResult {
+      SMLoc loc = parser.getCurrentLocation();
+      std::string key;
+      if (parser.parseKeywordOrString(&key) || parser.parseEqual())
+        return failure();
+      double *field = nullptr;
+      forEachHostField(model, [&](llvm::StringRef name, double &value, double) {
+        if (name == key)
+          field = &value;
+      });
+      if (!field)
+        return parser.emitError(loc, "unknown host platform parameter '")
+               << key << "'";
+      if (!seen.insert(key).second)
+        return parser.emitError(loc, "host platform parameter '")
+               << key << "' given twice";
+      // An integer literal is accepted as well: `vector_bytes = 64` should
+      // not have to be spelled `64.`.
+      int64_t integral;
+      OptionalParseResult asInteger = parser.parseOptionalInteger(integral);
+      if (asInteger.has_value()) {
+        if (failed(*asInteger))
+          return failure();
+        *field = static_cast<double>(integral);
+      } else if (parser.parseFloat(*field)) {
+        return failure();
+      }
+      if (!(*field > 0.0))
+        return parser.emitError(loc, "host platform parameter '")
+               << key << "' must be positive";
+      return success();
+    };
+    if (parser.parseCommaSeparatedList(parseEntry) || parser.parseGreater())
+      return {};
+  }
+  return get(parser.getContext(), model);
+}
+
+void HostPlatformAttr::print(::mlir::AsmPrinter &printer) const {
+  HostModel model = getModel();
+  bool first = true;
+  forEachHostField(model, [&](llvm::StringRef key, double &value, double def) {
+    if (value == def)
+      return;
+    printer << (first ? "<" : ", ") << key << " = ";
+    printer.printFloat(llvm::APFloat(value));
+    first = false;
+  });
+  if (!first)
+    printer << ">";
+}
+
+HostPlatformAttr HostPlatformAttr::getInScope(Operation *op) {
+  for (Operation *scope = op; scope; scope = scope->getParentOp()) {
+    auto available =
+        scope->getAttrOfType<ArrayAttr>(CinmDialect::AVAILABLE_PLATFORMS_NAME);
+    if (!available)
+      continue;
+    for (Attribute attr : available)
+      if (auto host = llvm::dyn_cast<HostPlatformAttr>(attr))
+        return host;
+  }
+  return get(op->getContext());
+}

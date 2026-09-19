@@ -589,6 +589,9 @@ PREDICTED_TO_MEASURED = {
     ("transfer_back", "array"): "gather:array",
     ("transfer_back", "blocks"): "gather:blocks",
     ("cpu", "other"): "unaccounted",
+    # The runtime times cnm.expand_buffer in compact.csv, with the kind of a
+    # per-inference repack: it writes a gathered result, so it is never static.
+    ("cpu", "expand"): "compact:dyn",
 }
 
 

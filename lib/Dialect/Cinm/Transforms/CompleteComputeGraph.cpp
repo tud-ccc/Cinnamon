@@ -205,9 +205,10 @@ private:
     rewriter.setInsertionPointAfter(group.back());
     auto compute = ComputeOp::create(rewriter, group.front()->getLoc(),
                                      ValueRange(escaping).getTypes());
-    auto host = HostPlatformAttr::get(rewriter.getContext());
-    // Shadows the cinm.available_platforms attribute of the enclosing
-    // function, which advertises the offloading platforms.
+    // The host in scope rather than the default one: this list shadows the
+    // cinm.available_platforms attribute of the enclosing function, which
+    // advertises the offloading platforms and may describe the host too.
+    auto host = HostPlatformAttr::getInScope(group.front());
     compute->setAttr(CinmDialect::AVAILABLE_PLATFORMS_NAME,
                      rewriter.getArrayAttr({host}));
 
