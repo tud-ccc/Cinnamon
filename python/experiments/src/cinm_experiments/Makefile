@@ -97,6 +97,29 @@ CXXFLAGS = -O3 -std=c++17 \
            -I$(UPMEM_HOME)/include/dpu \
            $(CONDA_CXXFLAGS)
 
+# The processor the host object is generated for. Empty means llvm's
+# `generic`, the 2003 x86-64 baseline: SSE2, 16-byte vectors, which is what
+# the objects held whatever --affine-super-vectorize produced above them.
+# The bench machine is a Xeon Silver 4216, which LLVM calls `cascadelake`
+# and which brings AVX-512 and VNNI (the instruction the int8 benchmarks
+# want). Named rather than hardcoded because the binary then requires that
+# processor.
+HOST_MCPU ?= cascadelake
+MCPU_FLAG = $(if $(HOST_MCPU),-mcpu=$(HOST_MCPU),)
+
+# Elements per vector for --affine-super-vectorize. Elements, not bytes, so
+# the width it asks for depends on the element type: 16 fills a zmm with
+# i32, while an i8 program wants 64 and gets an eighth of one at this
+# setting. The pass vectorises the contiguous loop, not the reduction it
+# accumulates into, so this has to divide the innermost result dimension --
+# every benchmark here has a power of two there -- and the reduction's own
+# trip count is free. HOST_VECTORIZE=0 drops the pass and leaves
+# vectorisation to llvm's loop vectoriser, which on this IR emits nothing
+# wider than xmm even with -mcpu.
+HOST_VECTOR_SIZE ?= 16
+HOST_VECTORIZE ?= 1
+SUPER_VECTORIZE = $(if $(filter-out 0,$(HOST_VECTORIZE)),--affine-super-vectorize=vectorize-reductions\ virtual-vector-size=$(HOST_VECTOR_SIZE),)
+
 # openblas backs the bench drivers' golden references (benchmarks/common.hpp):
 # a run checks its output against an independent implementation before its
 # timings are written, unless BENCH_CHECK=0 says otherwise.
@@ -129,7 +152,7 @@ LOWER_PIPELINE = \
     --one-shot-bufferize="bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map" \
     --buffer-results-to-out-params="hoist-static-allocs modify-public-functions" \
     --convert-linalg-to-affine-loops \
-		--affine-scalrep --affine-super-vectorize=vectorize-reductions\ virtual-vector-size=8 --affine-expand-index-ops-as-affine \
+		--affine-scalrep $(SUPER_VECTORIZE) --affine-expand-index-ops-as-affine \
 		--convert-vector-to-amx --convert-vector-to-scf --convert-vector-to-llvm \
     --canonicalize --cse
 #     --cinm-unwrap-compute-blocks
@@ -186,7 +209,7 @@ $(IR_DIR)/$(BENCH_FN).mlir: $(SRC_MLIR) | $(IR_DIR)
 $(IR_DIR)/%.o: $(IR_DIR)/%.mlir
 	$(CINM_OPT) $< $(LOWER_PIPELINE) $(TO_LLVM_PIPELINE) -o - \
 	    | $(CINM_TRANS) --allow-unregistered-dialect --mlir-to-llvmir -o - \
-	    | $(CINM_BIN)/opt -O3 | $(CINM_BIN)/llc -O3 -filetype=obj -relocation-model=pic -code-model=medium -o $@
+	    | $(CINM_BIN)/opt -O3 $(MCPU_FLAG) | $(CINM_BIN)/llc -O3 $(MCPU_FLAG) -filetype=obj -relocation-model=pic -code-model=medium -o $@
 
 # The stages the rule above pipes through, for when a compile fails and the
 # intermediate IR is what you want to look at. Nothing depends on these; ask
