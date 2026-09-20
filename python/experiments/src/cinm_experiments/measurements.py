@@ -2,7 +2,8 @@
 (scatter/gather/alloc/free/total/... one file per measurement type in an
 output/ dir) into net compute+transfer time, matching the definition used
 throughout the paper pipeline (paperplots/plot_best_configs.py): total
-elapsed time minus alloc/free overhead, averaged over iterations."""
+elapsed time minus alloc/free overhead, the median over iterations (see
+_over_iterations)."""
 
 from __future__ import annotations
 
@@ -71,6 +72,25 @@ def _iters(df: pd.DataFrame, drop_first: bool) -> pd.DataFrame:
     return df
 
 
+def _over_iterations(per_iteration: pd.Series) -> float:
+    """The statistic every per-iteration series in this module is reduced
+    by: the median.
+
+    A run is six iterations, and about three launches, scatters or gathers
+    in a thousand take several times longer than their siblings -- a cold
+    first launch, a scatter that stalls -- by milliseconds, in any
+    iteration, not only the first (over the bench sample, 222 of the 338
+    such outliers were past iteration 0). Under a mean, one such call adds a sixth of its excess to the
+    result, which on a 1 ms config is several times the config's own time and
+    enough to move it across a ranking. The median of six ignores up to two.
+
+    Medians do not add: the buckets of net_breakdown_ms are each the median of
+    their own series, so they sum to the median net only approximately, and
+    its `unaccounted` bucket, the difference, absorbs the gap. NaN for an
+    empty series, as the mean was."""
+    return float(per_iteration.median())
+
+
 def _csv_type(path: pathlib.Path) -> str:
     return path.stem.rsplit("_", 1)[-1]
 
@@ -122,7 +142,7 @@ def net_time_ms(
     discount_static_compact: bool = True,
     drop_first: bool = False,
 ) -> float | None:
-    """Mean net time in ms over all iterations recorded in output_dir, or
+    """Median net time in ms over all iterations recorded in output_dir, or
     None if no total.csv-type file is present.
 
     Alloc and free are always subtracted (harness overhead). DPU program
@@ -175,7 +195,9 @@ def net_time_ms(
     )
     for series in static_ns:
         net = net - total_df["iteration"].map(series).fillna(0)
-    return float(net.mean()) / 1e6
+    # Per iteration first, then the median: the net of one real iteration,
+    # not a total and a set of deductions each taken from a different one.
+    return _over_iterations(net) / 1e6
 
 
 def _sum_time_ms(
@@ -183,17 +205,17 @@ def _sum_time_ms(
     csv_type: str,
     drop_first: bool = False,
 ) -> float | None:
-    """Mean per-iteration total time in ms spent in the given csv_type
+    """Median per-iteration total time in ms spent in the given csv_type
     (summed over however many calls of that type happen within an
     iteration), or None if no matching csv-type file is present."""
     for t, df in _tables(output_dir):
         if t != csv_type:
             continue
         df = _iters(df, drop_first)
-        mean = float(df.groupby("iteration")["elapsed_ns"].sum().mean())
-        if isnan(mean):
+        ns = _over_iterations(df.groupby("iteration")["elapsed_ns"].sum())
+        if isnan(ns):
             return None
-        return float(mean) / 1e6
+        return ns / 1e6
     return None
 
 
@@ -254,7 +276,7 @@ def amortizable_time_ms(
     csv_type: str,
     drop_first: bool = False,
 ) -> float:
-    """Mean per-iteration time in ms that amortizable_ns identifies in the
+    """Median per-iteration time in ms that amortizable_ns identifies in the
     given csv_type. 0.0 when there is nothing to amortize."""
     for t, df in _tables(output_dir):
         if t != csv_type:
@@ -264,10 +286,10 @@ def amortizable_time_ms(
         if series.empty:
             return 0.0
         # Iterations with nothing amortizable contribute zero, not nothing:
-        # reindexing over every iteration in the file keeps the mean per
+        # reindexing over every iteration in the file keeps the statistic per
         # iteration rather than per iteration that happened to have one.
         iterations = df["iteration"].unique()
-        return float(series.reindex(iterations).fillna(0).mean()) / 1e6
+        return _over_iterations(series.reindex(iterations).fillna(0)) / 1e6
     return 0.0
 
 
@@ -289,10 +311,10 @@ def amortizable_bytes(df: pd.DataFrame) -> pd.Series:
 def amortizable_transfer_bytes(
     output_dir: Union[pathlib.Path, RunResult], csv_type: str
 ) -> float:
-    """Mean per-iteration bytes that amortizable_bytes identifies in the given
-    csv_type. 0.0 when there is nothing to amortize.
+    """Median per-iteration bytes that amortizable_bytes identifies in the
+    given csv_type. 0.0 when there is nothing to amortize.
 
-    The counterpart of amortizable_time_ms, and averaged the same way for the
+    The counterpart of amortizable_time_ms, and reduced the same way for the
     same reason, so that the two divide into a bandwidth."""
     for t, df in _tables(output_dir):
         if t != csv_type:
@@ -301,7 +323,7 @@ def amortizable_transfer_bytes(
         if series.empty:
             return 0.0
         iterations = df["iteration"].unique()
-        return float(series.reindex(iterations).fillna(0).mean())
+        return _over_iterations(series.reindex(iterations).fillna(0))
     return 0.0
 
 
@@ -318,7 +340,7 @@ def _charged_array_scatter(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def charged_array_scatter_ms(output_dir: Union[pathlib.Path, RunResult]) -> float:
-    """Mean per-iteration ms of _charged_array_scatter in scatter.csv, 0.0
+    """Median per-iteration ms of _charged_array_scatter in scatter.csv, 0.0
     when every array scatter is already amortized. This is the term the
     assemble layer moves between the two timing conventions on the
     benchmarks where they disagree."""
@@ -330,12 +352,12 @@ def charged_array_scatter_ms(output_dir: Union[pathlib.Path, RunResult]) -> floa
             return 0.0
         series = rows.groupby("iteration")["elapsed_ns"].sum()
         iterations = df["iteration"].unique()
-        return float(series.reindex(iterations).fillna(0).mean()) / 1e6
+        return _over_iterations(series.reindex(iterations).fillna(0)) / 1e6
     return 0.0
 
 
 def charged_array_scatter_bytes(output_dir: Union[pathlib.Path, RunResult]) -> float:
-    """Mean per-iteration wire bytes of _charged_array_scatter in
+    """Median per-iteration wire bytes of _charged_array_scatter in
     scatter.csv, counted like amortizable_bytes (per DPU reached), so the
     two compose into one excluded-bytes figure."""
     for t, df in _tables(output_dir):
@@ -347,7 +369,7 @@ def charged_array_scatter_bytes(output_dir: Union[pathlib.Path, RunResult]) -> f
         wire = rows["bytes_per_dpu"] * rows["num_dpus"] * rows["num_blocks"]
         series = wire.groupby(rows["iteration"]).sum()
         iterations = df["iteration"].unique()
-        return float(series.reindex(iterations).fillna(0).mean())
+        return _over_iterations(series.reindex(iterations).fillna(0))
     return 0.0
 
 
@@ -376,9 +398,9 @@ def _sum_time_ms_by_kind(
         result = {}
         for kind, group in df.groupby("kind"):
             per_iter = group.groupby("iteration")["elapsed_ns"].sum()
-            mean = float(per_iter.reindex(iterations).fillna(0).mean())
-            if not isnan(mean):
-                result[str(kind)] = mean / 1e6
+            ns = _over_iterations(per_iter.reindex(iterations).fillna(0))
+            if not isnan(ns):
+                result[str(kind)] = ns / 1e6
         return result
     return {}
 
