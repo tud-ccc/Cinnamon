@@ -14,13 +14,13 @@
 // take longer at any plausible stream bandwidth, so the traffic prices it.
 //
 //   default:  expand 16384 B / 0.63 GB/s = 0.0260063 ms
-//             loop   20480 B / 8 GB/s    = 0.00256 ms
+//             loop   20480 B / 10.8 GB/s = 0.0018963 ms
 //   declared: expand 16384 B / 1 GB/s    = 0.016384 ms
 //             loop   20480 B / 1 GB/s    = 0.02048 ms
 
 // CHECK: block_id,location,category,label,cost_ms,excluded,block_total_ms
 // CHECK:      cpu,"expand",0.0260063,0,
-// CHECK-NEXT: cpu,"other",0.00256,0,
+// CHECK-NEXT: cpu,"other",0.0018963,0,
 // CHECK:      cpu,"expand",0.016384,0,
 // CHECK-NEXT: cpu,"other",0.02048,0,
 

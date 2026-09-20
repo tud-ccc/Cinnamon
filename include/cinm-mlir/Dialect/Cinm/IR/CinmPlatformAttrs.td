@@ -44,25 +44,35 @@ def CinmHostPlatformAttr: Cinm_Attr<"HostPlatform", [
       PIM modules occupy DIMM slots: 4x 64 GB DDR4 populate 2 slots per
       socket, so 4 of the 12 channels carry host DRAM, and the 4216 caps
       DDR4 at 2400 MT/s -- 76.8 GB/s of peak against the ~230 GB/s the same
-      sockets reach fully populated. The default 15 GB/s is the figure
-      cpu_baseline.py quotes, 20% of that peak, kept as the conservative
-      end: a gate errs toward offloading, and every plausible measured value
-      only makes the host stronger. The verdicts are insensitive across that
-      range (a RoBERTa projection needs the host below 6.4 GB/s before it
-      would rather be on the array).
+      sockets reach fully populated. The default is a STREAM triad
+      (two reads and a write, the mix this term's byte count implies)
+      measured under the performance governor with each thread reading
+      pages it faulted itself: 23 GB/s, saturating from 16 threads on. A
+      pure read reaches 30-32. The figure matters: the gate offloads `va`
+      below 20 GB/s and rejects it above, which is where the 15 GB/s
+      cpu_baseline.py quotes used to put it.
     - `scalar_op_ns`: one scalar integer add in straight-line host code.
       Between 1.6 and 10 ns on the bench machine, lower the more iterations
       of the enclosing loop amortize it.
     - `vector_op_ns`, `vector_bytes`: one vector instruction, and the width
-      it operates on. A host loop nest is priced as vectorized, which is
-      what LLVM makes of the dense loops that combine partial results: an
-      op on a `b`-byte element costs `vector_op_ns * b / vector_bytes`. The
-      defaults are one cycle at 2.1 GHz and AVX-512.
+      it operates on. A host loop nest is priced as vectorized: an op on a
+      `b`-byte element costs `vector_op_ns * b / vector_bytes`. The width is
+      the one the host pipeline generates, not the one the machine could
+      run -- `--affine-super-vectorize` picks the element count and `llc`'s
+      `-mcpu` decides what that legalises to (HOST_VECTOR_SIZE and
+      HOST_MCPU in the experiments Makefile). At 16 elements on
+      `cascadelake` an i32 loop emits zmm, so 64 bytes; the same pass at 8
+      elements with llc's default `generic` emitted xmm, 16 bytes.
     - `stream_bytes_per_second`: what one core streams through a host loop
       nest. A loop nest costs the larger of its arithmetic and its memory
       traffic at this rate. The partial-sum loops that follow a split
-      reduction are bound by the latter: 4 and 8 partials of a 512x512 i32
-      result (5 and 9 MB of traffic) measure 0.6 and 1.2 ms, ~8 GB/s.
+      reduction are bound by the latter; walked in the contiguous order the
+      lowering emits, they measure 10.8-11.3 GB/s on one core (0.35 ns per
+      i32 add), against 7.7 for a bare streaming read and 9.6 for a triad.
+      Walked across the partials instead the same loop costs 1.3-3.0 ns per
+      add, since each access lands on a different page and the trip count
+      outruns the 64-entry L1 dTLB -- the knee is at the 4 KiB stride, not
+      at any cache size. This rate describes the contiguous case only.
     - `copy_bytes_per_second`: the rate of the repacks between a host
       buffer's layout and a transfer's (cnm.compact_buffer, its inverse
       cnm.expand_buffer, and memref.copy). These are strided permutations,

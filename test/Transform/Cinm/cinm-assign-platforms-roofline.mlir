@@ -28,17 +28,18 @@ func.func @gemv_resident_weight(%A: tensor<8192x8192xi32> {cinm.static},
 
 // The same gemv with the matrix streamed in. Nothing to amortize, and the
 // result is 32 KB, so the verdict rests on scatter against the host's DRAM
-// path alone. At the top of the array the calibrated scatter edges DRAM by
-// a few percent (16.2 GB/s at 2560 DPUs against 15), so this passes -- by
-// that margin, and only because nothing sizeable comes back; see @va.
+// path alone -- and the host wins it: 11.7 ms to stream the matrix at the
+// measured 23 GB/s against 15.3 ms to scatter it. Streaming an operand in
+// to use it once is what the array is worst at; see @va.
 
 // OPEN-LABEL: @gemv_streamed_weight
 // OPEN: cinm.compute
 // GATED-LABEL: @gemv_streamed_weight
-// GATED: cinm.compute
+// GATED-NOT: cinm.compute
 func.func @gemv_streamed_weight(%A: tensor<8192x8192xi32>,
                                 %x: tensor<8192xi32>) -> tensor<8192xi32>
   attributes {cinm.available_platforms = [#upmem]} {
+  // expected-remark @below {{not offloaded: no static operand}}
   %y = cinm.op.gemv %A, %x : tensor<8192x8192xi32>, tensor<8192xi32> -> tensor<8192xi32>
   return %y : tensor<8192xi32>
 }
@@ -47,19 +48,20 @@ func.func @gemv_streamed_weight(%A: tensor<8192x8192xi32>,
 
 #upmem = #upmem.platform<type = v1A, dpus = 2560, tasklets = 24>
 
-// The same streamed gemv on a host that declares a faster DRAM path. The
-// margin above was a few percent, so 20 GB/s is enough to lose it: the host
-// description is read from the function's platform list, and an entry for
-// the host there is not a candidate for offloading.
+// The same streamed gemv on a host that declares the slower DRAM path the
+// model assumed before it was measured. The verdict turns on that number
+// alone -- below 20 GB/s the scatter wins and the op is offloaded -- so
+// this pins both the sensitivity and the fact that the host description is
+// read from the function's platform list. An entry for the host there is
+// not itself a candidate for offloading.
 
-// OPEN-LABEL: @gemv_streamed_weight_fast_host
+// OPEN-LABEL: @gemv_streamed_weight_slow_host
 // OPEN: cinm.compute
-// GATED-LABEL: @gemv_streamed_weight_fast_host
-// GATED-NOT: cinm.compute
-func.func @gemv_streamed_weight_fast_host(%A: tensor<8192x8192xi32>,
+// GATED-LABEL: @gemv_streamed_weight_slow_host
+// GATED: cinm.compute
+func.func @gemv_streamed_weight_slow_host(%A: tensor<8192x8192xi32>,
                                           %x: tensor<8192xi32>) -> tensor<8192xi32>
-  attributes {cinm.available_platforms = [#cinm.host_platform<dram_bytes_per_second = 2.0e10>, #upmem]} {
-  // expected-remark @below {{not offloaded: no static operand}}
+  attributes {cinm.available_platforms = [#cinm.host_platform<dram_bytes_per_second = 1.5e10>, #upmem]} {
   %y = cinm.op.gemv %A, %x : tensor<8192x8192xi32>, tensor<8192xi32> -> tensor<8192xi32>
   return %y : tensor<8192xi32>
 }

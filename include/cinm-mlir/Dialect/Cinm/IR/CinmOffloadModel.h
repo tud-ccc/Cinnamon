@@ -27,7 +27,7 @@ struct HostModel {
   /// Arithmetic throughput summed over every core, in ops per second.
   double opsPerSecond = 2.1e12;
   /// Bandwidth from DRAM to those cores, in bytes per second.
-  double dramBytesPerSecond = 15.0e9;
+  double dramBytesPerSecond = 23.0e9;
 
   // The cost model's host code.
 
@@ -37,7 +37,7 @@ struct HostModel {
   double vectorOpNs = 0.5;
   double vectorBytes = 64.0;
   /// What one core streams through a loop nest, in bytes per second.
-  double streamBytesPerSecond = 8.0e9;
+  double streamBytesPerSecond = 10.8e9;
   /// The rate of a strided repack between two layouts, in bytes per second.
   double copyBytesPerSecond = 0.63e9;
 
