@@ -100,9 +100,10 @@ CXXFLAGS = -O3 -std=c++17 \
 # openblas backs the bench drivers' golden references (benchmarks/common.hpp):
 # a run checks its output against an independent implementation before its
 # timings are written, unless BENCH_CHECK=0 says otherwise.
-# numa backs bench::output_vector, which interleaves the gather target's
-# pages so the measured gather bandwidth is the transfer's, not an artifact
-# of single-node page placement (see the comment on output_vector).
+# numa backs bench::interleaved_pages, which spreads the pages of every
+# buffer a transfer touches across the nodes, so the measured bandwidth is
+# the transfer's and not an artifact of single-node page placement (see the
+# comment on interleaved_pages).
 LDFLAGS = -lUpmemDialectRuntime -ldpu -ldpuverbose -lopenblas -lnuma -Wl,-s \
           -L$(UPMEM_HOME)/lib \
           -L$(RT_LIB_DIR) \

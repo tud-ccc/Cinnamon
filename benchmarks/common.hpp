@@ -72,38 +72,52 @@ inline constexpr int kWarmup = 1;
 
 inline DTY next_operand() { return (DTY)(rand() % kOperandRange); }
 
-inline std::vector<DTY> random_vector(size_t n) {
-  std::vector<DTY> v(n);
-  for (size_t i = 0; i < n; i++)
-    v[i] = next_operand();
-  return v;
-}
-
-/// Zero-initialised output buffer with its pages interleaved across NUMA
-/// nodes. Every driver's gather target must be allocated through this.
+/// Builds a host buffer with `make`, with the pages it faults interleaved
+/// across NUMA nodes. Every buffer a transfer touches -- scatter source and
+/// gather target alike -- must be allocated through this or through the two
+/// wrappers below.
 ///
-/// The gather (dpu_push_xfer FROM_DPU) is executed by per-rank SDK worker
-/// threads that libnuma pins to their rank's socket, and its bandwidth is set
-/// by where the destination pages live: faulted from the main thread (what a
-/// plain vector constructor does) they all land on one node, half the ranks
-/// write cross-socket, and a 256 MiB gather runs at ~6.5 MiB/ms; interleaved
-/// it runs at ~10.7-11.1 MiB/ms (measured on the 2-node bench machine, 2048
-/// DPUs x 128 KiB, matching the raw-SDK probe both ways). ATiM's harness
-/// gathers at ~10.3, so single-node placement here would charge our gather
-/// term a ~1.6x penalty that is page placement, not the compiler under test.
+/// Transfers in both directions are executed by per-rank SDK worker threads
+/// that libnuma pins to their rank's socket, so their bandwidth is set by
+/// where the host pages live: faulted from the main thread (what a plain
+/// vector constructor does) they all land on one node and half the ranks
+/// cross the socket link. Measured on the 2-node bench machine at 2048 DPUs
+/// x 128 KiB (256 MiB), matching the raw-SDK probe: a gather runs at
+/// ~6.5 MiB/ms on one node against ~10.7-11.1 interleaved, and a scatter
+/// takes 19.2 ms on one node against 13.6 interleaved. ATiM's harness
+/// gathers at ~10.3, so single-node placement here would charge our transfer
+/// terms a penalty that is page placement, not the compiler under test.
 ///
 /// Interleave rather than first-touch-per-rank because the driver does not
 /// know the rank -> host-offset mapping; interleaving is within noise of the
-/// measured optimum. The policy is scoped to this allocation: operands stay
-/// on the default policy, since the scatter direction measures the same
-/// single-node and interleaved (~12 MiB/ms).
-inline std::vector<DTY> output_vector(size_t n) {
+/// measured optimum. Small transfers do not care either way (4 MiB measures
+/// the same to within a few percent at every fan-out), so one policy covers
+/// both ends.
+template <class Make>
+inline auto interleaved_pages(Make make) -> decltype(make()) {
   if (numa_available() < 0 || numa_max_node() == 0)
-    return std::vector<DTY>(n, 0);
+    return make();
   numa_set_interleave_mask(numa_all_nodes_ptr);
-  std::vector<DTY> v(n, 0); // faulted here, under the interleave policy
+  auto v = make(); // faulted here, under the interleave policy
   numa_set_localalloc();
   return v;
+}
+
+/// Operand buffer of `n` random values. Every driver's scatter source must be
+/// allocated through this.
+inline std::vector<DTY> random_vector(size_t n) {
+  return interleaved_pages([n] {
+    std::vector<DTY> v(n);
+    for (size_t i = 0; i < n; i++)
+      v[i] = next_operand();
+    return v;
+  });
+}
+
+/// Zero-initialised output buffer. Every driver's gather target must be
+/// allocated through this.
+inline std::vector<DTY> output_vector(size_t n) {
+  return interleaved_pages([n] { return std::vector<DTY>(n, 0); });
 }
 
 // ─── Problem sizes ───────────────────────────────────────────────────────────

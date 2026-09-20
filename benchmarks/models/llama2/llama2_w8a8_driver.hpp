@@ -39,15 +39,17 @@ constexpr int32_t POS = N / 2;
 // of operands, and libc's generator would make that the slowest part of
 // the run by far. The values are in the same range rand() would give.
 template <class T> std::vector<T> rnd(size_t n) {
-  std::vector<T> v(n);
-  uint32_t s = 0x9e3779b9u;
-  for (auto &x : v) {
-    s ^= s << 13;
-    s ^= s >> 17;
-    s ^= s << 5;
-    x = (T)(s % bench::kOperandRange);
-  }
-  return v;
+  return bench::interleaved_pages([n] {
+    std::vector<T> v(n);
+    uint32_t s = 0x9e3779b9u;
+    for (auto &x : v) {
+      s ^= s << 13;
+      s ^= s >> 17;
+      s ^= s << 5;
+      x = (T)(s % bench::kOperandRange);
+    }
+    return v;
+  });
 }
 
 // (name, C type, element count). Order is the function's signature after

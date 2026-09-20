@@ -34,10 +34,12 @@ constexpr size_t S = 128, H = 768, I = 3072, L = 12, V = 50265, P = 514;
 constexpr size_t NUM_LABELS = 2;
 
 template <class T> std::vector<T> rnd(size_t n) {
-  std::vector<T> v(n);
-  for (auto &x : v)
-    x = (T)(rand() % bench::kOperandRange);
-  return v;
+  return bench::interleaved_pages([n] {
+    std::vector<T> v(n);
+    for (auto &x : v)
+      x = (T)(rand() % bench::kOperandRange);
+    return v;
+  });
 }
 
 // (name, C type, element count). Order is the function's signature; the
