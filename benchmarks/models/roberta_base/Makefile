@@ -24,7 +24,7 @@ MK := $(lastword $(MAKEFILE_LIST))
 .PHONY := clean
 
 clean:
-	rm -f $(OUT)/$(NAME)_unrolled.mlir $(OUT)/$(NAME)_linalg.mlir $(OUT)/$(NAME)_with_compute.mlir $(OUT)/$(NAME)_offload_decisions.jsonl $(OUT)/$(NAME)_buffered.mlir
+	rm -f $(OUT)/$(NAME)_unrolled.mlir $(OUT)/$(NAME)_linalg.mlir $(OUT)/$(NAME)_with_compute.mlir $(OUT)/$(NAME)_offload_decisions.jsonl $(OUT)/$(NAME)_device.mlir $(OUT)/$(NAME)_host.mlir $(OUT)/$(NAME)_buffered.mlir
 
 # The schedule is preloaded from a sidecar so the payload never carries
 # transform ops: cinm-translate does not register that dialect, and a module
@@ -62,6 +62,11 @@ $(OUT)/$(NAME)_with_compute.mlir: $(OUT)/$(NAME)_linalg.mlir $(MK)
 	--cinm-isolate-compute-blocks --cinm-expand-compute-scope --cinm-deisolate-compute-blocks --cinm-complete-compute-graph \
    > $@
 
+# The program split for a host compiler: _host.mlir holds the bodies of the
+# host blocks as functions (what IREE compiles), _device.mlir the rest, where
+# each host block calls its function through a prototype.
+$(OUT)/$(NAME)_device.mlir $(OUT)/$(NAME)_host.mlir &: $(OUT)/$(NAME)_with_compute.mlir $(MK)
+	$(CINM_OPT) $< --cinm-outline-host-blocks=outlined-file=$(OUT)/$(NAME)_host.mlir > $(OUT)/$(NAME)_device.mlir
 
 $(OUT)/$(NAME)_buffered.mlir: $(OUT)/$(NAME)_with_compute.mlir $(MK)
 	$(CINM_OPT) $< --cnm-isolate-linalg-captures --cinm-isolate-compute-blocks --cinm-simplify-compute-signatures --eliminate-empty-tensors --cse --canonicalize --one-shot-bufferize=function-boundary-type-conversion=identity-layout-map\ bufferize-function-boundaries\ allow-return-allocs-from-loops=false --buffer-loop-hoisting --canonicalize --cse --buffer-results-to-out-params=hoist-static-allocs --cse --canonicalize > $@

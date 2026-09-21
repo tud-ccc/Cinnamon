@@ -447,6 +447,45 @@ def CinmCompleteComputeGraphPass : Pass<"cinm-complete-compute-graph"> {
   ];
 }
 
+def CinmOutlineHostBlocksPass : Pass<"cinm-outline-host-blocks", "mlir::ModuleOp"> {
+  let summary = "Move the bodies of host compute blocks into functions of a separate module";
+  let description = [{
+    Hands the host side of a program to another compiler. Every compute op
+    pinned to the host alone (`cinm.available_platforms` holding only
+    `#cinm.host_platform`), as --cinm-complete-compute-graph leaves them, has
+    its body moved into a function of a nested `builtin.module` named by
+    `module-name`. The compute op stays where it is, and its body becomes a
+    `func.call` of that function followed by the `cinm.yield` of its results.
+    Each function is also declared, as a private prototype, in the enclosing
+    module, so that module still verifies and links against the outlined one
+    once they are compiled separately.
+
+    The function takes the values the body used from above (for a
+    `cinm.compute_block`, its region arguments), and returns what the body
+    yielded. Constants and operand-free `tensor.empty` are cloned into the
+    function instead of passed: they are free, and the compiler on the other
+    side can only fold what it sees. A function the body calls is copied
+    into the outlined module along with the functions it calls in turn.
+    `bufferization.materialize_in_destination` on tensors is replaced by its
+    source in the outlined copy: it is advice to this compiler's
+    bufferization, which the host compiler neither runs nor accepts.
+
+    With `outlined-file`, the outlined module is written to that path and
+    removed from the IR, which splits the program in one invocation.
+  }];
+
+  let options = [
+    Option<"moduleName", "module-name", "std::string", "\"outlined\"",
+           "Symbol name of the module that receives the outlined functions">,
+    Option<"outlinedFile", "outlined-file", "std::string", "\"\"",
+           "Write the outlined module to this path and remove it from the IR (empty: keep it nested)">
+  ];
+
+  let dependentDialects = [
+    "mlir::func::FuncDialect"
+  ];
+}
+
 def CinmInferTileSizesPass : Pass<"cinm-infer-tile-sizes"> {
   let summary = "Infer and annotate cinm.tile_sizes on tileable ops using the enclosing accelerator";
   let description = [{

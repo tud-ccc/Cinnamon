@@ -54,7 +54,7 @@ MK := $(lastword $(MAKEFILE_LIST))
 .PHONY := clean
 
 clean:
-	rm -f $(OUT)/$(NAME)_unrolled.mlir $(OUT)/$(NAME)_linalg.mlir $(OUT)/$(NAME)_with_compute.mlir $(OUT)/$(NAME)_offload_decisions.jsonl $(OUT)/$(NAME)_buffered.mlir
+	rm -f $(OUT)/$(NAME)_unrolled.mlir $(OUT)/$(NAME)_linalg.mlir $(OUT)/$(NAME)_with_compute.mlir $(OUT)/$(NAME)_offload_decisions.jsonl $(OUT)/$(NAME)_device.mlir $(OUT)/$(NAME)_host.mlir $(OUT)/$(NAME)_buffered.mlir
 
 $(OUT)/$(NAME)_unrolled.mlir: $(NAME).mlir $(SCHEDULE) $(MK)
 	@mkdir -p $(@D)
@@ -71,6 +71,12 @@ $(OUT)/$(NAME)_with_compute.mlir: $(OUT)/$(NAME)_linalg.mlir $(MK)
 	$(CINM_OPT) $< "$(ASSIGN_PASS)" --cinm-absorb-static-slices \
 	--cinm-isolate-compute-blocks --cinm-expand-compute-scope --cinm-deisolate-compute-blocks --cinm-complete-compute-graph \
    > $@
+
+# The program split for a host compiler: _host.mlir holds the bodies of the
+# host blocks as functions (what IREE compiles), _device.mlir the rest, where
+# each host block calls its function through a prototype.
+$(OUT)/$(NAME)_device.mlir $(OUT)/$(NAME)_host.mlir &: $(OUT)/$(NAME)_with_compute.mlir $(MK)
+	$(CINM_OPT) $< --cinm-outline-host-blocks=outlined-file=$(OUT)/$(NAME)_host.mlir > $(OUT)/$(NAME)_device.mlir
 
 
 $(OUT)/$(NAME)_buffered.mlir: $(OUT)/$(NAME)_with_compute.mlir $(MK)
