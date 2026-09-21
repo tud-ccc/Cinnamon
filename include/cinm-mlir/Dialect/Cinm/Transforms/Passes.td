@@ -261,6 +261,16 @@ def CinmAssignPlatformsPass : Pass<"cinm-assign-platforms", "mlir::func::FuncOp"
     `cinm.compute` around an op by hand overrides the gate: an op that is
     already inside one is taken as a deliberate instruction to offload and
     is never asked about profitability.
+
+    `dump-decisions=<path>` writes one JSON object per line for every
+    (op, capable platform) pair: the op's location, name, operand types and
+    `cinm.debug_tag`, how many times it runs per call (the product of the
+    static trip counts around it; null if one is dynamic, so a rolled layer
+    loop still counts every layer), whether it was offloaded, and every term of the
+    verdict (work, resident and per-call bytes, predicted host and device
+    seconds, the device's compute rate and transfer time, the host's two
+    roofs). The verdict is computed for the dump even when the gate is off,
+    so an ungated run records what the gate would have said.
   }];
 
   let options = [
@@ -269,7 +279,9 @@ def CinmAssignPlatformsPass : Pass<"cinm-assign-platforms", "mlir::func::FuncOp"
     Option<"hostOpsPerSecond", "host-ops-per-second", "double", "0",
            "Override the host platform's ops_per_second (0: take it from the #cinm.host_platform in scope)">,
     Option<"hostDramBytesPerSecond", "host-dram-bytes-per-second", "double", "0",
-           "Override the host platform's dram_bytes_per_second (0: take it from the #cinm.host_platform in scope)">
+           "Override the host platform's dram_bytes_per_second (0: take it from the #cinm.host_platform in scope)">,
+    Option<"dumpDecisions", "dump-decisions", "std::string", "\"\"",
+           "Write every offload decision, with the roofline terms behind it, to this file as JSON lines (one object per op and capable platform)">
   ];
 
   let dependentDialects = [

@@ -1,6 +1,21 @@
 // RUN: cinm-opt %s --split-input-file --cinm-assign-platforms | FileCheck %s --check-prefix=OPEN
 // RUN: cinm-opt %s --split-input-file --cinm-assign-platforms=require-profitable=true | FileCheck %s --check-prefix=GATED
 // RUN: cinm-opt %s --split-input-file --cinm-assign-platforms=require-profitable=true -verify-diagnostics -o /dev/null
+// RUN: cinm-opt %s --split-input-file "--cinm-assign-platforms=require-profitable=true dump-decisions=%t.jsonl" -o /dev/null 2>/dev/null
+// RUN: FileCheck %s --check-prefix=DUMP < %t.jsonl
+
+// The dump has one line per decision, in program order across the splits
+// (the file is truncated once per process, then appended to). Keys print
+// sorted.
+
+// DUMP:      "executions":1,"func":"gemv_resident_weight",{{.*}}"offloaded":true,{{.*}}"profitable":true,{{.*}}"requested":false,"static_bytes":268435456,
+// DUMP-NEXT: "func":"gemv_streamed_weight",{{.*}}"offloaded":false,{{.*}}"reason":"no static operand
+// DUMP-NEXT: "func":"gemv_streamed_weight_slow_host",{{.*}}"offloaded":true,
+// DUMP-NEXT: "func":"va",{{.*}}"offloaded":false,
+// DUMP-NEXT: "func":"va_forced",{{.*}}"offloaded":true,{{.*}}"profitable":false,{{.*}}"requested":true,
+// DUMP-NEXT: "func":"dynamic_shape",{{.*}}"offloaded":true,{{.*}}"unknown":true,
+// DUMP-NEXT: "func":"scalar_operand",{{.*}}"offloaded":false,
+// DUMP-NEXT: "executions":4,"func":"layer_loop",{{.*}}"offloaded":true,
 
 // The gate only ever fires with require-profitable; the default has to keep
 // wrapping everything it can run, which is what every existing pipeline and

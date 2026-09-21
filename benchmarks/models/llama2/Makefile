@@ -37,7 +37,11 @@ ifneq (,$(filter $(NAME),$(E2E_MODELS)))
 ASSIGN_OPTS ?= require-profitable=true host-ops-per-second=8.6e12
 endif
 ASSIGN_OPTS ?=
-ASSIGN_PASS = $(if $(ASSIGN_OPTS),--cinm-assign-platforms=$(ASSIGN_OPTS),--cinm-assign-platforms)
+# Every verdict the gate took, with its roofline terms, as JSON lines: the
+# input of the evaluation's roofline figure. Written for the ungated models
+# too, where it records what the gate would have said.
+DECISIONS = $(OUT)/$(NAME)_offload_decisions.jsonl
+ASSIGN_PASS = --cinm-assign-platforms=$(strip $(ASSIGN_OPTS) dump-decisions=$(DECISIONS))
 
 # A cinm-opt that dies mid-module still leaves the redirect's truncated
 # output behind, and make would take that stub as up to date.
@@ -50,7 +54,7 @@ MK := $(lastword $(MAKEFILE_LIST))
 .PHONY := clean
 
 clean:
-	rm -f $(OUT)/$(NAME)_unrolled.mlir $(OUT)/$(NAME)_linalg.mlir $(OUT)/$(NAME)_with_compute.mlir $(OUT)/$(NAME)_buffered.mlir
+	rm -f $(OUT)/$(NAME)_unrolled.mlir $(OUT)/$(NAME)_linalg.mlir $(OUT)/$(NAME)_with_compute.mlir $(OUT)/$(NAME)_offload_decisions.jsonl $(OUT)/$(NAME)_buffered.mlir
 
 $(OUT)/$(NAME)_unrolled.mlir: $(NAME).mlir $(SCHEDULE) $(MK)
 	@mkdir -p $(@D)

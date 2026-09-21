@@ -86,6 +86,11 @@ struct OffloadVerdict {
   /// Predicted seconds per invocation on each side.
   double hostSeconds = 0.0;
   double deviceSeconds = 0.0;
+  /// The two terms `deviceSeconds` is the max of: the device's arithmetic
+  /// rate for this op's element types, and the time its per-invocation
+  /// traffic spends crossing the wire.
+  double deviceOpsPerSecond = 0.0;
+  double transferSeconds = 0.0;
 
   /// Why it came out the way it did, for diagnostics.
   llvm::StringRef reason;

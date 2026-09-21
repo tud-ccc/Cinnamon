@@ -404,17 +404,17 @@ cinm::OffloadVerdict evaluateUpmemOffload(Operation *op,
     return v;
   }
 
-  const double deviceOps = deviceOpsPerSecond(platform, mulTy, accTy);
+  v.deviceOpsPerSecond = deviceOpsPerSecond(platform, mulTy, accTy);
   const int64_t dpus = platform.getMaxDpus();
   // Scatter in, gather out, both paid on every invocation.
-  const double transfer =
+  v.transferSeconds =
       transferSeconds(v.dynamicBytes - v.dynamicOutBytes, dpus,
                       /*toDevice=*/true) +
       transferSeconds(v.dynamicOutBytes, dpus, /*toDevice=*/false);
   v.hostSeconds =
       std::max(v.work / host.opsPerSecond,
                (v.staticBytes + v.dynamicBytes) / host.dramBytesPerSecond);
-  v.deviceSeconds = std::max(v.work / deviceOps, transfer);
+  v.deviceSeconds = std::max(v.work / v.deviceOpsPerSecond, v.transferSeconds);
   v.profitable = v.deviceSeconds < v.hostSeconds;
 
   if (v.profitable) {
