@@ -52,6 +52,11 @@ matplotlib = "*"
 plotly = "*"
 tqdm = "*"
 doit = "*"
+# The host compiler the program's host blocks are handed to
+# (--cinm-outline-host-blocks): iree-compile, and iree-benchmark-module to
+# time what it produces.
+iree-base-compiler = "*"
+iree-base-runtime = "*"
 # The two in-tree projects, by path because neither is published. The
 # distribution is cinnamon-mlir while the package it installs is `cinnamon`:
 # PyPI's `cinnamon` is somebody else's, and under the old name a manifest that
