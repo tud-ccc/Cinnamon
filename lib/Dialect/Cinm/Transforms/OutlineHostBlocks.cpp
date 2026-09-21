@@ -13,6 +13,7 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
+#include "cinm-mlir/Dialect/Cinm/Transforms/CinmTransforms.h"
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
 
 #include <llvm/ADT/SetVector.h>
@@ -31,18 +32,6 @@ namespace mlir::cinm {
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h.inc"
 
 namespace {
-
-/// Whether `op` is a compute op that only the host may run.
-bool isHostBlock(Operation *op) {
-  if (!isa<ComputeOp, ComputeBlockOp>(op))
-    return false;
-  if (op->getAttr("accelerator"))
-    return false;
-  auto platforms =
-      op->getAttrOfType<ArrayAttr>(CinmDialect::AVAILABLE_PLATFORMS_NAME);
-  return platforms && !platforms.empty() &&
-         llvm::all_of(platforms, llvm::IsaPred<HostPlatformAttr>);
-}
 
 /// Whether a value used from above is recomputed inside the outlined
 /// function rather than passed to it.
@@ -63,7 +52,7 @@ struct OutlineHostBlocksPass
 
     SmallVector<Operation *> blocks;
     module->walk([&](Operation *op) {
-      if (op->getParentOfType<ModuleOp>() == module && isHostBlock(op))
+      if (op->getParentOfType<ModuleOp>() == module && isHostComputeOp(op))
         blocks.push_back(op);
     });
 

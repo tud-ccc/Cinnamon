@@ -14,6 +14,7 @@ add_mlir_dialect_library(CinmTransforms
     DecomposeGemmToGemv.cpp
     ExpandComputeScope.cpp
     GemvMinWrite.cpp
+    MergeHostBlocks.cpp
     OutlineHostBlocks.cpp
     RelowerStandaloneOps.cpp
     SimplifyComputeSignatures.cpp

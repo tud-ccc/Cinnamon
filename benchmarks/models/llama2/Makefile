@@ -74,9 +74,11 @@ $(OUT)/$(NAME)_with_compute.mlir: $(OUT)/$(NAME)_linalg.mlir $(MK)
 
 # The program split for a host compiler: _host.mlir holds the bodies of the
 # host blocks as functions (what IREE compiles), _device.mlir the rest, where
-# each host block calls its function through a prototype.
+# each host block calls its function through a prototype. Host blocks that
+# only views separate are merged first, so each stretch of host code between
+# two device blocks is one function.
 $(OUT)/$(NAME)_device.mlir $(OUT)/$(NAME)_host.mlir &: $(OUT)/$(NAME)_with_compute.mlir $(MK)
-	$(CINM_OPT) $< --cinm-outline-host-blocks=outlined-file=$(OUT)/$(NAME)_host.mlir > $(OUT)/$(NAME)_device.mlir
+	$(CINM_OPT) $< --cinm-merge-host-blocks --cinm-outline-host-blocks=outlined-file=$(OUT)/$(NAME)_host.mlir > $(OUT)/$(NAME)_device.mlir
 
 
 $(OUT)/$(NAME)_buffered.mlir: $(OUT)/$(NAME)_with_compute.mlir $(MK)

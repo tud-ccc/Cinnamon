@@ -447,6 +447,39 @@ def CinmCompleteComputeGraphPass : Pass<"cinm-complete-compute-graph"> {
   ];
 }
 
+def CinmMergeHostBlocksPass : Pass<"cinm-merge-host-blocks"> {
+  let summary = "Fuse runs of host compute blocks that only view ops separate";
+  let description = [{
+    --cinm-complete-compute-graph cuts the host code at every slicing,
+    reshaping or destination-pinning op, because for the graph solver those
+    are edges between nodes. A host compiler only pays for the cuts: every
+    host block becomes a function of its own and a call of its own, with
+    nothing on the device in between. This pass fuses each run of host
+    blocks that is separated only by such view ops into one host block,
+    placed where the last block of the run was, before
+    --cinm-outline-host-blocks hands them over.
+
+    Walking a block in order, a run is broken by anything that is not a
+    host block, a view op, a constant or an operand-free `tensor.empty`:
+    a device compute op, any other op, the terminator. The views between
+    the host blocks of a run move into the merged block; constants and
+    `tensor.empty` stay above it. A view that writes into a block argument
+    -- `tensor.insert_slice` or `bufferization.materialize_in_destination`
+    whose destination, followed through inserts, is a function argument or
+    a loop-carried value -- also breaks the run: it updates state that
+    outlives the call or the iteration (a KV cache), and inside a host
+    function it would become a copy of the whole of it.
+
+    The merged block yields every value of the run that is used outside
+    it. Host blocks inside control flow are merged within their own block;
+    the bodies of compute ops are left alone.
+  }];
+
+  let dependentDialects = [
+    "mlir::cinm::CinmDialect"
+  ];
+}
+
 def CinmOutlineHostBlocksPass : Pass<"cinm-outline-host-blocks", "mlir::ModuleOp"> {
   let summary = "Move the bodies of host compute blocks into functions of a separate module";
   let description = [{
