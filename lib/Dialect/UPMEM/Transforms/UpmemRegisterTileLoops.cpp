@@ -11,6 +11,7 @@
 #include <cinm-mlir/Dialect/UPMEM/Transforms/Passes.h>
 
 #include <llvm/ADT/STLExtras.h>
+#include <llvm/ADT/SetVector.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/Support/Debug.h>
 
@@ -154,6 +155,19 @@ static bool bodyMakesCalls(AffineForOp forOp) {
                                 : WalkResult::advance();
       })
       .wasInterrupted();
+}
+
+/// Whether `forOp`'s body is arithmetic, loads and stores only: no transfer,
+/// allocation or other op with effects of its own.
+static bool isComputeOnly(AffineForOp forOp) {
+  return !forOp.getBody()
+              ->walk([](Operation *op) {
+                return isa<affine::AffineYieldOp>(op) || Access::of(op) ||
+                               isMemoryEffectFree(op)
+                           ? WalkResult::advance()
+                           : WalkResult::interrupt();
+              })
+              .wasInterrupted();
 }
 
 /// The registers `forOp`'s body may keep live. A value live across a call
@@ -316,16 +330,23 @@ static unsigned invariantLoadsAfterFullUnroll(AffineForOp forOp) {
 }
 
 /// The unroll factor for the innermost loop `forOp`: its trip count when that
-/// is at most `maxUnroll` or the fully unrolled body fits `maxBodyOps`, else
+/// is at most `maxUnroll` or the fully unrolled body fits `maxBodyOps` (see
+/// below), else
 /// the largest factor in [minUnroll, maxUnroll] dividing the trip count, else
 /// `maxUnroll` with a cleanup loop. Lowered while the unrolled body would
 /// exceed `maxBodyOps`.
 ///
-/// Not a full unroll when it would hoist more values out of the enclosing loop
-/// than `registerBudget`, as a full unroll of the reduction loop under a
-/// partially jammed row loop does with its whole operand vector. The loop is
-/// then unrolled by a factor that leaves it at least two trips, so that its
-/// loads keep moving with it.
+/// A loop longer than `maxUnroll` is not unrolled fully when that would hoist
+/// more values out of the enclosing loop than `registerBudget`, as a full
+/// unroll of the reduction loop under a partially jammed row loop does with
+/// its whole operand vector. The loop is then unrolled by a factor that leaves
+/// it at least two trips, so that its loads keep moving with it. A loop of at
+/// most `maxUnroll` trips is unrolled fully regardless: left with a few trips,
+/// every load in it computes its address from the induction variable, and
+/// across calls that variable and the buffer addresses take callee-saved
+/// registers from the accumulators. gemv_512MB's 16-trip reduction left at 2
+/// trips of 8 ran 25% slower than fully unrolled with its 16 operands hoisted
+/// and spilled.
 static uint64_t chooseUnrollFactor(AffineForOp forOp, unsigned minUnroll,
                                    unsigned maxUnroll, unsigned maxBodyOps,
                                    unsigned registerBudget) {
@@ -334,7 +355,9 @@ static uint64_t chooseUnrollFactor(AffineForOp forOp, unsigned minUnroll,
     return 1;
   unsigned bodyOps = countBodyOps(forOp);
   uint64_t factor;
-  if (*trip * invariantLoadsAfterFullUnroll(forOp) > registerBudget) {
+  if (*trip <= maxUnroll) {
+    factor = *trip;
+  } else if (*trip * invariantLoadsAfterFullUnroll(forOp) > registerBudget) {
     uint64_t cap = std::min<uint64_t>(maxUnroll, *trip / 2);
     factor = cap;
     for (uint64_t f = cap; f >= 2; --f) {
@@ -343,7 +366,7 @@ static uint64_t chooseUnrollFactor(AffineForOp forOp, unsigned minUnroll,
         break;
       }
     }
-  } else if (*trip <= maxUnroll || *trip * bodyOps <= maxBodyOps) {
+  } else if (*trip * bodyOps <= maxBodyOps) {
     factor = *trip;
   } else {
     factor = maxUnroll;
@@ -378,19 +401,24 @@ struct UpmemRegisterTileLoopsPass
       auto parent = dyn_cast<AffineForOp>(inner->getParentOp());
       if (!parent)
         continue;
-      // A body that calls into the runtime library is not jammed. The jam
-      // saves the loads of the operands its copies share, one instruction
-      // each, and pays by keeping those operands live across the copies'
-      // calls, in the 8 callee-saved registers -- a count the unroll below
-      // then multiplies by its own factor, which the budget above cannot
-      // see. Against a call of a dozen instructions or more the saving is a
-      // few percent at best, and the spill is not: gemv_512MB jammed by 2
-      // over a 32-bit multiply copied its 16 shared vector values to the
-      // stack every chunk and ran 10% slower than unjammed.
-      if (bodyMakesCalls(inner))
-        continue;
-      uint64_t factor = chooseJamFactor(parent, inner, registerBudget);
+      unsigned budget =
+          bodyRegisterBudget(inner, registerBudget, callRegisterBudget);
+      uint64_t factor = chooseJamFactor(parent, inner, budget);
       if (factor < 2)
+        continue;
+      // Across calls, a jam that leaves the parent some trips is refused when
+      // unrolling the inner loop fully would hoist more shared operands out
+      // of them than the budget holds: those spill anyway, and the copies'
+      // accumulators and per-copy operands then compete with them for the
+      // callee-saved registers. gemv_512MB jammed by 2 over a 32-bit
+      // multiply, its 16 hoisted vector values spilled, ran 6% slower than
+      // unjammed. A jam over all of the parent's trips leaves nothing to
+      // hoist into, and pays: mtv_256MB unjammed ran 9% slower.
+      std::optional<uint64_t> parentTrip = affine::getConstantTripCount(parent);
+      std::optional<uint64_t> innerTrip = affine::getConstantTripCount(inner);
+      if (bodyMakesCalls(inner) && parentTrip && factor < *parentTrip &&
+          (!innerTrip ||
+           *innerTrip * invariantLoadsAfterFullUnroll(inner) > budget))
         continue;
       LLVM_DEBUG(llvm::dbgs()
                  << "unroll-and-jam by " << factor << ": " << parent << "\n");
@@ -405,6 +433,9 @@ struct UpmemRegisterTileLoopsPass
       if (isInnermost(forOp))
         innermostLoops.push_back(forOp);
     });
+    // The loops whose only inner loop the unroll below removes, which are
+    // then candidates for a full unroll of their own.
+    llvm::SetVector<Operation *> outward;
     for (AffineForOp inner : innermostLoops) {
       uint64_t factor = chooseUnrollFactor(
           inner, minUnroll, maxUnroll, maxBodyOps,
@@ -413,9 +444,54 @@ struct UpmemRegisterTileLoopsPass
         continue;
       LLVM_DEBUG(llvm::dbgs()
                  << "unroll by " << factor << ": " << inner << "\n");
-      if (failed(affine::loopUnrollByFactor(inner, factor)))
+      std::optional<uint64_t> trip = affine::getConstantTripCount(inner);
+      Operation *parent = inner->getParentOp();
+      if (failed(affine::loopUnrollByFactor(inner, factor))) {
         LLVM_DEBUG(llvm::dbgs() << "unroll failed\n");
+        continue;
+      }
+      if (trip && factor == *trip && isa<AffineForOp>(parent))
+        outward.insert(parent);
     }
+
+    // Then outward, as long as a loop is left with nothing but arithmetic,
+    // loads and stores around the unrolled body, and fits: a DPU kernel's
+    // buffers are stack arrays, so straight-line code addresses each element
+    // at a constant offset from the stack pointer, where a loop computes
+    // every address from its induction variable and keeps it and the buffer
+    // bases in registers. gemv_512MB's 8-row loop around a fully unrolled
+    // 16-trip reduction ran 6% faster unrolled. A loop that transfers data
+    // stops the walk: its body is a chunk, and the next chunk is not the same
+    // code.
+    while (!outward.empty()) {
+      auto loop = cast<AffineForOp>(outward.pop_back_val());
+      std::optional<uint64_t> trip = affine::getConstantTripCount(loop);
+      if (!trip || *trip < 2 || !isInnermost(loop) || !isComputeOnly(loop))
+        continue;
+      unsigned budget =
+          bodyRegisterBudget(loop, registerBudget, callRegisterBudget);
+      if (*trip * countBodyOps(loop) > maxBodyOps ||
+          *trip * invariantLoadsAfterFullUnroll(loop) > budget)
+        continue;
+      LLVM_DEBUG(llvm::dbgs() << "unroll fully: " << loop << "\n");
+      Operation *parent = loop->getParentOp();
+      if (failed(affine::loopUnrollFull(loop))) {
+        LLVM_DEBUG(llvm::dbgs() << "unroll failed\n");
+        continue;
+      }
+      if (isa<AffineForOp>(parent))
+        outward.insert(parent);
+    }
+
+    // Every loop left is rolled by the decisions above, and the DPU compiler
+    // is told to keep it so. Its own unroller has no register model: fully
+    // unrolling a short loop left around a jammed body makes the operands
+    // the copies share invariant in the loop outside, LLVM hoists them all,
+    // and they spill -- and a loop around an unjammed body, unrolled, has its
+    // copies' shared loads merged, the same jam without the budget.
+    program.walk([&](AffineForOp forOp) {
+      forOp->setAttr(kNoUnrollAttr, UnitAttr::get(forOp.getContext()));
+    });
   }
 };
 

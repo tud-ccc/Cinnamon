@@ -18,8 +18,8 @@
 // The body holds 4 copies of 16 elements each.
 // CHECK-COUNT-64: arith.muli
 //   CHECK-NOT:       arith.muli
-//       CHECK:     }
-//  CHECK-NEXT:   }
+//       CHECK:     } {upmem.nounroll}
+//  CHECK-NEXT:   } {upmem.nounroll}
 //
 // A budget of 5 leaves f = 2.
 // BUDGET5-LABEL: upmem.dpu_program @gemv
@@ -50,17 +50,21 @@
 // -----
 
 // The same gemv on i32 operands: the multiply is a call to `__mulsi3`, and
-// what is live across it must sit in the 8 callee-saved registers. A body
-// that calls is not jammed -- the shared x[k] would have to survive the other
-// copies' calls, which is where the jam spills -- so j stays rolled. The
-// reduction loop is unrolled by 16 under the call budget, which keeps its
-// x[k] loads moving with it rather than hoisted out of j.
+// what is live across it must sit in the 8 callee-saved registers. The jam
+// gets that budget instead: two registers per copy (y[j] and A[j][k]) and the
+// shared x[k] fit 3 copies, so 2. But jammed by 2, j keeps 8 trips, and a
+// full unroll of k would hoist its 512 x[k] out of them; unrolled partially,
+// k stays a loop, whose addresses take the registers the accumulators need.
+// So j is not jammed, and k is unrolled by 16. Both loops left rolled are
+// marked for the DPU compiler not to unroll them.
 //
 // CHECK-LABEL: upmem.dpu_program @gemv_i32
 //       CHECK:   affine.for %{{.*}} = 0 to 16 {
 //  CHECK-NEXT:     affine.for %{{.*}} = 0 to 512 step 16 {
 // CHECK-COUNT-16: arith.muli
 //   CHECK-NOT:       arith.muli
+//       CHECK:     } {upmem.nounroll}
+//  CHECK-NEXT:   } {upmem.nounroll}
   upmem.dpu_program @gemv_i32() tasklets(1) {
     %A = memref.alloca() : memref<16x512xi32, #upmem.wram>
     %x = memref.alloca() : memref<512xi32, #upmem.wram>
@@ -73,6 +77,33 @@
         %p = arith.muli %a, %xv : i32
         %s = arith.addi %acc, %p : i32
         affine.store %s, %y[%j] : memref<16xi32, #upmem.wram>
+      }
+    }
+    upmem.return
+  }
+
+// -----
+
+// The i32 gemv over 2 rows of 64: the jam by 2 takes every trip of j, so
+// there is no loop left for x[k] to be hoisted out of, and k is unrolled
+// fully after it.
+//
+// CHECK-LABEL: upmem.dpu_program @gemv_i32_two_rows
+//   CHECK-NOT:   affine.for
+// CHECK-COUNT-128: arith.muli
+//   CHECK-NOT:   arith.muli
+  upmem.dpu_program @gemv_i32_two_rows() tasklets(1) {
+    %A = memref.alloca() : memref<2x64xi32, #upmem.wram>
+    %x = memref.alloca() : memref<64xi32, #upmem.wram>
+    %y = memref.alloca() : memref<2xi32, #upmem.wram>
+    affine.for %j = 0 to 2 {
+      affine.for %k = 0 to 64 {
+        %a = affine.load %A[%j, %k] : memref<2x64xi32, #upmem.wram>
+        %xv = affine.load %x[%k] : memref<64xi32, #upmem.wram>
+        %acc = affine.load %y[%j] : memref<2xi32, #upmem.wram>
+        %p = arith.muli %a, %xv : i32
+        %s = arith.addi %acc, %p : i32
+        affine.store %s, %y[%j] : memref<2xi32, #upmem.wram>
       }
     }
     upmem.return
@@ -223,15 +254,13 @@
 // -----
 
 // Nothing is shared between copies of j when every operand is indexed by j,
-// so the reuse loop is left alone and only the inner loop is unrolled. A trip
-// count of 8 is unrolled fully.
+// so the reuse loop is not jammed. A trip count of 8 is unrolled fully, and
+// then j too: the whole nest, 16 x 8 elements, fits max-body-ops.
 //
 // CHECK-LABEL: upmem.dpu_program @no_reuse
-//       CHECK:   affine.for %{{.*}} = 0 to 16 {
-//   CHECK-NOT:     affine.for
-// CHECK-COUNT-8:   arith.addi
-//   CHECK-NOT:     arith.addi
-//       CHECK:   }
+//   CHECK-NOT:   affine.for
+// CHECK-COUNT-128: arith.addi
+//   CHECK-NOT:   arith.addi
   upmem.dpu_program @no_reuse() tasklets(1) {
     %A = memref.alloca() : memref<16x8xi32, #upmem.wram>
     %y = memref.alloca() : memref<16xi32, #upmem.wram>

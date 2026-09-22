@@ -1256,6 +1256,8 @@ static LogicalResult printOperation(CppEmitter &emitter, scf::ForOp forOp) {
     os << "\n";
   }
 
+  if (forOp->hasAttr(upmem::kNoUnrollAttr))
+    os << "#pragma clang loop unroll(disable)\n";
   os << "for (";
   if (failed(
           emitter.emitType(forOp.getLoc(), forOp.getInductionVar().getType())))

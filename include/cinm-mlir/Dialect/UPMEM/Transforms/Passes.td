@@ -544,12 +544,10 @@ def UpmemRegisterTileLoopsPass
     the largest factor `f` with `f * c + s <= register-budget`, preferring one
     that divides the trip count. A body that calls into the runtime library
     -- a multiply wider than 16 bits, any integer division, any
-    floating-point arithmetic -- is not jammed at all: what is live across a
-    call must sit in one of the 8 callee-saved registers, the shared operands
-    the jam exists for would have to survive the other copies' calls there,
-    and against the call the load it saves is worth a few percent at most.
-    Such a body's unroll gets `call-register-budget` instead of
-    `register-budget`. The jam is applied only where each copy
+    floating-point arithmetic -- gets `call-register-budget` instead of
+    `register-budget`, for its jam and its unroll: what is live across a call
+    must sit in one of the 8 callee-saved registers. The jam is applied only
+    where each copy
     provably touches locations of its own: the parent loop's body holds
     nothing but the inner loop, index arithmetic, and loads and stores, and
     every buffer written in it -- inside the inner loop or around it, as an
@@ -562,10 +560,24 @@ def UpmemRegisterTileLoopsPass
     otherwise by a factor in [`min-unroll`, `max-unroll`], preferring one
     dividing the trip count. Beyond a factor of 8 the per-element cost is
     within a few percent of a full unroll at a fraction of the IRAM, but a
-    short rolled remainder still costs an elementwise kernel a few percent
-    on the hardware -- and the DPU compiler fully unrolls such a loop itself
-    anyway, which left the cost model pricing a loop that did not exist.
-    `max-body-ops` bounds the unrolled body's size in ops.
+    short rolled loop still costs an elementwise kernel a few percent on the
+    hardware, hence the full unroll up to `max-unroll`. `max-body-ops`
+    bounds the unrolled body's size in ops.
+
+    A loop whose inner loop was unrolled fully is unrolled fully in turn,
+    outward, as long as its body is arithmetic, loads and stores only, it
+    fits `max-body-ops`, and it hoists no more operands into the loop around
+    it than the register budget. A kernel's buffers are stack arrays, so
+    straight-line code addresses them at constant offsets from the stack
+    pointer, where a loop computes every address and keeps its induction
+    variable and the buffer bases in registers. The walk stops at a loop
+    that transfers data.
+
+    Every loop left in the program is then marked `upmem.nounroll`, which the
+    C translator turns into `#pragma clang loop unroll(disable)`. The DPU
+    compiler's unroller has no register model either: unrolling a short loop
+    left around the shaped body re-creates the hoisted, spilled operands, or
+    the jam without its budget.
   }];
   let dependentDialects = [
     "::mlir::upmem::UPMEMDialect",
