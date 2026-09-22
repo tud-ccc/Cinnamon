@@ -204,6 +204,32 @@ def CnmScatterOptimizationsPass : Pass<"cnm-scatter-optimizations"> {
                            "memref::MemRefDialect"];
 }
 
+def CnmPromoteHostAllocsPass : Pass<"cnm-promote-host-allocs", "ModuleOp"> {
+  let summary = "Turn a function's static scratch allocations into globals";
+  let description = [{
+    Replaces each `memref.alloc` of static shape at a function's top level
+    whose buffer never leaves the function by a private `memref.global` of
+    the same type, one per site, the way `--cnm-ensure-scatter-gather-contiguous`
+    places its repack buffers.
+
+    A fresh allocation never returns the same pages twice, so the first write
+    to it in every call faults each page in and zeroes it. When that write is
+    a gather from the DPUs, it is the SDK's transfer threads that take the
+    faults, inside the timed transfer: mmtv_512MB gathered 8 MB into a fresh
+    partial-sum buffer in 2.9 ms, against 0.95 ms into a warm one, about
+    1 us per page. A global is faulted in by the first call only. Nothing
+    frees these allocations either, so each call also leaked its buffers.
+
+    A buffer escapes -- and stays an allocation -- when it or a view of it
+    is returned or yielded out of a region, passed to a call, turned into a
+    pointer, or handed to an op that returns a memref this pass cannot see
+    through. An allocation nested in a region stays too, since one slot
+    cannot hold the buffers of several iterations live at once. Like the
+    repack buffers, the slots make the function non-reentrant.
+  }];
+  let dependentDialects = ["mlir::memref::MemRefDialect"];
+}
+
 def CnmIsolateLinalgCapturesPass
     : Pass<"cnm-isolate-linalg-captures"> {
   let summary = "Turn a linalg op's captured scalars into explicit operands";

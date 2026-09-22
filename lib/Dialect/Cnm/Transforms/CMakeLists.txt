@@ -6,6 +6,7 @@ add_mlir_dialect_library(CnmTransforms
     EnsureScatterGatherContiguous.cpp
     ScatterOptimizations.cpp
     IsolateLinalgCaptures.cpp
+    PromoteHostAllocs.cpp
 
 DEPENDS
     CnmIncGen
@@ -17,6 +18,7 @@ LINK_LIBS PUBLIC
     MLIRGPUDialect
     MLIRBufferizationDialect
     MLIRMemRefDialect
+    MLIRFuncDialect
     MLIRLLVMDialect
     MLIRAffineDialect
     MLIRLinalgDialect
