@@ -440,6 +440,20 @@ struct DpuTranslator {
     if (tryTranslateReduction(forOp, *trips))
       return;
 
+    // Loop-carried values are registers: an iter_arg starts as its init
+    // value, and after the loop each result is what the last iteration
+    // yielded. Both have to be mapped, since translateBinArith skips an op
+    // whose operand it does not know -- and with it everything computed from
+    // that op, which for an accumulator is the whole reduction.
+    for (auto [arg, init] :
+         llvm::zip_equal(forOp.getRegionIterArgs(), forOp.getInitArgs())) {
+      auto it = val_map.find(init);
+      val_map[arg] =
+          it != val_map.end()
+              ? it->second
+              : builder.createConst(0, mlirTypeToDtype(arg.getType()));
+    }
+
     iv_stack.push_back(forOp.getInductionVar());
     builder.beginLoop(0, *trips, 1);
 
@@ -451,6 +465,14 @@ struct DpuTranslator {
 
     builder.endLoop();
     iv_stack.pop_back();
+
+    auto yield = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+    for (auto [result, yielded] :
+         llvm::zip_equal(forOp.getResults(), yield.getOperands())) {
+      auto it = val_map.find(yielded);
+      if (it != val_map.end())
+        val_map[result] = it->second;
+    }
   }
 
   void translateIf(scf::IfOp ifOp) {
