@@ -146,16 +146,23 @@ static bool lowersToCall(Operation *op) {
          llvm::any_of(op->getResultTypes(), isFloat);
 }
 
+/// Whether `forOp`'s body calls into the runtime library.
+static bool bodyMakesCalls(AffineForOp forOp) {
+  return forOp.getBody()
+      ->walk([](Operation *op) {
+        return lowersToCall(op) ? WalkResult::interrupt()
+                                : WalkResult::advance();
+      })
+      .wasInterrupted();
+}
+
 /// The registers `forOp`'s body may keep live. A value live across a call
 /// has to be in a callee-saved register, of which the DPU ABI has 8
 /// (r14-r21) out of 24; a body making calls gets `callRegisterBudget`.
 static unsigned bodyRegisterBudget(AffineForOp forOp, unsigned registerBudget,
                                    unsigned callRegisterBudget) {
-  WalkResult calls = forOp.getBody()->walk([](Operation *op) {
-    return lowersToCall(op) ? WalkResult::interrupt() : WalkResult::advance();
-  });
-  return calls.wasInterrupted() ? std::min(registerBudget, callRegisterBudget)
-                                : registerBudget;
+  return bodyMakesCalls(forOp) ? std::min(registerBudget, callRegisterBudget)
+                               : registerBudget;
 }
 
 /// The unroll-and-jam factor for `parent` over its only inner loop `inner`,
@@ -371,9 +378,18 @@ struct UpmemRegisterTileLoopsPass
       auto parent = dyn_cast<AffineForOp>(inner->getParentOp());
       if (!parent)
         continue;
-      uint64_t factor = chooseJamFactor(
-          parent, inner,
-          bodyRegisterBudget(inner, registerBudget, callRegisterBudget));
+      // A body that calls into the runtime library is not jammed. The jam
+      // saves the loads of the operands its copies share, one instruction
+      // each, and pays by keeping those operands live across the copies'
+      // calls, in the 8 callee-saved registers -- a count the unroll below
+      // then multiplies by its own factor, which the budget above cannot
+      // see. Against a call of a dozen instructions or more the saving is a
+      // few percent at best, and the spill is not: gemv_512MB jammed by 2
+      // over a 32-bit multiply copied its 16 shared vector values to the
+      // stack every chunk and ran 10% slower than unjammed.
+      if (bodyMakesCalls(inner))
+        continue;
+      uint64_t factor = chooseJamFactor(parent, inner, registerBudget);
       if (factor < 2)
         continue;
       LLVM_DEBUG(llvm::dbgs()

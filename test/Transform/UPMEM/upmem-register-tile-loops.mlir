@@ -50,14 +50,16 @@
 // -----
 
 // The same gemv on i32 operands: the multiply is a call to `__mulsi3`, and
-// what is live across it must sit in the 8 callee-saved registers. With the
-// call budget of 8, f * 2 + 1 <= 8 gives f = 3, and the largest divisor of 16
-// below that is 2.
+// what is live across it must sit in the 8 callee-saved registers. A body
+// that calls is not jammed -- the shared x[k] would have to survive the other
+// copies' calls, which is where the jam spills -- so j stays rolled. The
+// reduction loop is unrolled by 16 under the call budget, which keeps its
+// x[k] loads moving with it rather than hoisted out of j.
 //
 // CHECK-LABEL: upmem.dpu_program @gemv_i32
-//       CHECK:   affine.for %{{.*}} = 0 to 16 step 2 {
+//       CHECK:   affine.for %{{.*}} = 0 to 16 {
 //  CHECK-NEXT:     affine.for %{{.*}} = 0 to 512 step 16 {
-// CHECK-COUNT-32: arith.muli
+// CHECK-COUNT-16: arith.muli
 //   CHECK-NOT:       arith.muli
   upmem.dpu_program @gemv_i32() tasklets(1) {
     %A = memref.alloca() : memref<16x512xi32, #upmem.wram>

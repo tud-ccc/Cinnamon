@@ -544,10 +544,12 @@ def UpmemRegisterTileLoopsPass
     the largest factor `f` with `f * c + s <= register-budget`, preferring one
     that divides the trip count. A body that calls into the runtime library
     -- a multiply wider than 16 bits, any integer division, any
-    floating-point arithmetic -- gets `call-register-budget` instead: what is
-    live across a call must sit in one of the 8 callee-saved registers, so a
-    jam sized for all 24 spills the copies' accumulators around every call.
-    The jam is applied only where each copy
+    floating-point arithmetic -- is not jammed at all: what is live across a
+    call must sit in one of the 8 callee-saved registers, the shared operands
+    the jam exists for would have to survive the other copies' calls there,
+    and against the call the load it saves is worth a few percent at most.
+    Such a body's unroll gets `call-register-budget` instead of
+    `register-budget`. The jam is applied only where each copy
     provably touches locations of its own: the parent loop's body holds
     nothing but the inner loop, index arithmetic, and loads and stores, and
     every buffer written in it -- inside the inner loop or around it, as an
