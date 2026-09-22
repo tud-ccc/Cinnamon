@@ -49,7 +49,8 @@ using namespace cinm_opt;
 
 namespace {
 
-constexpr int kDefaultIdleSeconds = 15 * 60;
+constexpr int kDefaultIdleSeconds =
+    1 * 60; // Shutdown server if idle for 1 minute
 
 void logf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void logf(const char *fmt, ...) {
