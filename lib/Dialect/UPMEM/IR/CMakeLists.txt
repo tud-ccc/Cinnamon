@@ -5,6 +5,7 @@ add_mlir_dialect_library(UPMEMIR
         UPMEMAttributes.cpp
         UPMEMOccupancy.cpp
         UPMEMOffloadRoofline.cpp
+        UPMEMTransferFootprint.cpp
         InferIntRangeInterfaceImpls.cpp
 
     DEPENDS

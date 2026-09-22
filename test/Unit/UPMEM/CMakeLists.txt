@@ -1,0 +1,10 @@
+add_unittest(UpmemUnitTests
+  TransferFootprintTest.cpp
+)
+target_link_libraries(UpmemUnitTests
+    PRIVATE
+        UPMEMIR
+        MLIRIR
+        MLIRSupport
+        LLVMSupport
+)

@@ -6,6 +6,7 @@
 #include <cinm-mlir/Dialect/Cnm/IR/CnmTypes.h>
 #include <cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h>
 #include <cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h>
+#include <cinm-mlir/Dialect/UPMEM/IR/UPMEMTransferFootprint.h>
 #include <cinm-mlir/Dialect/UPMEM/Transforms/UpmemSimulator.h>
 #include <cinm-mlir/Utils/Scheduling/SchedulingSupport.h>
 
@@ -228,10 +229,17 @@ static SimCost costOfOpCb(Operation &op, bool annotate, const WaitForCostFn &cb,
                 auto hier = llvm::cast<DeviceHierarchyType>(
                     xferOp.getHierarchy().getType());
                 int numDpus = hier.getNumDpus();
+                int block = xferOp.getDpuBufferSizeInBytes();
+                // What the source costs to read depends on how much of it
+                // is distinct: a map that sends several DPUs to one slice
+                // reads that slice once. Priced as distinct data when the
+                // footprint cannot be worked out.
+                double unique =
+                    static_cast<double>(upmem::uniqueHostBytes(xferOp).value_or(
+                        static_cast<int64_t>(numDpus) * block));
                 return scatterCost(
                     xferOp,
-                    upmem_cm::scatterBlockCostMs(
-                        numDpus, xferOp.getDpuBufferSizeInBytes()),
+                    upmem_cm::scatterReplicatedCostMs(numDpus, block, unique),
                     "array");
               })
           .Case<upmem::GatherFromArrayOp>(
