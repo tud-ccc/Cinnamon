@@ -12,6 +12,7 @@ import functools
 import pathlib
 
 from math import isnan
+import numpy as np
 import pandas as pd
 
 from .compile_run import RunResult
@@ -280,18 +281,27 @@ def series_ms(
     return None
 
 
-def noise(series: pd.DataFrame | None) -> tuple[float, float]:
-    """(within, between) for one measured series, both relative to its
-    median. `within` is the median over processes of each one's coefficient
-    of variation -- how much a call's time moves from one iteration to the
-    next. `between` is the range of the processes' medians -- how much a
-    whole run moves -- and NaN for a run of one process. NaN for a series
+def noise(series: pd.DataFrame | None) -> tuple[float, float, float]:
+    """(within, between, se) for one measured series, all relative to its
+    median.
+
+    `within` is the median over processes of each one's coefficient of
+    variation -- how much a call's time moves from one iteration to the next.
+    `between` is the range of the processes' medians -- how much a whole run
+    moves -- and NaN for a run of one process. Both describe the measurement;
+    neither is the error of the number this run reports.
+
+    That is `se`: the standard error of the median itself, bootstrapped over
+    the samples (processes resampled whole, so a process's offset counts as
+    one draw and not as three). It is what two configs have to differ by
+    before the difference is the machine's and not the noise's: the error of
+    a ratio of two of them is the two added in quadrature. NaN for a series
     too short to say."""
     if series is None or len(series) < 2:
-        return float("nan"), float("nan")
+        return float("nan"), float("nan"), float("nan")
     median = float(series["ms"].median())
     if not median:
-        return float("nan"), float("nan")
+        return float("nan"), float("nan"), float("nan")
     by_process = series.groupby("process")["ms"]
     cv = by_process.std() / by_process.mean()
     within = float(cv.median())
@@ -301,7 +311,23 @@ def noise(series: pd.DataFrame | None) -> tuple[float, float]:
         if len(medians) > 1
         else float("nan")
     )
-    return within, between
+    return within, between, _median_se(series) / median
+
+
+def _median_se(series: pd.DataFrame, draws: int = 1000) -> float:
+    """The standard error of `series`' median, by bootstrap. Processes are
+    resampled whole and iterations within the processes drawn, which keeps
+    the two scales of the noise (see noise): resampling all the samples
+    together would treat a process's offset as independent of its own
+    iterations and report an error too small by the offset's share."""
+    groups = [g["ms"].to_numpy() for _, g in series.groupby("process")]
+    rng = np.random.default_rng(0)  # a reported number does not move per run
+    medians = np.empty(draws)
+    for i in range(draws):
+        picked = [groups[j] for j in rng.integers(len(groups), size=len(groups))]
+        sample = np.concatenate([g[rng.integers(len(g), size=len(g))] for g in picked])
+        medians[i] = np.median(sample)
+    return float(medians.std())
 
 
 def launch_time_ms(

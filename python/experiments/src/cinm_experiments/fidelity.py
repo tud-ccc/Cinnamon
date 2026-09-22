@@ -51,7 +51,10 @@ def _predicted_terms(cost_csv: pathlib.Path) -> dict[str, float] | None:
 
 def _measured_terms(
     output_dir: pathlib.Path,
-) -> tuple[dict[str, float], dict[str, float], dict[str, tuple[float, float]]] | None:
+) -> (
+    tuple[dict[str, float], dict[str, float], dict[str, tuple[float, float, float]]]
+    | None
+):
     """(raw, charged, noise) per term. The raw transfer term is the whole
     scatter+gather time, which is what the transfer panel compares against
     (its predicted side keeps the `excluded` rows for the same reason). The
@@ -132,6 +135,7 @@ def config_rows(job: tuple[str, pathlib.Path, pathlib.Path]) -> list[dict]:
             "net_ms": raw["combined"],
             "noise_within": noise[term][0],
             "noise_between": noise[term][1],
+            "noise_se": noise[term][2],
             **knobs,
         }
         for term in ("transfer", "kernel", "combined")
@@ -173,6 +177,7 @@ def fidelity_frame(
         "net_ms",
         "noise_within",
         "noise_between",
+        "noise_se",
         "dpus",
         "tasklets",
     ]
