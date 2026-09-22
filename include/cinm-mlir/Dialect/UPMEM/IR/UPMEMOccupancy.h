@@ -23,8 +23,8 @@ namespace mlir::upmem {
 /// spill area; before it, a fully unrolled reduction spilled up to 512 bytes,
 /// which is what the previous reserve of 1024 was covering. The runtime's own
 /// WRAM (software cache, barrier, .data) is charged separately, see
-/// kRuntimeWramBytes. Set CINM_DPU_STACK_CHECK when compiling the kernels to
-/// have cinm-compile-dpu verify the linked binary against this bound.
+/// kRuntimeWramBytes. cinm-compile-dpu verifies every linked binary against
+/// this bound unless CINM_DPU_STACK_CHECK=0 says not to.
 constexpr int64_t kStackReserveBytes = 256;
 
 /// Bytes one tasklet's stack needs: a fixed reserve for the runtime, plus

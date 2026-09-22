@@ -28,10 +28,10 @@ dpuCompiler="${UPMEM_HOME:?"UPMEM_HOME is undefined"}"/bin/dpu-upmem-dpurte-clan
 # fixed reserve for saved registers and spills (kStackReserveBytes in
 # UPMEMOccupancy.h). A DPU has no stack guard, so a frame that outgrows it
 # silently overwrites the next tasklet's stack and the program computes wrong
-# answers rather than crashing. With CINM_DPU_STACK_CHECK set, the SDK's stack
-# analyzer measures the linked binary's deepest frame and the compile fails
-# when it exceeds what was declared. Off by default because it costs a
-# disassembly per binary, which the search's compile volume would notice.
+# answers rather than crashing. So the SDK's stack analyzer measures every
+# linked binary's deepest frame and the compile fails when it exceeds what was
+# declared -- 0.12s per binary, which even the search's compile volume can
+# afford. Set CINM_DPU_STACK_CHECK=0 to skip it.
 check_stack() {
     local bin_path="$1" declared="$2"
     local analyzer="$UPMEM_HOME/bin/dpu_stack_analyzer"
@@ -79,7 +79,7 @@ for word in $(echo "$rest" | tr ';' ' '); do
         command="'$dpuCompiler' -DSTACK_SIZE_DEFAULT=$stack_size -DNR_TASKLETS=$threads -D$var '$PROG' -o '$bin_path' -O3 -Wall -Wextra -Werror -Wno-unused-variable"
         echo "$command"
         eval "$command"
-        if [ -n "${CINM_DPU_STACK_CHECK:-}" ]; then
+        if [ "${CINM_DPU_STACK_CHECK:-1}" != "0" ]; then
             check_stack "$bin_path" "$stack_size"
         fi
         compiled=$((compiled + 1))

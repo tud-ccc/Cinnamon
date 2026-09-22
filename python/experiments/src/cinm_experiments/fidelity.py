@@ -51,23 +51,51 @@ def _predicted_terms(cost_csv: pathlib.Path) -> dict[str, float] | None:
 
 def _measured_terms(
     output_dir: pathlib.Path,
-) -> tuple[dict[str, float], dict[str, float]] | None:
-    """(raw, charged) per term. The raw transfer term is the whole
+) -> tuple[dict[str, float], dict[str, float], dict[str, tuple[float, float]]] | None:
+    """(raw, charged, noise) per term. The raw transfer term is the whole
     scatter+gather time, which is what the transfer panel compares against
     (its predicted side keeps the `excluded` rows for the same reason). The
     charged one drops the amortizable static scatters, because net_time_ms
     subtracts those: only the charged time is a part of combined, so only it
-    can be expressed as a share of it."""
-    net = measurements.net_time_ms(output_dir)
-    if net is None:
+    can be expressed as a share of it. The noise is measurements.noise of
+    each raw term's per-iteration series.
+
+    Each process's first iteration is a warmup and is left out: the first
+    launch, the first touch of a host buffer and the program load all land
+    in it."""
+    net = measurements.net_series_ms(output_dir, drop_first=True)
+    if net is None or net.empty:
         return None
-    scatter = measurements.scatter_time_ms(output_dir) or 0.0
-    gather = measurements.gather_time_ms(output_dir) or 0.0
-    kernel = measurements.launch_time_ms(output_dir) or 0.0
-    amortized = measurements.amortizable_time_ms(output_dir, "scatter")
-    raw = {"transfer": scatter + gather, "kernel": kernel, "combined": net}
-    charged = dict(raw, transfer=scatter - amortized + gather)
-    return raw, charged
+    scatter = measurements.series_ms(output_dir, "scatter", drop_first=True)
+    gather = measurements.series_ms(output_dir, "gather", drop_first=True)
+    kernel = measurements.series_ms(output_dir, "launch", drop_first=True)
+
+    def median(series) -> float:
+        return float(series["ms"].median()) if series is not None else 0.0
+
+    # A transfer iteration is its scatters and its gathers together, so the
+    # noise is taken of their sum, iteration by iteration.
+    parts = [x for x in (scatter, gather) if x is not None]
+    transfer = (
+        pd.concat(parts)
+        .groupby("iteration", as_index=False)
+        .agg(process=("process", "first"), ms=("ms", "sum"))
+        if parts
+        else None
+    )
+    amortized = measurements.amortizable_time_ms(output_dir, "scatter", drop_first=True)
+    raw = {
+        "transfer": median(scatter) + median(gather),
+        "kernel": median(kernel),
+        "combined": float(net["ms"].median()),
+    }
+    charged = dict(raw, transfer=median(scatter) - amortized + median(gather))
+    noise = {
+        "transfer": measurements.noise(transfer),
+        "kernel": measurements.noise(kernel),
+        "combined": measurements.noise(net),
+    }
+    return raw, charged, noise
 
 
 def _config_knobs(config_csv: pathlib.Path) -> dict[str, float]:
@@ -91,7 +119,7 @@ def config_rows(job: tuple[str, pathlib.Path, pathlib.Path]) -> list[dict]:
     measured = _measured_terms(config_dir / "output")
     if predicted is None or measured is None:
         return []
-    raw, charged = measured
+    raw, charged, noise = measured
     knobs = _config_knobs(compile_dir / "config.csv")
     return [
         {
@@ -102,6 +130,8 @@ def config_rows(job: tuple[str, pathlib.Path, pathlib.Path]) -> list[dict]:
             "measured_ms": raw[term],
             "charged_ms": charged[term],
             "net_ms": raw["combined"],
+            "noise_within": noise[term][0],
+            "noise_between": noise[term][1],
             **knobs,
         }
         for term in ("transfer", "kernel", "combined")
@@ -141,6 +171,8 @@ def fidelity_frame(
         "measured_ms",
         "charged_ms",
         "net_ms",
+        "noise_within",
+        "noise_between",
         "dpus",
         "tasklets",
     ]

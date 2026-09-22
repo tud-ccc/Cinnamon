@@ -780,9 +780,14 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
                        cinm::SpaceBuilder &b) override {
     const int64_t maxDpus = platform.getMaxDpus();
     const int64_t maxTasklets = platform.getMaxNumTasklets();
+    // A workgroup narrower than a rank leaves most of the machine idle and
+    // never competes, so the space starts at one rank's worth of DPUs
+    // rather than spending the sample and the search's budget on
+    // configurations that only differ in how much of the device they waste.
+    constexpr int64_t kMinDpus = 64;
     dpusVar_ = opts.fixedDpus > 0
                    ? b.intRange("dpus", opts.fixedDpus, opts.fixedDpus)
-                   : b.intRange("dpus", 1, maxDpus);
+                   : b.intRange("dpus", std::min(kMinDpus, maxDpus), maxDpus);
     b.describe("dpus", "number of DPUs the workgroup spans (ATiM: product of "
                        "blockIdx extents)");
     taskletsVar_ =

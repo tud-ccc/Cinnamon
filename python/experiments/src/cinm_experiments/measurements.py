@@ -66,9 +66,15 @@ def _iters(df: pd.DataFrame, drop_first: bool) -> pd.DataFrame:
     exactly what must drop to zero, so the drop is unconditional. A run with
     a single recorded iteration therefore has no steady state: its total
     comes back empty and net_time_ms reports None rather than passing the
-    warmup off as the answer."""
+    warmup off as the answer.
+
+    A run over several processes (compile_run.run_config) marks each one's
+    first iteration in a `warmup` column, and those are what is dropped."""
     if drop_first:
-        df = df[df["iteration"] > 0]
+        if "warmup" in df.columns:
+            df = df[df["warmup"] == 0]
+        else:
+            df = df[df["iteration"] > 0]
     return df
 
 
@@ -162,6 +168,29 @@ def net_time_ms(
     point of declaring it static, and a scatter of one is paid at load time
     rather than per inference (see amortizable_ns). Pass
     discount_static_compact=False to price the un-amortized case."""
+    net = net_series_ms(
+        output_dir,
+        discount_load=discount_load,
+        discount_static_compact=discount_static_compact,
+        drop_first=drop_first,
+    )
+    if net is None:
+        return None
+    # Per iteration first, then the median: the net of one real iteration,
+    # not a total and a set of deductions each taken from a different one.
+    return _over_iterations(net["ms"])
+
+
+def net_series_ms(
+    output_dir: Union[pathlib.Path, RunResult],
+    *,
+    discount_load: bool = True,
+    discount_static_compact: bool = True,
+    drop_first: bool = False,
+) -> pd.DataFrame | None:
+    """net_time_ms's per-iteration values: one row per iteration with its
+    `process` (0 for a single-process run) and the net `ms`, or None when
+    there is no total.csv-type file. See net_time_ms for what is deducted."""
     total_df = None
     alloc_ns = pd.Series(dtype=float)
     free_ns = pd.Series(dtype=float)
@@ -195,9 +224,20 @@ def net_time_ms(
     )
     for series in static_ns:
         net = net - total_df["iteration"].map(series).fillna(0)
-    # Per iteration first, then the median: the net of one real iteration,
-    # not a total and a set of deductions each taken from a different one.
-    return _over_iterations(net) / 1e6
+    return pd.DataFrame(
+        {
+            "iteration": total_df["iteration"].to_numpy(),
+            "process": _process_of(total_df).to_numpy(),
+            "ms": (net / 1e6).to_numpy(),
+        }
+    )
+
+
+def _process_of(df: pd.DataFrame) -> pd.Series:
+    """Each row's process, 0 throughout for a run of one process."""
+    if "process" in df.columns:
+        return df["process"]
+    return pd.Series(0, index=df.index)
 
 
 def _sum_time_ms(
@@ -208,15 +248,60 @@ def _sum_time_ms(
     """Median per-iteration total time in ms spent in the given csv_type
     (summed over however many calls of that type happen within an
     iteration), or None if no matching csv-type file is present."""
+    series = series_ms(output_dir, csv_type, drop_first=drop_first)
+    if series is None:
+        return None
+    ms = _over_iterations(series["ms"])
+    return None if isnan(ms) else ms
+
+
+def series_ms(
+    output_dir: Union[pathlib.Path, RunResult],
+    csv_type: str,
+    drop_first: bool = False,
+) -> pd.DataFrame | None:
+    """_sum_time_ms's per-iteration values: one row per iteration with its
+    `process` and the `ms` spent in `csv_type` calls, or None if no such
+    csv-type file is present."""
     for t, df in _tables(output_dir):
         if t != csv_type:
             continue
-        df = _iters(df, drop_first)
-        ns = _over_iterations(df.groupby("iteration")["elapsed_ns"].sum())
-        if isnan(ns):
-            return None
-        return ns / 1e6
+        df = _iters(df, drop_first).assign(process=lambda d: _process_of(d))
+        grouped = df.groupby("iteration").agg(
+            process=("process", "first"), ns=("elapsed_ns", "sum")
+        )
+        return pd.DataFrame(
+            {
+                "iteration": grouped.index.to_numpy(),
+                "process": grouped["process"].to_numpy(),
+                "ms": (grouped["ns"] / 1e6).to_numpy(),
+            }
+        )
     return None
+
+
+def noise(series: pd.DataFrame | None) -> tuple[float, float]:
+    """(within, between) for one measured series, both relative to its
+    median. `within` is the median over processes of each one's coefficient
+    of variation -- how much a call's time moves from one iteration to the
+    next. `between` is the range of the processes' medians -- how much a
+    whole run moves -- and NaN for a run of one process. NaN for a series
+    too short to say."""
+    if series is None or len(series) < 2:
+        return float("nan"), float("nan")
+    median = float(series["ms"].median())
+    if not median:
+        return float("nan"), float("nan")
+    by_process = series.groupby("process")["ms"]
+    cv = by_process.std() / by_process.mean()
+    within = float(cv.median())
+    medians = by_process.median()
+    between = (
+        float((medians.max() - medians.min()) / median)
+        if len(medians) > 1
+        else float("nan")
+    )
+    return within, between
 
 
 def launch_time_ms(

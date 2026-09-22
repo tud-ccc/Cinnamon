@@ -154,6 +154,7 @@ def bench_one_config(
     roots: MeasureRoots,
     *,
     iters: int,
+    processes: int = 1,
     bench_marker: pathlib.Path | None = None,
     env: dict[str, str] | None = None,
 ) -> bool:
@@ -173,7 +174,9 @@ def bench_one_config(
         saved[k] = os.environ.get(k)
         os.environ[k] = v
     try:
-        return _bench_one_config(config, roots, iters=iters, bench_marker=bench_marker)
+        return _bench_one_config(
+            config, roots, iters=iters, processes=processes, bench_marker=bench_marker
+        )
     finally:
         for k, v in saved.items():
             if v is None:
@@ -187,6 +190,7 @@ def _bench_one_config(
     roots: MeasureRoots,
     *,
     iters: int,
+    processes: int = 1,
     bench_marker: pathlib.Path | None = None,
 ) -> bool:
     bench_marker = bench_marker or roots.bench_marker_of(config)
@@ -198,10 +202,14 @@ def _bench_one_config(
             f"  SKIP bench (not compiled): {config.system} {config.fn_name} {config.label}"
         )
     else:
-        r = compile_run.run_config(compiled, run_root=roots.run_root, iters=iters)
+        r = compile_run.run_config(
+            compiled, run_root=roots.run_root, iters=iters, processes=processes
+        )
         if not r.ok and compile_run.is_dpu_allocation_error(r.error):
             # retry once: allocation races with whatever else holds ranks
-            r = compile_run.run_config(compiled, run_root=roots.run_root, iters=iters)
+            r = compile_run.run_config(
+                compiled, run_root=roots.run_root, iters=iters, processes=processes
+            )
         if not r.ok:
             print(
                 f"  FAIL run: {config.system} {config.fn_name} {config.label}: {r.error[:200]}"

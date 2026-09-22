@@ -227,9 +227,57 @@ def recompute_cost(config_dir: pathlib.Path, *, prim: str) -> str | None:
     return None
 
 
+def _merge_process_outputs(
+    output_dir: pathlib.Path, parts: list[pathlib.Path], iters: int
+) -> None:
+    """Fold the CSVs of several processes' runs into one set in `output_dir`.
+
+    Every row gains `process` (0, 1, ...) and `warmup` (1 for the process's
+    iteration 0), and process p's iterations are renumbered from p * iters,
+    so an iteration number still names one inference: the readers group by
+    it, and two processes' iteration 3 must not be summed as one."""
+    names = sorted({f.name for part in parts for f in part.glob("*.csv")})
+    for name in names:
+        header: list[str] | None = None
+        rows: list[list[str]] = []
+        for process, part in enumerate(parts):
+            path = part / name
+            if not path.exists():
+                continue
+            with path.open(newline="") as fh:
+                reader = csv.reader(fh)
+                part_header = next(reader, None)
+                if part_header is None:
+                    continue
+                header = header or part_header
+                it = part_header.index("iter" if "iter" in part_header else "iteration")
+                for row in reader:
+                    if not row:
+                        continue
+                    first = int(row[it]) == 0
+                    row[it] = str(int(row[it]) + process * iters)
+                    rows.append(row + [str(process), "1" if first else "0"])
+        if header is None:
+            continue
+        with (output_dir / name).open("w", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(header + ["process", "warmup"])
+            writer.writerows(rows)
+
+
 def run_config(
-    compiled: CompiledConfig, *, run_root: pathlib.Path, iters: int
+    compiled: CompiledConfig,
+    *,
+    run_root: pathlib.Path,
+    iters: int,
+    processes: int = 1,
 ) -> RunResult:
+    """Run a compiled config's benchmark `processes` times, `iters` iterations
+    each, iteration 0 of each being a warmup. Transfer times move between
+    processes as well as between iterations -- a 512 MB scatter measured
+    27 to 35 ms by process -- so a median over one process's iterations can
+    rank near-ties by which process got lucky. With several, the CSVs are
+    merged, see _merge_process_outputs."""
     if not compiled.ok:
         return RunResult(compiled, False, pathlib.Path(), "not compiled")
     cfg = compiled.config
@@ -250,19 +298,33 @@ def run_config(
     error_txt.unlink(missing_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    parts = (
+        [output_dir]
+        if processes == 1
+        else [output_dir / f"process{p}" for p in range(processes)]
+    )
     err = None
-    try:
-        r = subprocess.run(
-            [str(bench_bin), str(output_dir), str(iters)],
-            capture_output=True,
-            text=True,
-            cwd=str(bin_dir / cfg.fn_name),
-        )
-        if r.returncode != 0:
-            err = r.stderr
-    except Exception:
-        traceback.print_exc()
-        err = traceback.format_exc()
+    for part in parts:
+        part.mkdir(parents=True, exist_ok=True)
+        try:
+            r = subprocess.run(
+                [str(bench_bin), str(part), str(iters)],
+                capture_output=True,
+                text=True,
+                cwd=str(bin_dir / cfg.fn_name),
+            )
+            if r.returncode != 0:
+                err = r.stderr
+        except Exception:
+            traceback.print_exc()
+            err = traceback.format_exc()
+        if err:
+            break
+    if processes > 1:
+        if not err:
+            _merge_process_outputs(output_dir, parts, iters)
+        for part in parts:
+            shutil.rmtree(part, ignore_errors=True)
 
     if err:
         (output_dir.parent / "run_error.txt").write_text(err)
