@@ -557,6 +557,15 @@ struct InferenceOptions {
   /// honest one.
   double hostAchievedFraction = 0.5;
 
+  /// Graph allocation only, latency objective only: offer every class the
+  /// option of staying on the host, as a profile point costed by the host
+  /// roofline, and let the allocation choose it. Placement then falls out of
+  /// the same solve that sizes the device sets -- a block stays on the host
+  /// when the devices it would take are worth more to another block, which
+  /// no screen in front of the solve can know. The screens remain: they
+  /// decide which device sizes are worth profiling, not where a block runs.
+  bool allowHostPlacement = false;
+
   /// Graph profiling only: the most menu values to profile per block, after
   /// the screen above. 0 leaves the menu as the plugin (and the screen) left
   /// it; a positive value thins what remains geometrically, which bounds the
@@ -614,6 +623,15 @@ struct ProfilePoint {
   /// transfer gains little from the device; see
   /// InferenceOptions::hostTransferBoundShare. Negative when not measured.
   double transferShare = -1;
+  /// Whether this point is the block staying where it is: `costMs` is then
+  /// what the host would take for it (cinm::hostRooflineSeconds), it holds
+  /// no device and pins nothing. A profile carries at most one, first, so
+  /// that the allocation starts from everything on the host and spends the
+  /// device where it buys the most -- which is what makes placement part of
+  /// the allocation rather than a screen in front of it. Latency only: the
+  /// throughput objective takes the busiest device set's load, and host work
+  /// loads no set (see allocateGraph).
+  bool onHost = false;
 };
 
 /// What the menu screen made of one resource value: the device roofline it

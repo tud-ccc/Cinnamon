@@ -374,6 +374,12 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "keep the block on the host when none can. The same comparison "
            "the per-op offload gate makes, taken per DPU count and where the "
            "counts the block admits are known">,
+    Option<"allowHostPlacement", "allow-host-placement", "bool", "false",
+           "Graph allocation only, with latency-objective: let the allocation "
+           "decide which blocks run on the host, by offering each class a "
+           "profile point that stays there. A block then falls back when the "
+           "DPUs it would take are worth more elsewhere, which a screen in "
+           "front of the solve cannot know">,
     Option<"hostAchievedFraction", "host-achieved-fraction", "double", "0.5",
            "Graph allocation only: what share of its roofline the host is "
            "taken to reach when the menu screen prices it. The roofline is "

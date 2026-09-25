@@ -1495,6 +1495,7 @@ struct UpmemInferAcceleratorPass
     o.allocationGranularity = allocationGranularity;
     o.screenMenuAgainstHost = screenMenuAgainstHost;
     o.hostAchievedFraction = hostAchievedFraction;
+    o.allowHostPlacement = allowHostPlacement;
     o.maxMenuPoints = maxMenuPoints;
     o.menuScreenCsvDir = menuScreenCsvDir;
     o.gateDryRun = gateDryRun;

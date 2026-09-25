@@ -114,6 +114,10 @@ std::optional<AllocationResult> allocateGraph(ArrayRef<ClassProfile> classes,
       co.options.push_back(
           {p.resource, p.costMs * cls.executionsPerMember,
            maxCoResidents(p, opts.capacities, cls.multiplicity)});
+      if (p.onHost)
+        // The busiest set's load is the objective, and host work loads no
+        // set: there is nothing for this point to be compared against here.
+        continue;
       if (p.costMs < bestPinned) {
         bestPinned = p.costMs;
         bestScatter = p.residency.weightScatterMs;
@@ -459,7 +463,8 @@ allocateGraphForLatency(ArrayRef<ClassProfile> classes,
     for (unsigned member : group.members)
       executions += nodes[member].executions;
     alloc.groups.push_back({static_cast<unsigned>(group.members.size()),
-                            point.resource, double(executions) * point.costMs});
+                            point.resource, double(executions) * point.costMs,
+                            point.onHost});
     for (unsigned member : group.members)
       result.groupOfNode[member] = index;
   }
@@ -493,8 +498,9 @@ AllocationScore scoreAllocation(ArrayRef<ClassProfile> classes,
     firstGroupOfClass[ci] = groups.size();
     for (const GroupAllocation &group : classAlloc.groups) {
       // A timeshared set runs no fixed point, so there is no per-node cost
-      // and no makespan to report for this allocation.
-      if (group.resource == 0) {
+      // and no makespan to report for this allocation. A host group is not
+      // that: it has a point, and a cost the makespan counts like any other.
+      if (group.resource == 0 && !group.onHost) {
         score.latencyMs = std::numeric_limits<double>::quiet_NaN();
         return score;
       }

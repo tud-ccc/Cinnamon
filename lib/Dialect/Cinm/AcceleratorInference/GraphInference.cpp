@@ -747,11 +747,49 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
       t.join();
   }
 
+  // What the host would take for one execution of a class, as a profile
+  // point the allocation may choose (InferenceOptions::allowHostPlacement).
+  // Zero resource, no residency, and the cost is the roofline itself: the
+  // device's side is measured by then, so the honest comparison is against
+  // an idealized host.
+  auto hostPointOf =
+      [&](cinm::ComputeBlockOp block) -> std::optional<ProfilePoint> {
+    cinm::OffloadFootprint f = cinm::measureOffloadFootprint(block);
+    auto host = cinm::HostPlatformAttr::getInScope(block);
+    if (!f.known || !host)
+      return std::nullopt;
+    const double ms = cinm::hostRooflineSeconds(f, host.getModel()) * 1e3;
+    if (!(ms > 0.0))
+      return std::nullopt;
+    ProfilePoint point;
+    point.resource = 0;
+    point.costMs = ms;
+    point.onHost = true;
+    return point;
+  };
+
+  // Placement is the allocation's to decide only under the objective that
+  // can price it: the throughput solve takes the busiest device set's load,
+  // and host work loads no set.
+  const bool placementIsSolved =
+      opts.allowHostPlacement && opts.latencyObjective;
+
   // Reduce in class order, so the profile list, the diagnostics and the
   // failure that wins are all the ones a serial sweep would have produced.
   for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
     if (results[ci].definite)
       return std::move(*results[ci].definite);
+    if (!results[ci].points) {
+      // With host placement the class is not dropped: it enters the solve
+      // able only to stay where it is, so its cost is on the critical path
+      // like everything else.
+      if (opts.allowHostPlacement && opts.latencyObjective) {
+        if (std::optional<ProfilePoint> host =
+                hostPointOf(blockClass.representative())) {
+          results[ci].points = SmallVector<ProfilePoint>{*host};
+        }
+      }
+    }
     if (!results[ci].points) {
       InFlightDiagnostic warning = blockClass.representative().emitWarning();
       if (results[ci].silenced.empty())
@@ -774,7 +812,7 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
     // the block for real, so the comparison is against the host's roofline
     // itself -- what survives beats an idealized host, which is the claim
     // worth making.
-    if (opts.screenMenuAgainstHost) {
+    if (opts.screenMenuAgainstHost && !placementIsSolved) {
       cinm::OffloadFootprint f =
           cinm::measureOffloadFootprint(blockClass.representative());
       auto host =
@@ -814,6 +852,12 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
         continue;
       }
     }
+    if (placementIsSolved)
+      if (std::optional<ProfilePoint> host =
+              hostPointOf(blockClass.representative()))
+        // First: points ascend in resource, and the allocation starts from
+        // the cheapest one it can hold everyone on.
+        results[ci].points->insert(results[ci].points->begin(), *host);
     solveIndexOfClass[ci] = static_cast<int>(profiles.size());
     // The load of a member is its cost times how often it runs: a block
     // inside a rolled loop runs once per iteration.
@@ -976,7 +1020,14 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
             builder.getNamedAttr("class", builder.getI64IntegerAttr(ci)),
             builder.getNamedAttr("member", builder.getI64IntegerAttr(mi)),
         };
-        if (solveIndexOfClass[ci] >= 0) {
+        const bool placedOnHost =
+            solveIndexOfClass[ci] >= 0 && alloc->perClass[solveIndexOfClass[ci]]
+                                              .groups[groupOfMember[ci][mi]]
+                                              .onHost;
+        if (placedOnHost)
+          fields.push_back(
+              builder.getNamedAttr("placement", builder.getStringAttr("host")));
+        if (solveIndexOfClass[ci] >= 0 && !placedOnHost) {
           unsigned gi = groupOfMember[ci][mi];
           fields.push_back(
               builder.getNamedAttr("group", builder.getI64IntegerAttr(gi)));
@@ -1062,6 +1113,11 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
     for (auto [mi, memberRef] : llvm::enumerate(blockClass.members)) {
       ComputeBlockOp block = memberRef; // op handles are cheap to copy
       const GroupAllocation &group = classAlloc.groups[groupOfMember[ci][mi]];
+      // The allocation left this one where it is: no configuration to
+      // commit, and the block stays a host block (see
+      // InferenceOptions::allowHostPlacement).
+      if (group.onHost)
+        continue;
       const ProfilePoint *point = pointOf(profile, group);
 
       // Forward the group's set into the member: one more operand, one more

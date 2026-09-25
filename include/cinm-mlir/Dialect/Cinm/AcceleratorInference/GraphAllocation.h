@@ -80,12 +80,16 @@ struct AllocationOptions {
 };
 
 /// One device set: `size` members of one class co-resident on `resource`
-/// units. `resource == 0` means unpinned (timeshared). `loadMs` is the set's
-/// per-inference work, the term the objective takes the max over.
+/// units. `resource == 0` means unpinned (timeshared), unless `onHost`, in
+/// which case the members were not placed on the device at all. `loadMs` is
+/// the set's per-inference work, the term the objective takes the max over.
 struct GroupAllocation {
   unsigned size = 0;
   int64_t resource = 0;
   double loadMs = 0;
+  /// The members stay on the host: no set, no budget, no residency. Only the
+  /// latency solve produces these, and only from a ProfilePoint::onHost.
+  bool onHost = false;
 };
 
 /// The chosen grouping of one class's members (sums to its multiplicity).
