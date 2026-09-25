@@ -679,6 +679,11 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
   struct ClassResult {
     std::optional<SmallVector<ProfilePoint>> points;
     std::optional<DiagnosedSilenceableFailure> definite;
+    /// Why a class has no points, in the sweep's own words -- the menu
+    /// screen's verdict, say. Kept rather than emitted where it arises: the
+    /// sweeps finish in no particular order, and a reader cannot make sense
+    /// of diagnostics in that one.
+    std::string silenced;
   };
   std::vector<ClassResult> results(graph.classes.size());
 
@@ -697,11 +702,13 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
     if (auto *fail = std::get_if<DiagnosedSilenceableFailure>(&points)) {
       if (fail->isDefiniteFailure())
         results[ci].definite = std::move(*fail);
-      else
+      else {
         // Not an error at the graph level, and the warning that says so is
         // emitted below: diagnostics from the sweep would come out in finish
         // order, which is not an order the user can make sense of.
+        results[ci].silenced = StringRef(fail->getMessage()).trim().str();
         (void)fail->silence();
+      }
       return;
     }
     results[ci].points = std::move(std::get<SmallVector<ProfilePoint>>(points));
@@ -733,11 +740,14 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
     if (results[ci].definite)
       return std::move(*results[ci].definite);
     if (!results[ci].points) {
-      blockClass.representative().emitWarning()
-          << "no feasible '" << platformName
-          << "' configuration for this block; it stays on the host, along "
-             "with the "
-          << (blockClass.size() - 1) << " other block(s) of its class";
+      InFlightDiagnostic warning = blockClass.representative().emitWarning();
+      if (results[ci].silenced.empty())
+        warning << "no feasible '" << platformName
+                << "' configuration for this block";
+      else
+        warning << results[ci].silenced;
+      warning << "; it stays on the host, along with the "
+              << (blockClass.size() - 1) << " other block(s) of its class";
       continue;
     }
     // The transfer-bound gate (see InferenceOptions::hostTransferBoundShare):

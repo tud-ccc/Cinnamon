@@ -368,7 +368,7 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "profiling menu prefers multiples of it (rank-sized sets keep "
            "host<->DPU transfers rank-parallel) but falls back to whatever "
            "divides the problem size when no such multiple does">,
-    Option<"screenMenuAgainstHost", "screen-menu", "bool", "false",
+    Option<"screenMenuAgainstHost", "screen-menu", "bool", "true",
            "Graph allocation only: before profiling a block, drop the DPU "
            "counts whose roofline cannot beat the host's for that block, and "
            "keep the block on the host when none can. The same comparison "

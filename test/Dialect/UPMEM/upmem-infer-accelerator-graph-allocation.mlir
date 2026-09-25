@@ -1,5 +1,9 @@
-// RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=4 n-init=4 fixed-tasklets=4 graph-allocation=1 allocation-granularity=4" | FileCheck %s --check-prefixes=CHECK,TPUT
-// RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=4 n-init=4 fixed-tasklets=4 graph-allocation=1 allocation-granularity=4 latency-objective=1" | FileCheck %s --check-prefixes=CHECK,LAT
+// RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=4 n-init=4 fixed-tasklets=4 graph-allocation=1 screen-menu=0 allocation-granularity=4" | FileCheck %s --check-prefixes=CHECK,TPUT
+// RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=4 n-init=4 fixed-tasklets=4 graph-allocation=1 screen-menu=0 allocation-granularity=4 latency-objective=1" | FileCheck %s --check-prefixes=CHECK,LAT
+// The screen that decides whether a block is worth a device at all is off
+// here (screen-menu=0): these toy blocks are far too small to beat the host
+// on any DPU count, and what this test pins is what the allocation does with
+// blocks that are offloaded, not whether they should be.
 
 // The graph-level two-level solve: profile each program-identity class over
 // its menu (divisors of the iteration-space size, quantized to the

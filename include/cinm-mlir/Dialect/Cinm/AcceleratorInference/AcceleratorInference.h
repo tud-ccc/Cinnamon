@@ -540,11 +540,9 @@ struct InferenceOptions {
   /// per-op offload gate makes, taken where the feasible resource values
   /// are known instead of at the whole array.
   ///
-  /// Off by default: it decides what runs where, and the per-op gate in
-  /// front of the graph is still the one that does that. Turn it on to move
-  /// the decision here; `gateDryRunCsv` reports what it would do without
-  /// changing a program.
-  bool screenMenuAgainstHost = false;
+  /// `gateDryRunCsv` reports what it decides, per candidate value, without
+  /// running a search or changing a program.
+  bool screenMenuAgainstHost = true;
 
   /// Graph profiling only: the most menu values to profile per block, after
   /// the screen above. 0 leaves the menu as the plugin (and the screen) left
