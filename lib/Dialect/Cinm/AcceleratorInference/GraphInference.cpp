@@ -361,7 +361,9 @@ static std::string csvQuote(StringRef s) {
 /// and whether it survives. `kept_of_candidates` per row says how much of
 /// the menu the screen leaves, which is what decides whether the survivors
 /// still need thinning (InferenceOptions::maxMenuPoints) or whether the
-/// screen is the thinning.
+/// screen is the thinning. The traffic is split in two because the two
+/// directions are not priced alike: `dynamic_out_bytes` is what comes back,
+/// and a gather is the slower way across.
 static void dumpMenuScreenCSV(const std::filesystem::path &path,
                               const ComputeGraph &graph, StringRef graphName,
                               InferencePluginFactory makePlugin,
@@ -374,8 +376,9 @@ static void dumpMenuScreenCSV(const std::filesystem::path &path,
                  << "\n";
     return;
   }
-  os << "graph,class,blocks,loc,work_ops,static_bytes,dynamic_bytes,host_ms,"
-        "resource,device_ms,kept,candidates,kept_of_candidates,profiled\n";
+  os << "graph,class,blocks,loc,work_ops,static_bytes,dynamic_bytes,"
+        "dynamic_out_bytes,host_ms,resource,device_ms,kept,candidates,"
+        "kept_of_candidates,profiled\n";
 
   for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
     cinm::ComputeBlockOp block = blockClass.representative();
@@ -394,9 +397,9 @@ static void dumpMenuScreenCSV(const std::filesystem::path &path,
     auto row = [&](int64_t resource, double deviceMs, bool kept) {
       os << csvQuote(graphName) << "," << ci << "," << blockClass.size() << ","
          << csvQuote(loc) << "," << f.work << "," << f.staticBytes << ","
-         << f.dynamicBytes << "," << screen.hostMs << "," << resource << ","
-         << deviceMs << "," << (kept ? 1 : 0) << "," << menu.size() << ","
-         << survivors.size() << ","
+         << f.dynamicBytes << "," << f.dynamicOutBytes << "," << screen.hostMs
+         << "," << resource << "," << deviceMs << "," << (kept ? 1 : 0) << ","
+         << menu.size() << "," << survivors.size() << ","
          << (llvm::is_contained(profiled, resource) ? 1 : 0) << "\n";
     };
     if (screen.verdicts.empty())

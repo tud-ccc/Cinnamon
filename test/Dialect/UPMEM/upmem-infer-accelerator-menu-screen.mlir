@@ -11,7 +11,7 @@
 // The dry run reports that without deciding anything: one row per candidate
 // count, both rooflines, and the verdict.
 //
-// CSV: graph,class,blocks,loc,work_ops,static_bytes,dynamic_bytes,host_ms,resource,device_ms,kept,candidates,kept_of_candidates,profiled
+// CSV: graph,class,blocks,loc,work_ops,static_bytes,dynamic_bytes,dynamic_out_bytes,host_ms,resource,device_ms,kept,candidates,kept_of_candidates,profiled
 // CSV: "infer_gemv",0,1,
 // CSV-NOT: ,1,{{[0-9]+}},{{[0-9]+}},1{{$}}
 

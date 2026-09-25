@@ -219,6 +219,7 @@ OffloadFootprint measureOffloadFootprint(ComputeBlockOp block) {
   // block would be priced at zero arithmetic, which is exactly the error
   // that makes a block look cheap on both sides.
   bool sawWork = false;
+  double heaviest = 0.0;
   WalkResult walk = block.getBody().walk([&](Operation *op) {
     if (op == block.getOperation() || isa<cinm::YieldOp>(op))
       return WalkResult::advance();
@@ -226,7 +227,14 @@ OffloadFootprint measureOffloadFootprint(ComputeBlockOp block) {
     if (!inner.known)
       return WalkResult::advance();
     f.work += inner.work;
-    if (!f.mulType) {
+    // The types of whichever op does the most arithmetic, not of whichever
+    // comes first: a contraction is usually preceded by the fill of its
+    // accumulator, which has no operands to read a multiply's type from and
+    // would hand the whole block the accumulator's. On this device that is
+    // the difference between a multiply and a call -- an i8 multiply is one
+    // instruction, an i32 one is __mulsi3 at twelve.
+    if (!sawWork || inner.work > heaviest) {
+      heaviest = inner.work;
       f.mulType = inner.mulType;
       f.accType = inner.accType;
     }
