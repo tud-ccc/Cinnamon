@@ -160,7 +160,7 @@ PRIMS: dict[str, Prim] = {
         dimensions={
             "4MB": dict(K=524288),
             "64MB": dict(K=8388608),
-            "256MB": dict(K=34554432),
+            "256MB": dict(K=33554432),
             "512MB": dict(K=67108864),
         },
         parallel_dims=("K",),
