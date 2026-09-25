@@ -1,8 +1,9 @@
-// RUN: cinm-opt %s --split-input-file --cinm-absorb-static-slices --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=4 n-init=4 fixed-tasklets=4 graph-allocation=1 screen-menu=0 allocation-granularity=4 latency-objective=1" | FileCheck %s
-// The screen that decides whether a block is worth a device at all is off
-// here (screen-menu=0): these toy blocks are far too small to beat the host
-// on any DPU count, and what this test pins is what the search and the
-// commit do with a block that is offloaded, not whether one should be.
+// RUN: cinm-opt %s --split-input-file --cinm-absorb-static-slices --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=4 n-init=4 fixed-tasklets=4 graph-allocation=1 screen-menu=0 allow-host-placement=0 allocation-granularity=4 latency-objective=1" | FileCheck %s
+// Both halves of the placement decision are off here (screen-menu=0,
+// allow-host-placement=0): these toy blocks are far too small to beat the
+// host on any DPU count, and what this test pins is what the search, the
+// allocation and the commit do with a block that is offloaded, not whether
+// one should be.
 
 // A layer loop left rolled: one compute block, whose weight is the slice of
 // the static stack at the loop index. The block is searched and allocated

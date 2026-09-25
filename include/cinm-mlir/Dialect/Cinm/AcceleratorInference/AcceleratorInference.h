@@ -564,7 +564,7 @@ struct InferenceOptions {
   /// when the devices it would take are worth more to another block, which
   /// no screen in front of the solve can know. The screens remain: they
   /// decide which device sizes are worth profiling, not where a block runs.
-  bool allowHostPlacement = false;
+  bool allowHostPlacement = true;
 
   /// Graph profiling only: the most menu values to profile per block, after
   /// the screen above. 0 leaves the menu as the plugin (and the screen) left
