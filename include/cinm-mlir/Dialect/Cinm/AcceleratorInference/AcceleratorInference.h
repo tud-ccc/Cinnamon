@@ -550,12 +550,18 @@ struct InferenceOptions {
   /// sweep when the screen keeps most of a large menu.
   int64_t maxMenuPoints = 16;
 
-  /// Graph profiling only: when set, write one row per (block class, menu
-  /// value) with the two rooflines and the screen's verdict to this path,
-  /// and profile nothing. What the screen would do, in other words, and at
-  /// what cost -- the surviving menu of each block is the sweep that would
-  /// have run.
-  std::string gateDryRunCsv;
+  /// Graph profiling only: where to write the menu screen's reading of each
+  /// block -- one row per (class, candidate resource value) with the two
+  /// rooflines and the verdict. Empty puts it beside the run's other dumps
+  /// (dumpDir), which is where it belongs when there is a run; a path is for
+  /// asking what the screen says without wanting the rest.
+  std::string menuScreenCsvDir;
+
+  /// Graph profiling only: stop after the screen, profiling nothing. The
+  /// surviving menu of each block is the sweep that would have run, so this
+  /// says what the screen decides and what it saves, and the program that
+  /// comes out of such a run is all host.
+  bool gateDryRun = false;
 
   /// Render terminal progress bars for this search. Progress is already
   /// self-suppressing when stdout is not a terminal; this turns it off even

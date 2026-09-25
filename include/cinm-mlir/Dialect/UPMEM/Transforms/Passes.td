@@ -378,11 +378,15 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "Graph allocation only: the most DPU counts to profile per block "
            "after the screen, thinned geometrically. 0 profiles every count "
            "the screen leaves">,
-    Option<"gateDryRunCsv", "gate-dry-run-csv", "std::string", "\"\"",
-           "Graph allocation only: write what the menu screen makes of every "
-           "block -- each candidate DPU count, both rooflines and the "
-           "verdict -- to <dir>/<graph>_menu_screen.csv, and profile nothing. "
-           "Nothing is offloaded in such a run">,
+    Option<"menuScreenCsvDir", "menu-screen-csv", "std::string", "\"\"",
+           "Graph allocation only: where to write what the menu screen makes "
+           "of every block -- each candidate DPU count, both rooflines and "
+           "the verdict -- as <dir>/<graph>_menu_screen.csv. Empty writes it "
+           "beside the run's other dumps (dump-dir)">,
+    Option<"gateDryRun", "gate-dry-run", "bool", "false",
+           "Graph allocation only: stop after the menu screen, profiling "
+           "nothing. Says what the screen decides and what it saves; the "
+           "program that comes out is all host">,
     Option<"allowFloatReassociation", "allow-float-reassociation", "bool",
            "false",
            "Permit distributing a floating-point reduction across the "

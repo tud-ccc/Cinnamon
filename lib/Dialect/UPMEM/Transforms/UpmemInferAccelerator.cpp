@@ -1495,7 +1495,8 @@ struct UpmemInferAcceleratorPass
     o.allocationGranularity = allocationGranularity;
     o.screenMenuAgainstHost = screenMenuAgainstHost;
     o.maxMenuPoints = maxMenuPoints;
-    o.gateDryRunCsv = gateDryRunCsv;
+    o.menuScreenCsvDir = menuScreenCsvDir;
+    o.gateDryRun = gateDryRun;
     o.stampConfigs = stampConfigs;
     upmemOpts.annotateOpCosts = annotateOpCosts;
     upmemOpts.useMRAMTiling = useMRAMTiling;

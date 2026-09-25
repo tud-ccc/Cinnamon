@@ -1,4 +1,4 @@
-// RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=2 n-init=2 graph-allocation=true gate-dry-run-csv=%t" -o /dev/null
+// RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=2 n-init=2 graph-allocation=true menu-screen-csv=%t gate-dry-run=true" -o /dev/null
 // RUN: FileCheck %s --input-file=%t/infer_gemv_menu_screen.csv --check-prefix=CSV
 // RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=2 n-init=2 graph-allocation=true screen-menu=true" 2>&1 | FileCheck %s --check-prefix=SCREEN
 

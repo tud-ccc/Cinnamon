@@ -634,15 +634,23 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
                    StringRef graphName) {
   Location loc = graph.classes.front().representative().getLoc();
 
-  if (!opts.gateDryRunCsv.empty()) {
-    // Dry run: report what the menu screen would keep, and stop. Nothing is
-    // profiled and nothing is offloaded, so the program that comes out runs
-    // entirely on the host -- the point is the file, not the program.
-    dumpMenuScreenCSV(std::filesystem::path(opts.gateDryRunCsv.c_str()) /
+  // The screen decides what the program does -- a class that never reaches
+  // profiles.csv is one it rejected, and the reason is only here -- so its
+  // reading is written beside the run's own dumps. Re-pricing the menu costs
+  // a division per candidate against the search it gates.
+  if (!opts.menuScreenCsvDir.empty())
+    dumpMenuScreenCSV(std::filesystem::path(opts.menuScreenCsvDir.c_str()) /
                           (graphName.str() + "_menu_screen.csv"),
                       graph, graphName, makePlugin, opts);
+  else if (!baseDumpDir.empty())
+    dumpMenuScreenCSV(std::filesystem::path(baseDumpDir.str()) /
+                          graphName.str() / "menu_screen.csv",
+                      graph, graphName, makePlugin, opts);
+
+  if (opts.gateDryRun)
+    // Nothing profiled and nothing offloaded: the program that comes out
+    // runs entirely on the host, and the point of the run is the file above.
     return DiagnosedSilenceableFailure::success();
-  }
 
   // Profiling: one cost profile per class, on its representative. A class the
   // platform cannot run at any menu point is not an error at the graph level:

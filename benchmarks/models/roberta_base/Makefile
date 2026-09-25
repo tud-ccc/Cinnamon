@@ -45,14 +45,18 @@ $(OUT)/$(NAME)_linalg.mlir: $(OUT)/$(NAME)_unrolled.mlir $(MK)
 	 --eliminate-empty-tensors --cse \
    > $@
 
-# Offload decision. require-profitable turns on the roofline gate, so an op
-# reaches the device only if the platform predicts it beats the host there;
-# everything else stays a plain host op. This is the experiment for this
-# model, so the gate is on here and nowhere in the operator suites. The host
-# figure is the int8 one -- Cascade Lake's VNNI does 64 int8 MACs per
-# instruction, four times the int32 rate the default assumes -- because both
-# sides of this comparison run the quantized model.
-ASSIGN_OPTS ?= require-profitable=true host-ops-per-second=8.6e12
+# Which ops the accelerator is a candidate for. The roofline gate this pass
+# can apply (require-profitable) is left off: it prices an op against the
+# whole array, which for a small op is the wrong end of the curve, and it
+# runs before any search space exists. What decides placement is the menu
+# screen inside --upmem-infer-accelerator, which makes the same comparison
+# against every DPU count the block admits. The verdicts are still dumped
+# here, as what the whole-array model would have said.
+#
+# The host figure is the int8 one -- Cascade Lake's VNNI does 64 int8 MACs
+# per instruction, four times the int32 rate the default assumes -- because
+# both sides of this comparison run the quantized model.
+ASSIGN_OPTS ?= host-ops-per-second=8.6e12
 # Every verdict the gate took, with its roofline terms, as JSON lines: the
 # input of the evaluation's roofline figure.
 DECISIONS = $(OUT)/$(NAME)_offload_decisions.jsonl
@@ -67,7 +71,16 @@ $(OUT)/$(NAME)_with_compute.mlir: $(OUT)/$(NAME)_linalg.mlir $(MK)
 # each host block calls its function through a prototype. Host blocks that
 # only views separate are merged first, so each stretch of host code between
 # two device blocks is one function.
-$(OUT)/$(NAME)_device.mlir $(OUT)/$(NAME)_host.mlir &: $(OUT)/$(NAME)_with_compute.mlir $(MK)
+#
+# SPLIT_SRC is which module to split. The default is this front end's last
+# stage, where every block the accelerator is a candidate for is still a
+# device block. What the program actually runs is decided later, by the menu
+# screen inside --upmem-infer-accelerator, and the blocks it leaves on the
+# host are host code that wants merging like any other -- so the evaluation
+# points SPLIT_SRC at the module that stage stamps.
+SPLIT_SRC ?= $(OUT)/$(NAME)_with_compute.mlir
+
+$(OUT)/$(NAME)_device.mlir $(OUT)/$(NAME)_host.mlir &: $(SPLIT_SRC) $(MK)
 	$(CINM_OPT) $< --cinm-merge-host-blocks --cinm-outline-host-blocks=outlined-file=$(OUT)/$(NAME)_host.mlir > $(OUT)/$(NAME)_device.mlir
 
 $(OUT)/$(NAME)_buffered.mlir: $(OUT)/$(NAME)_with_compute.mlir $(MK)
