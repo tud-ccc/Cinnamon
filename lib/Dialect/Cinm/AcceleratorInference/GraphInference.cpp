@@ -4,6 +4,7 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmUtils.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmWorkgroupTypeInterface.h"
 #include "cinm-mlir/Utils/Scheduling/SchedulingSupport.h"
+#include <llvm/Support/FormatVariadic.h>
 
 #include <atomic>
 #include <cmath>
@@ -385,7 +386,8 @@ static void dumpMenuScreenCSV(const std::filesystem::path &path,
     std::unique_ptr<InferencePlugin> plugin = makePlugin(graph.platform);
     SmallVector<int64_t> menu = plugin->sharedResourceMenu(block);
     SmallVector<int64_t> survivors = menu;
-    MenuScreen screen = screenMenu(block, *plugin, survivors);
+    MenuScreen screen =
+        screenMenu(block, *plugin, survivors, opts.hostAchievedFraction);
     SmallVector<int64_t> profiled = survivors;
     thinMenu(profiled, opts.maxMenuPoints);
 
@@ -761,19 +763,45 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
               << (blockClass.size() - 1) << " other block(s) of its class";
       continue;
     }
-    // The transfer-bound gate (see InferenceOptions::hostTransferBoundShare):
-    // a class whose best point is the smallest menu value gains nothing from
+    SmallVector<ProfilePoint> &pts = *results[ci].points;
+    const ProfilePoint *bestPt = &*llvm::min_element(
+        pts, [](const auto &a, const auto &b) { return a.costMs < b.costMs; });
+
+    // The screen again, now that the device's side is measured rather than
+    // bounded. The menu screen let a size through on a roofline and against
+    // a host slowed to what a real one reaches
+    // (InferenceOptions::hostAchievedFraction); here the search has priced
+    // the block for real, so the comparison is against the host's roofline
+    // itself -- what survives beats an idealized host, which is the claim
+    // worth making.
+    if (opts.screenMenuAgainstHost) {
+      cinm::OffloadFootprint f =
+          cinm::measureOffloadFootprint(blockClass.representative());
+      auto host =
+          cinm::HostPlatformAttr::getInScope(blockClass.representative());
+      const double hostMs =
+          f.known && host ? cinm::hostRooflineSeconds(f, host.getModel()) * 1e3
+                          : 0.0;
+      if (hostMs > 0.0 && bestPt->costMs >= hostMs) {
+        blockClass.representative().emitWarning()
+            << llvm::formatv("the search found nothing on '{0}' that beats "
+                             "the host: its best, {1} device(s) at {2:F3} ms, "
+                             "against the host's {3:F3} ms",
+                             platformName, bestPt->resource, bestPt->costMs,
+                             hostMs)
+                   .str()
+            << "; it stays on the host, along with the "
+            << (blockClass.size() - 1) << " other block(s) of its class";
+        continue;
+      }
+    }
+
+    // The transfer-bound heuristic, from before there was a host cost model
+    // to compare against (see InferenceOptions::hostTransferBoundShare): a
+    // class whose best point is the smallest menu value gains nothing from
     // more devices, and when that point is also mostly transfer the device
-    // buys it essentially nothing at all -- the conjunction keeps
-    // compute-bound classes that merely scale poorly (attention-shaped
-    // matmuls) on the device. This is a heuristic in lieu of a host cost
-    // model; the evidence behind it is the profile shape itself.
+    // buys it essentially nothing at all.
     if (opts.hostTransferBoundShare > 0) {
-      SmallVector<ProfilePoint> &pts = *results[ci].points;
-      const ProfilePoint *bestPt =
-          &*llvm::min_element(pts, [](const auto &a, const auto &b) {
-            return a.costMs < b.costMs;
-          });
       if (bestPt->resource == pts.front().resource &&
           bestPt->transferShare >= opts.hostTransferBoundShare) {
         blockClass.representative().emitWarning()

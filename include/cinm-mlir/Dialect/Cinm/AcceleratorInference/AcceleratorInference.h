@@ -540,9 +540,22 @@ struct InferenceOptions {
   /// per-op offload gate makes, taken where the feasible resource values
   /// are known instead of at the whole array.
   ///
-  /// `gateDryRunCsv` reports what it decides, per candidate value, without
-  /// running a search or changing a program.
+  /// `menuScreenCsvDir` reports what it decides, per candidate value,
+  /// without running a search or changing a program.
   bool screenMenuAgainstHost = true;
+
+  /// What share of its roofline the host is taken to achieve, when the menu
+  /// screen prices it. The roofline is peak -- this machine's own measured
+  /// single-core stream is 10.8 of 23 GB/s -- so a screen that prunes
+  /// against it prunes device sizes that a real host would have lost to.
+  /// Halving it is the cheap insurance: over the E2E models it keeps one
+  /// more block class of a hundred, and a quarter would keep eight.
+  ///
+  /// Only the menu screen relaxes. The screen after profiling compares a
+  /// measured device cost against the roofline itself, because there the
+  /// device's side is no longer a bound and the strict comparison is the
+  /// honest one.
+  double hostAchievedFraction = 0.5;
 
   /// Graph profiling only: the most menu values to profile per block, after
   /// the screen above. 0 leaves the menu as the plugin (and the screen) left
@@ -626,9 +639,12 @@ struct MenuScreen {
 };
 
 /// Price every value of `menu` against the host roofline of `block` and
-/// erase the ones that cannot beat it, in place.
+/// erase the ones that cannot beat it, in place. `hostAchievedFraction`
+/// slows the host down to what a real one reaches; 1.0 compares against the
+/// roofline itself.
 MenuScreen screenMenu(cinm::ComputeBlockOp block, InferencePlugin &plugin,
-                      SmallVectorImpl<int64_t> &menu);
+                      SmallVectorImpl<int64_t> &menu,
+                      double hostAchievedFraction = 1.0);
 
 /// Keep at most `maxPoints` values of `menu`, geometrically spaced, both
 /// endpoints included. A no-op when `maxPoints` is 0 or the menu is already

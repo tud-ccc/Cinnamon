@@ -374,6 +374,12 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "keep the block on the host when none can. The same comparison "
            "the per-op offload gate makes, taken per DPU count and where the "
            "counts the block admits are known">,
+    Option<"hostAchievedFraction", "host-achieved-fraction", "double", "0.5",
+           "Graph allocation only: what share of its roofline the host is "
+           "taken to reach when the menu screen prices it. The roofline is "
+           "peak, so pruning against it prunes DPU counts a real host would "
+           "have lost to; the screen after profiling compares against the "
+           "roofline itself">,
     Option<"maxMenuPoints", "max-menu-points", "int64_t", "16",
            "Graph allocation only: the most DPU counts to profile per block "
            "after the screen, thinned geometrically. 0 profiles every count "

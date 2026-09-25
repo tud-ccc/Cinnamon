@@ -1494,6 +1494,7 @@ struct UpmemInferAcceleratorPass
     o.latencyObjective = latencyObjective;
     o.allocationGranularity = allocationGranularity;
     o.screenMenuAgainstHost = screenMenuAgainstHost;
+    o.hostAchievedFraction = hostAchievedFraction;
     o.maxMenuPoints = maxMenuPoints;
     o.menuScreenCsvDir = menuScreenCsvDir;
     o.gateDryRun = gateDryRun;

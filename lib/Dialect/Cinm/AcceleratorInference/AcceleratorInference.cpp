@@ -1311,7 +1311,8 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
 // ===----------------------------------------------------------------------===//
 
 MenuScreen screenMenu(cinm::ComputeBlockOp block, InferencePlugin &plugin,
-                      SmallVectorImpl<int64_t> &menu) {
+                      SmallVectorImpl<int64_t> &menu,
+                      double hostAchievedFraction) {
   MenuScreen screen;
   cinm::OffloadFootprint footprint = cinm::measureOffloadFootprint(block);
   if (!footprint.known)
@@ -1319,8 +1320,11 @@ MenuScreen screenMenu(cinm::ComputeBlockOp block, InferencePlugin &plugin,
   auto hostPlatform = cinm::HostPlatformAttr::getInScope(block);
   if (!hostPlatform)
     return screen;
+  const double fraction =
+      hostAchievedFraction > 0.0 ? std::min(hostAchievedFraction, 1.0) : 1.0;
   const double hostMs =
-      cinm::hostRooflineSeconds(footprint, hostPlatform.getModel()) * 1e3;
+      cinm::hostRooflineSeconds(footprint, hostPlatform.getModel()) * 1e3 /
+      fraction;
   if (hostMs <= 0.0)
     return screen;
 
@@ -1380,7 +1384,8 @@ profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
 
   if (opts.screenMenuAgainstHost) {
     const size_t candidates = menu.size();
-    MenuScreen screen = screenMenu(computeOp, plugin, menu);
+    MenuScreen screen =
+        screenMenu(computeOp, plugin, menu, opts.hostAchievedFraction);
     if (screen.hostMs > 0.0 && menu.empty())
       return emitSilenceableFailure(computeOp.getLoc())
              << llvm::formatv("no resource value beats the host on this "
