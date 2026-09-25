@@ -8,6 +8,7 @@
 #include <cinm-mlir/Dialect/Cinm/AcceleratorInference/SpaceBuilder.h>
 #include <cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h>
 #include <cinm-mlir/Dialect/Cinm/IR/CinmBase.h>
+#include <cinm-mlir/Dialect/Cinm/IR/CinmOffloadModel.h>
 #include <cinm-mlir/Dialect/Cinm/IR/CinmOps.h>
 #include <cinm-mlir/Dialect/Cinm/Transforms/CinmTransforms.h>
 #include <cinm-mlir/Dialect/Cinm/Transforms/Passes.h>
@@ -81,7 +82,13 @@ namespace mlir::upmem {
 #define GEN_PASS_DEF_UPMEMLOWERSTAMPEDPASS
 #include <cinm-mlir/Dialect/UPMEM/Transforms/Passes.h.inc>
 
+/// Defined in UPMEMOffloadRoofline.cpp.
+cinm::OffloadVerdict evaluateUpmemOffloadAt(const cinm::OffloadFootprint &f,
+                                            int64_t dpus,
+                                            const cinm::HostModel &host);
+
 namespace {
+
 using mlir::cinm::IntVar;
 using mlir::cinm::PermVar;
 using mlir::cinm::SpaceBuilder;
@@ -331,19 +338,30 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     if (menu.empty())
       menu = divisors;
 
-    // Sorted divisors are distributed roughly geometrically, so index-spaced
-    // thinning approximates log spacing and keeps both endpoints.
-    constexpr size_t kMaxMenu = 16;
-    if (menu.size() > kMaxMenu) {
-      SmallVector<int64_t> thinned;
-      for (size_t i = 0; i < kMaxMenu; ++i) {
-        size_t idx = (i * (menu.size() - 1)) / (kMaxMenu - 1);
-        if (thinned.empty() || thinned.back() != menu[idx])
-          thinned.push_back(menu[idx]);
-      }
-      menu = std::move(thinned);
-    }
+    // Every value the block admits, however many that is: what to profile out
+    // of them is the screen's to decide (cinm::screenMenu), and thinning a
+    // menu by index before pricing it drops the values that could pay as
+    // readily as the ones that cannot. InferenceOptions::maxMenuPoints is
+    // the bound on what actually gets profiled, applied to the survivors.
     return menu;
+  }
+
+  /// The roofline of this block on `resource` DPUs -- the same model the
+  /// per-op offload gate uses (UPMEMOffloadRoofline.cpp), asked about one
+  /// resource value rather than the whole array.
+  std::optional<double> deviceRooflineMs(cinm::ComputeBlockOp block,
+                                         int64_t resource) override {
+    cinm::OffloadFootprint footprint = cinm::measureOffloadFootprint(block);
+    if (!footprint.known)
+      return std::nullopt;
+    auto hostPlatform = cinm::HostPlatformAttr::getInScope(block);
+    if (!hostPlatform)
+      return std::nullopt;
+    cinm::OffloadVerdict v =
+        evaluateUpmemOffloadAt(footprint, resource, hostPlatform.getModel());
+    if (v.unknown)
+      return std::nullopt;
+    return v.deviceSeconds * 1e3;
   }
 
   /// Footprint at a configuration, per memory level and split by operand
@@ -1475,6 +1493,9 @@ struct UpmemInferAcceleratorPass
     o.programReloadMs = programReloadMs;
     o.latencyObjective = latencyObjective;
     o.allocationGranularity = allocationGranularity;
+    o.screenMenuAgainstHost = screenMenuAgainstHost;
+    o.maxMenuPoints = maxMenuPoints;
+    o.gateDryRunCsv = gateDryRunCsv;
     o.stampConfigs = stampConfigs;
     upmemOpts.annotateOpCosts = annotateOpCosts;
     upmemOpts.useMRAMTiling = useMRAMTiling;

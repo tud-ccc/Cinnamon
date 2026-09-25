@@ -5,6 +5,7 @@
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/SpaceBuilder.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmOffloadModel.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmUtils.h"
 #include "cinm-mlir/Utils/Permutation.h"
@@ -23,6 +24,7 @@
 #include <llvm/Support/CommandLine.h>
 #include <llvm/Support/Debug.h>
 #include <llvm/Support/Format.h>
+#include <llvm/Support/FormatVariadic.h>
 #include <llvm/Support/LogicalResult.h>
 #include <llvm/Support/raw_ostream.h>
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
@@ -1305,6 +1307,59 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
 }
 
 // ===----------------------------------------------------------------------===//
+// The menu screen
+// ===----------------------------------------------------------------------===//
+
+MenuScreen screenMenu(cinm::ComputeBlockOp block, InferencePlugin &plugin,
+                      SmallVectorImpl<int64_t> &menu) {
+  MenuScreen screen;
+  cinm::OffloadFootprint footprint = cinm::measureOffloadFootprint(block);
+  if (!footprint.known)
+    return screen;
+  auto hostPlatform = cinm::HostPlatformAttr::getInScope(block);
+  if (!hostPlatform)
+    return screen;
+  const double hostMs =
+      cinm::hostRooflineSeconds(footprint, hostPlatform.getModel()) * 1e3;
+  if (hostMs <= 0.0)
+    return screen;
+
+  screen.verdicts.reserve(menu.size());
+  for (int64_t resource : menu) {
+    std::optional<double> deviceMs = plugin.deviceRooflineMs(block, resource);
+    if (!deviceMs)
+      // No device model: the screen does not run at all rather than running
+      // on part of the menu, which would keep values for the wrong reason.
+      return MenuScreen{};
+    screen.verdicts.push_back({resource, *deviceMs, *deviceMs < hostMs});
+    if (screen.bestResource == 0 || *deviceMs < screen.bestMs) {
+      screen.bestResource = resource;
+      screen.bestMs = *deviceMs;
+    }
+  }
+  screen.hostMs = hostMs;
+
+  llvm::erase_if(menu, [&](int64_t resource) {
+    return !llvm::find_if(screen.verdicts, [&](const MenuVerdict &v) {
+              return v.resource == resource;
+            })->kept;
+  });
+  return screen;
+}
+
+void thinMenu(SmallVectorImpl<int64_t> &menu, int64_t maxPoints) {
+  if (maxPoints <= 1 || static_cast<int64_t>(menu.size()) <= maxPoints)
+    return;
+  SmallVector<int64_t> thinned;
+  for (int64_t i = 0; i < maxPoints; ++i) {
+    size_t idx = static_cast<size_t>(i) * (menu.size() - 1) / (maxPoints - 1);
+    if (thinned.empty() || thinned.back() != menu[idx])
+      thinned.push_back(menu[idx]);
+  }
+  menu.assign(thinned.begin(), thinned.end());
+}
+
+// ===----------------------------------------------------------------------===//
 // profileComputeBlock
 // ===----------------------------------------------------------------------===//
 
@@ -1322,6 +1377,23 @@ profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
   if (menu.empty())
     return emitSilenceableFailure(computeOp.getLoc())
            << "no profiling menu could be derived for this block";
+
+  if (opts.screenMenuAgainstHost) {
+    const size_t candidates = menu.size();
+    MenuScreen screen = screenMenu(computeOp, plugin, menu);
+    if (screen.hostMs > 0.0 && menu.empty())
+      return emitSilenceableFailure(computeOp.getLoc())
+             << llvm::formatv("no resource value beats the host on this "
+                              "block: its best, {0} device(s), is priced at "
+                              "{1:F3} ms against the host's {2:F3} ms",
+                              screen.bestResource, screen.bestMs, screen.hostMs)
+                    .str();
+    LLVM_DEBUG(if (screen.hostMs > 0.0) llvm::dbgs()
+               << "[cinm-inference] menu screen: " << menu.size() << " of "
+               << candidates << " value(s) can beat the host (" << screen.hostMs
+               << " ms)\n");
+  }
+  thinMenu(menu, opts.maxMenuPoints);
 
   // The menu points are independent searches, so they run concurrently. Each
   // point gets its own plugin clone (initializeSpace mutates the plugin) and

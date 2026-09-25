@@ -178,6 +178,25 @@ struct InferencePlugin {
     return {};
   }
 
+  /// What this target's cost model says one invocation of `block` would take
+  /// with the shared resource pinned to `resource`, in ms, before any search:
+  /// a roofline, the greater of the device's arithmetic and its traffic.
+  /// Nothing when the target has no such model, which turns the menu screen
+  /// off (profileComputeBlock).
+  ///
+  /// It is a lower bound, and so is the host number it is compared against
+  /// (cinm::hostRooflineSeconds), so the screen drops a resource value only
+  /// when an idealized device at that value loses to an idealized host. What
+  /// makes that worth doing is that both terms move with `resource` --
+  /// arithmetic down, the transfer's fixed cost up -- so the screen answers
+  /// "at which sizes could this ever pay", which no single-valued gate can.
+  virtual std::optional<double> deviceRooflineMs(cinm::ComputeBlockOp block,
+                                                 int64_t resource) {
+    (void)block;
+    (void)resource;
+    return std::nullopt;
+  }
+
   /// The most of the shared resource the device has at all: the total DPU
   /// count for UPMEM. This is the budget the graph-level allocation divides
   /// between device sets, and an upper bound on every menu value. 0 when the
@@ -513,6 +532,33 @@ struct InferenceOptions {
   /// no such multiple, the menu falls back to what divides the problem.
   int64_t allocationGranularity = 64;
 
+  /// Graph profiling only: drop a menu value whose device roofline
+  /// (InferencePlugin::deviceRooflineMs) is no better than the host's for
+  /// the same block, before profiling it. The search then only sweeps
+  /// resource values that could pay, and a block whose every value is
+  /// dropped never enters a space at all -- which is the same decision the
+  /// per-op offload gate makes, taken where the feasible resource values
+  /// are known instead of at the whole array.
+  ///
+  /// Off by default: it decides what runs where, and the per-op gate in
+  /// front of the graph is still the one that does that. Turn it on to move
+  /// the decision here; `gateDryRunCsv` reports what it would do without
+  /// changing a program.
+  bool screenMenuAgainstHost = false;
+
+  /// Graph profiling only: the most menu values to profile per block, after
+  /// the screen above. 0 leaves the menu as the plugin (and the screen) left
+  /// it; a positive value thins what remains geometrically, which bounds the
+  /// sweep when the screen keeps most of a large menu.
+  int64_t maxMenuPoints = 16;
+
+  /// Graph profiling only: when set, write one row per (block class, menu
+  /// value) with the two rooflines and the screen's verdict to this path,
+  /// and profile nothing. What the screen would do, in other words, and at
+  /// what cost -- the surviving menu of each block is the sweep that would
+  /// have run.
+  std::string gateDryRunCsv;
+
   /// Render terminal progress bars for this search. Progress is already
   /// self-suppressing when stdout is not a terminal; this turns it off even
   /// on one -- what a caller running many searches concurrently does, since
@@ -552,6 +598,39 @@ struct ProfilePoint {
   /// InferenceOptions::hostTransferBoundShare. Negative when not measured.
   double transferShare = -1;
 };
+
+/// What the menu screen made of one resource value: the device roofline it
+/// was priced at, and whether that beat the host (see
+/// InferencePlugin::deviceRooflineMs).
+struct MenuVerdict {
+  int64_t resource = 0;
+  double deviceMs = 0.0;
+  bool kept = false;
+};
+
+/// The screen's reading of a whole menu. `hostMs` is 0 when the screen could
+/// not run -- no device model, or a block the footprint reader cannot
+/// measure -- and the menu is then left alone, since a screen that cannot
+/// see is not evidence of unprofitability.
+struct MenuScreen {
+  double hostMs = 0.0;
+  /// The menu's best device price and the value that achieved it, whether or
+  /// not it beat the host: what the diagnostic quotes when nothing survives.
+  int64_t bestResource = 0;
+  double bestMs = 0.0;
+  SmallVector<MenuVerdict> verdicts;
+};
+
+/// Price every value of `menu` against the host roofline of `block` and
+/// erase the ones that cannot beat it, in place.
+MenuScreen screenMenu(cinm::ComputeBlockOp block, InferencePlugin &plugin,
+                      SmallVectorImpl<int64_t> &menu);
+
+/// Keep at most `maxPoints` values of `menu`, geometrically spaced, both
+/// endpoints included. A no-op when `maxPoints` is 0 or the menu is already
+/// short enough. Sorted divisor menus are distributed roughly
+/// geometrically, so index spacing approximates log spacing.
+void thinMenu(SmallVectorImpl<int64_t> &menu, int64_t maxPoints);
 
 /// Caps how many profiling searches run at once across all the sweeps sharing
 /// it. Several classes of one graph are profiled concurrently, and their costs

@@ -9,11 +9,19 @@
 #ifndef CINM_OFFLOAD_MODEL_H
 #define CINM_OFFLOAD_MODEL_H
 
+#include "mlir/IR/Types.h"
+
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/bit.h"
 
+namespace mlir {
+class Operation;
+} // namespace mlir
+
 namespace mlir::cinm {
+
+class ComputeBlockOp;
 
 /// What the host the accelerators hang off can sustain, and what running
 /// code on it costs. These are properties of the machine, not of the
@@ -100,6 +108,51 @@ struct OffloadVerdict {
     return bytes > 0.0 ? work / bytes : 0.0;
   }
 };
+
+/// What an op, or a whole compute block, computes and moves: the terms both
+/// sides of an offload decision are priced from. Reading it is the part of
+/// the decision that is the same whatever the device, which is why it lives
+/// here rather than in a backend.
+struct OffloadFootprint {
+  /// Arithmetic operations performed, per invocation.
+  double work = 0.0;
+  /// Bytes of operands that are the same on every invocation, so a device
+  /// can hold them resident while the host streams them from DRAM each time.
+  double staticBytes = 0.0;
+  /// Bytes that cross the wire on every invocation, in either direction.
+  double dynamicBytes = 0.0;
+  /// The part of `dynamicBytes` that travels device-to-host.
+  double dynamicOutBytes = 0.0;
+  /// The element type the multiplies happen in and the one the accumulation
+  /// happens in; they differ exactly when the op is mixed precision.
+  Type mulType, accType;
+  /// False when the shapes are dynamic or the op is one this does not know
+  /// how to read. A footprint that is not `known` is not evidence of
+  /// anything: callers must not reject on it.
+  bool known = false;
+};
+
+/// The footprint of one op.
+OffloadFootprint measureOffloadFootprint(Operation *op);
+
+/// The footprint of a whole compute block: the work of every op it contains,
+/// and the traffic of the block's own boundary. Not the sum of its ops'
+/// footprints -- an intermediate passed from one op of the block to the next
+/// crosses no wire and is not re-read from DRAM, so counting it on either
+/// side would price a program neither machine runs.
+OffloadFootprint measureOffloadFootprint(ComputeBlockOp block);
+
+/// What the host would take for `f`, as a roofline: the greater of its
+/// arithmetic and its traffic, every byte read from DRAM because nothing
+/// stays resident on a host.
+///
+/// It is a lower bound -- peak rates, not achieved ones -- so a comparison
+/// against it says "the device beats even an idealized host" and not "the
+/// device beats the host". Which of the two terms binds matters when reading
+/// it: the bandwidth one is within about 2x of what a real loop achieves,
+/// while the arithmetic one is peak over every core and a compiled kernel
+/// can miss it by an order of magnitude.
+double hostRooflineSeconds(const OffloadFootprint &f, const HostModel &host);
 
 } // namespace mlir::cinm
 

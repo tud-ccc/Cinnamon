@@ -368,6 +368,21 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "profiling menu prefers multiples of it (rank-sized sets keep "
            "host<->DPU transfers rank-parallel) but falls back to whatever "
            "divides the problem size when no such multiple does">,
+    Option<"screenMenuAgainstHost", "screen-menu", "bool", "false",
+           "Graph allocation only: before profiling a block, drop the DPU "
+           "counts whose roofline cannot beat the host's for that block, and "
+           "keep the block on the host when none can. The same comparison "
+           "the per-op offload gate makes, taken per DPU count and where the "
+           "counts the block admits are known">,
+    Option<"maxMenuPoints", "max-menu-points", "int64_t", "16",
+           "Graph allocation only: the most DPU counts to profile per block "
+           "after the screen, thinned geometrically. 0 profiles every count "
+           "the screen leaves">,
+    Option<"gateDryRunCsv", "gate-dry-run-csv", "std::string", "\"\"",
+           "Graph allocation only: write what the menu screen makes of every "
+           "block -- each candidate DPU count, both rooflines and the "
+           "verdict -- to <dir>/<graph>_menu_screen.csv, and profile nothing. "
+           "Nothing is offloaded in such a run">,
     Option<"allowFloatReassociation", "allow-float-reassociation", "bool",
            "false",
            "Permit distributing a floating-point reduction across the "

@@ -351,6 +351,67 @@ static std::string csvQuote(StringRef s) {
   return out;
 }
 
+/// Write what the menu screen makes of every class of `graph` to `path` as
+/// CSV, one row per (class, candidate resource value), and profile nothing.
+///
+/// The screen is the offload decision taken where the feasible resource
+/// values are known (InferenceOptions::screenMenuAgainstHost), so this is
+/// how to see it before trusting it: every value a block admits, what the
+/// device roofline prices it at, the host roofline it is compared against,
+/// and whether it survives. `kept_of_candidates` per row says how much of
+/// the menu the screen leaves, which is what decides whether the survivors
+/// still need thinning (InferenceOptions::maxMenuPoints) or whether the
+/// screen is the thinning.
+static void dumpMenuScreenCSV(const std::filesystem::path &path,
+                              const ComputeGraph &graph, StringRef graphName,
+                              InferencePluginFactory makePlugin,
+                              const InferenceOptions &opts) {
+  std::error_code ec;
+  std::filesystem::create_directories(path.parent_path(), ec);
+  llvm::raw_fd_ostream os(path.string(), ec);
+  if (ec) {
+    llvm::errs() << "could not write " << path.string() << ": " << ec.message()
+                 << "\n";
+    return;
+  }
+  os << "graph,class,blocks,loc,work_ops,static_bytes,dynamic_bytes,host_ms,"
+        "resource,device_ms,kept,candidates,kept_of_candidates,profiled\n";
+
+  for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
+    cinm::ComputeBlockOp block = blockClass.representative();
+    std::unique_ptr<InferencePlugin> plugin = makePlugin(graph.platform);
+    SmallVector<int64_t> menu = plugin->sharedResourceMenu(block);
+    SmallVector<int64_t> survivors = menu;
+    MenuScreen screen = screenMenu(block, *plugin, survivors);
+    SmallVector<int64_t> profiled = survivors;
+    thinMenu(profiled, opts.maxMenuPoints);
+
+    cinm::OffloadFootprint f = cinm::measureOffloadFootprint(block);
+    std::string loc;
+    llvm::raw_string_ostream locStream(loc);
+    block.getLoc().print(locStream);
+
+    auto row = [&](int64_t resource, double deviceMs, bool kept) {
+      os << csvQuote(graphName) << "," << ci << "," << blockClass.size() << ","
+         << csvQuote(loc) << "," << f.work << "," << f.staticBytes << ","
+         << f.dynamicBytes << "," << screen.hostMs << "," << resource << ","
+         << deviceMs << "," << (kept ? 1 : 0) << "," << menu.size() << ","
+         << survivors.size() << ","
+         << (llvm::is_contained(profiled, resource) ? 1 : 0) << "\n";
+    };
+    if (screen.verdicts.empty())
+      // The screen could not run: a block it cannot measure, or a target
+      // with no device roofline. Recorded as candidates kept unscreened,
+      // which is what profileComputeBlock would do with them.
+      for (int64_t resource : menu)
+        row(resource, 0.0, /*kept=*/true);
+    else
+      for (const MenuVerdict &v : screen.verdicts)
+        row(v.resource, v.deviceMs, v.kept);
+  }
+  llvm::errs() << "wrote " << path.string() << "\n";
+}
+
 /// Write the measured cost profiles of one graph to `path` as CSV: one row
 /// per (class, menu point), plus one measurement-less row per class that no
 /// menu point could run, so the file describes every class of the graph.
@@ -572,6 +633,16 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
                    const InferenceOptions &opts, StringRef baseDumpDir,
                    StringRef graphName) {
   Location loc = graph.classes.front().representative().getLoc();
+
+  if (!opts.gateDryRunCsv.empty()) {
+    // Dry run: report what the menu screen would keep, and stop. Nothing is
+    // profiled and nothing is offloaded, so the program that comes out runs
+    // entirely on the host -- the point is the file, not the program.
+    dumpMenuScreenCSV(std::filesystem::path(opts.gateDryRunCsv.c_str()) /
+                          (graphName.str() + "_menu_screen.csv"),
+                      graph, graphName, makePlugin, opts);
+    return DiagnosedSilenceableFailure::success();
+  }
 
   // Profiling: one cost profile per class, on its representative. A class the
   // platform cannot run at any menu point is not an error at the graph level:

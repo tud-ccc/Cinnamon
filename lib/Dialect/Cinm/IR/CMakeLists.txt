@@ -1,5 +1,6 @@
 add_mlir_dialect_library(CinmIR
         CinmBase.cpp
+        CinmOffloadModel.cpp
         CinmOps.cpp
         CinmTypes.cpp
         CinmTilingFactors.cpp
@@ -16,6 +17,8 @@ add_mlir_dialect_library(CinmIR
         MLIRFunctionInterfaces
         MLIRViewLikeInterface
         MLIRArithDialect
+        MLIRLinalgDialect
+        MLIRMathDialect
         MLIRAffineDialect
         CinmUtils
 )
