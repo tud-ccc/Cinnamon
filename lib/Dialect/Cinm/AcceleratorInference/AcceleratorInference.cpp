@@ -1330,15 +1330,17 @@ MenuScreen screenMenu(cinm::ComputeBlockOp block, InferencePlugin &plugin,
 
   screen.verdicts.reserve(menu.size());
   for (int64_t resource : menu) {
-    std::optional<double> deviceMs = plugin.deviceRooflineMs(block, resource);
-    if (!deviceMs)
+    std::optional<DeviceRoofline> roof = plugin.deviceRoofline(block, resource);
+    if (!roof)
       // No device model: the screen does not run at all rather than running
       // on part of the menu, which would keep values for the wrong reason.
       return MenuScreen{};
-    screen.verdicts.push_back({resource, *deviceMs, *deviceMs < hostMs});
-    if (screen.bestResource == 0 || *deviceMs < screen.bestMs) {
+    screen.verdicts.push_back(
+        {resource, roof->ms, roof->transferMs, roof->opsPerSecond,
+         roof->transferMsIfNothingResident, roof->ms < hostMs});
+    if (screen.bestResource == 0 || roof->ms < screen.bestMs) {
       screen.bestResource = resource;
-      screen.bestMs = *deviceMs;
+      screen.bestMs = roof->ms;
     }
   }
   screen.hostMs = hostMs;

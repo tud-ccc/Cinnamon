@@ -377,8 +377,14 @@ static void dumpMenuScreenCSV(const std::filesystem::path &path,
                  << "\n";
     return;
   }
+  // transfer_ms and device_ops_per_s are the two terms device_ms is the
+  // greater of. They are what the roof at this resource value *is* -- its
+  // slope and its ceiling -- and neither can be recovered from their
+  // maximum, so a reader of this file can only redraw the screen's reasoning
+  // if both are written down.
   os << "graph,class,blocks,loc,work_ops,static_bytes,dynamic_bytes,"
-        "dynamic_out_bytes,host_ms,resource,device_ms,kept,candidates,"
+        "dynamic_out_bytes,host_ms,resource,device_ms,transfer_ms,"
+        "device_ops_per_s,transfer_ms_streamed,kept,candidates,"
         "kept_of_candidates,profiled\n";
 
   for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
@@ -396,12 +402,14 @@ static void dumpMenuScreenCSV(const std::filesystem::path &path,
     llvm::raw_string_ostream locStream(loc);
     block.getLoc().print(locStream);
 
-    auto row = [&](int64_t resource, double deviceMs, bool kept) {
+    auto row = [&](int64_t resource, double deviceMs, double transferMs,
+                   double opsPerSecond, double transferMsStreamed, bool kept) {
       os << csvQuote(graphName) << "," << ci << "," << blockClass.size() << ","
          << csvQuote(loc) << "," << f.work << "," << f.staticBytes << ","
          << f.dynamicBytes << "," << f.dynamicOutBytes << "," << screen.hostMs
-         << "," << resource << "," << deviceMs << "," << (kept ? 1 : 0) << ","
-         << menu.size() << "," << survivors.size() << ","
+         << "," << resource << "," << deviceMs << "," << transferMs << ","
+         << opsPerSecond << "," << transferMsStreamed << "," << (kept ? 1 : 0)
+         << "," << menu.size() << "," << survivors.size() << ","
          << (llvm::is_contained(profiled, resource) ? 1 : 0) << "\n";
     };
     if (screen.verdicts.empty())
@@ -409,10 +417,11 @@ static void dumpMenuScreenCSV(const std::filesystem::path &path,
       // with no device roofline. Recorded as candidates kept unscreened,
       // which is what profileComputeBlock would do with them.
       for (int64_t resource : menu)
-        row(resource, 0.0, /*kept=*/true);
+        row(resource, 0.0, 0.0, 0.0, 0.0, /*kept=*/true);
     else
       for (const MenuVerdict &v : screen.verdicts)
-        row(v.resource, v.deviceMs, v.kept);
+        row(v.resource, v.deviceMs, v.transferMs, v.deviceOpsPerSecond,
+            v.transferMsIfNothingResident, v.kept);
   }
   llvm::errs() << "wrote " << path.string() << "\n";
 }

@@ -349,8 +349,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   /// The roofline of this block on `resource` DPUs -- the same model the
   /// per-op offload gate uses (UPMEMOffloadRoofline.cpp), asked about one
   /// resource value rather than the whole array.
-  std::optional<double> deviceRooflineMs(cinm::ComputeBlockOp block,
-                                         int64_t resource) override {
+  std::optional<cinm::DeviceRoofline>
+  deviceRoofline(cinm::ComputeBlockOp block, int64_t resource) override {
     cinm::OffloadFootprint footprint = cinm::measureOffloadFootprint(block);
     if (!footprint.known)
       return std::nullopt;
@@ -361,7 +361,17 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
         evaluateUpmemOffloadAt(footprint, resource, hostPlatform.getModel());
     if (v.unknown)
       return std::nullopt;
-    return v.deviceSeconds * 1e3;
+    // The same block with nothing resident: its static operands become
+    // traffic like everything else, which is the comparison the offload
+    // argument rests on.
+    cinm::OffloadFootprint streamed = footprint;
+    streamed.dynamicBytes += streamed.staticBytes;
+    streamed.staticBytes = 0.0;
+    cinm::OffloadVerdict s =
+        evaluateUpmemOffloadAt(streamed, resource, hostPlatform.getModel());
+    return cinm::DeviceRoofline{v.deviceSeconds * 1e3, v.transferSeconds * 1e3,
+                                v.deviceOpsPerSecond,
+                                s.unknown ? 0.0 : s.transferSeconds * 1e3};
   }
 
   /// Footprint at a configuration, per memory level and split by operand

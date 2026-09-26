@@ -90,6 +90,27 @@ struct ResidencyInfo {
 // Plugin interface
 // ===----------------------------------------------------------------------===//
 
+/// One resource value's device roofline, as the menu screen reads it: the
+/// price, and the two terms it is the greater of.
+struct DeviceRoofline {
+  /// max(arithmetic, traffic), in ms -- what the screen compares to the host.
+  double ms = 0.0;
+  /// The traffic term alone, in ms: the scatter in and the gather out at
+  /// this resource value, whose fixed cost grows with it.
+  double transferMs = 0.0;
+  /// The arithmetic term's rate, in ops/s across the whole resource value,
+  /// for this block's element types. The arithmetic term is work / this.
+  double opsPerSecond = 0.0;
+  /// The traffic term the same block would pay with nothing held resident,
+  /// in ms: every static operand sent on every call, as the host reads them
+  /// from DRAM on every call. Nothing decides anything by it -- residency is
+  /// the offload argument, and this is what the argument is worth. Recorded
+  /// because it cannot be recovered downstream: it prices a byte count that
+  /// no row of the dump has, and the transfer model's fixed cost is large
+  /// enough at these sizes that extrapolating to it is out by several times.
+  double transferMsIfNothingResident = 0.0;
+};
+
 /// Abstract plugin, one implementation per target.
 /// Responsible for populating the config space and evaluating configurations.
 /// The core framework calls these methods; target-specific logic lives here.
@@ -179,10 +200,9 @@ struct InferencePlugin {
   }
 
   /// What this target's cost model says one invocation of `block` would take
-  /// with the shared resource pinned to `resource`, in ms, before any search:
-  /// a roofline, the greater of the device's arithmetic and its traffic.
-  /// Nothing when the target has no such model, which turns the menu screen
-  /// off (profileComputeBlock).
+  /// with the shared resource pinned to `resource`: a roofline, the greater
+  /// of the device's arithmetic and its traffic. Nothing when the target has
+  /// no such model, which turns the menu screen off (profileComputeBlock).
   ///
   /// It is a lower bound, and so is the host number it is compared against
   /// (cinm::hostRooflineSeconds), so the screen drops a resource value only
@@ -190,8 +210,14 @@ struct InferencePlugin {
   /// makes that worth doing is that both terms move with `resource` --
   /// arithmetic down, the transfer's fixed cost up -- so the screen answers
   /// "at which sizes could this ever pay", which no single-valued gate can.
-  virtual std::optional<double> deviceRooflineMs(cinm::ComputeBlockOp block,
-                                                 int64_t resource) {
+  ///
+  /// The screen itself only needs `ms`. The terms it was taken from come
+  /// back with it because the two of them are the roof this resource value
+  /// was judged against -- its ceiling and its slope -- and a dump of the
+  /// screen that carries only their maximum cannot be read back as one
+  /// (dumpMenuScreenCSV).
+  virtual std::optional<DeviceRoofline>
+  deviceRoofline(cinm::ComputeBlockOp block, int64_t resource) {
     (void)block;
     (void)resource;
     return std::nullopt;
@@ -533,7 +559,7 @@ struct InferenceOptions {
   int64_t allocationGranularity = 64;
 
   /// Graph profiling only: drop a menu value whose device roofline
-  /// (InferencePlugin::deviceRooflineMs) is no better than the host's for
+  /// (InferencePlugin::deviceRoofline) is no better than the host's for
   /// the same block, before profiling it. The search then only sweeps
   /// resource values that could pay, and a block whose every value is
   /// dropped never enters a space at all -- which is the same decision the
@@ -636,10 +662,16 @@ struct ProfilePoint {
 
 /// What the menu screen made of one resource value: the device roofline it
 /// was priced at, and whether that beat the host (see
-/// InferencePlugin::deviceRooflineMs).
+/// InferencePlugin::deviceRoofline).
 struct MenuVerdict {
   int64_t resource = 0;
   double deviceMs = 0.0;
+  /// The two terms deviceMs is the greater of, kept so that a dump of the
+  /// screen describes the roof and not only its height, plus the traffic the
+  /// same block would pay with nothing resident (DeviceRoofline).
+  double transferMs = 0.0;
+  double deviceOpsPerSecond = 0.0;
+  double transferMsIfNothingResident = 0.0;
   bool kept = false;
 };
 
