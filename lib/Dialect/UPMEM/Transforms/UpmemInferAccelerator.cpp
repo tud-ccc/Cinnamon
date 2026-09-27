@@ -420,8 +420,20 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       auto operandDims = linalgOperandDims(op);
       for (auto [opnd, dims] : llvm::zip(op->getOpOperands(), operandDims)) {
         auto shaped = asShaped(opnd.get().getType());
+        // `index` has no bit width to ask for -- asking is an assertion
+        // failure, not a zero -- and a linalg.generic may well take one as a
+        // scalar operand, which asShaped hands back as tensor<index>. It is
+        // 64 bits here, as everywhere else the model weighs one
+        // (cinm::bytesOf). Anything else without a width occupies no data
+        // tile and the space does not tile it (handleLinalgOp posts 0
+        // element bits for it), so it weighs nothing here either.
+        Type element = shaped.getElementType();
+        if (!element.isIntOrFloat() && !element.isIndex())
+          continue;
         const int64_t eltBytes =
-            std::max<int64_t>(1, shaped.getElementTypeBitWidth() / 8);
+            element.isIndex()
+                ? 8
+                : std::max<int64_t>(1, shaped.getElementTypeBitWidth() / 8);
         int64_t mramElts = 1, wramElts = 1;
         for (unsigned dim : dims) {
           mramElts *= mramTile[dim];
