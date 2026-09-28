@@ -71,6 +71,7 @@ static json::Object describeFootprint(const OffloadFootprint &f) {
       {"known", true},
       {"work_ops", f.work},
       {"static_bytes", f.staticBytes},
+      {"static_resident_bytes", f.staticResidentBytes},
       {"dynamic_bytes", f.dynamicBytes},
       {"dynamic_out_bytes", f.dynamicOutBytes},
       {"mul_dtype", f.mulType ? json::Value(describeElementType(f.mulType))

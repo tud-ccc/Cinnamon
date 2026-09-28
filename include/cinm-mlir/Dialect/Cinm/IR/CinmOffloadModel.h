@@ -117,8 +117,14 @@ struct OffloadFootprint {
   /// Arithmetic operations performed, per invocation.
   double work = 0.0;
   /// Bytes of operands that are the same on every invocation, so a device
-  /// can hold them resident while the host streams them from DRAM each time.
+  /// can hold them resident while the host streams them from DRAM each time
+  /// -- the bytes one invocation reads. A static operand the block only
+  /// reads through slices (one layer of a stacked weight, indexed by the
+  /// layer) counts for its slices.
   double staticBytes = 0.0;
+  /// The whole of those operands, what a device holding them resident
+  /// holds: more than `staticBytes` when an invocation reads a slice.
+  double staticResidentBytes = 0.0;
   /// Bytes that cross the wire on every invocation, in either direction.
   double dynamicBytes = 0.0;
   /// The part of `dynamicBytes` that travels device-to-host.

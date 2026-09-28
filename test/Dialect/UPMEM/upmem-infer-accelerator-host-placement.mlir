@@ -3,6 +3,7 @@
 // RUN: FileCheck %s --input-file=%t/infer_fast_host/allocation.json --check-prefix=FAST
 // RUN: FileCheck %s --input-file=%t/infer_slow_host/class_0/reference.mlir --check-prefix=REF
 // RUN: FileCheck %s --input-file=%t/infer_unpriced/allocation.json --check-prefix=UNPRICED
+// RUN: FileCheck %s --input-file=%t/infer_stacked/allocation.json --check-prefix=STACKED
 
 // Where a block runs is the allocation's decision, not a screen's: every
 // class is offered a point that leaves it on the host, priced by the host's
@@ -121,4 +122,26 @@ func.func @unpriced(%x: tensor<65536xi32>, %steps: index) -> tensor<65536xi32>
     cinm.yield %g : tensor<65536xi32>
   }
   return %r : tensor<65536xi32>
+}
+
+// -----
+
+// A stacked weight -- four layers, the block reading the one it is given --
+// is resident whole, but one execution reads one layer: the host is charged
+// the 4 MB slice, not the 16 MB stack.
+//
+// STACKED: "footprint": {
+// STACKED: "static_bytes": 4194304,
+// STACKED-NEXT: "static_resident_bytes": 16777216,
+#upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 16>
+
+func.func @stacked(%W: tensor<4x2048x2048xi8> {cinm.static}, %layer: index, %x: tensor<2048xi8>) -> tensor<2048xi32>
+    attributes {cinm.available_platforms = [#cinm.host_platform, #upmem]} {
+  %r = cinm.compute -> tensor<2048xi32> attributes {cinm.available_platforms = [#upmem]} {
+    %w = tensor.extract_slice %W[%layer, 0, 0] [1, 2048, 2048] [1, 1, 1] : tensor<4x2048x2048xi8> to tensor<2048x2048xi8>
+    %e = tensor.empty() : tensor<2048xi32>
+    %g = linalg.matvec ins(%w, %x : tensor<2048x2048xi8>, tensor<2048xi8>) outs(%e : tensor<2048xi32>) -> tensor<2048xi32>
+    cinm.yield %g : tensor<2048xi32>
+  }
+  return %r : tensor<2048xi32>
 }

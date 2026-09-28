@@ -14,7 +14,9 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Matchers.h"
 
@@ -161,10 +163,12 @@ LogicalResult measureLinalg(linalg::LinalgOp op, OffloadFootprint &f) {
     // comes back as the result, counted below.
     if (op.isDpsInit(&operand))
       continue;
-    if (cinm::isStaticValue(operand.get()))
+    if (cinm::isStaticValue(operand.get())) {
       f.staticBytes += *bytes;
-    else
+      f.staticResidentBytes += *bytes;
+    } else {
       f.dynamicBytes += *bytes;
+    }
   }
   // Results are gathered back on every invocation.
   for (Value result : op->getResults()) {
@@ -202,10 +206,12 @@ LogicalResult measureGemmlike(cinm::GemmlikeOpInterface op,
     std::optional<double> bytes = bytesOf(operand);
     if (!bytes)
       return failure();
-    if (cinm::isStaticValue(operand))
+    if (cinm::isStaticValue(operand)) {
       f.staticBytes += *bytes;
-    else
+      f.staticResidentBytes += *bytes;
+    } else {
       f.dynamicBytes += *bytes;
+    }
   }
   if (Value result = op.getGemmResult()) {
     std::optional<double> bytes = bytesOf(result);
@@ -232,10 +238,12 @@ LogicalResult measureCinmPointwise(Operation *op, OffloadFootprint &f) {
       return failure();
     auto shaped = cast<ShapedType>(operand.getType());
     elements = std::max(elements, static_cast<double>(shaped.getNumElements()));
-    if (cinm::isStaticValue(operand))
+    if (cinm::isStaticValue(operand)) {
       f.staticBytes += *bytes;
-    else
+      f.staticResidentBytes += *bytes;
+    } else {
       f.dynamicBytes += *bytes;
+    }
     if (!f.mulType)
       f.mulType = shaped.getElementType();
   }
@@ -253,6 +261,33 @@ LogicalResult measureCinmPointwise(Operation *op, OffloadFootprint &f) {
   f.accType = f.mulType;
   f.work = elements;
   return success();
+}
+
+/// The bytes a block reads of the operand behind `arg` when it only ever
+/// reads it through slices of static shape: a stacked weight whose layer
+/// the block indexes, say, where one invocation touches one layer. Nothing
+/// when any use reads the whole value, or a slice of unknown size.
+std::optional<double> bytesReadThroughSlices(Value arg) {
+  if (arg.use_empty())
+    return std::nullopt;
+  double bytes = 0.0;
+  for (Operation *user : arg.getUsers()) {
+    Value slice;
+    if (auto extract = dyn_cast<tensor::ExtractSliceOp>(user))
+      slice = extract.getSource() == arg ? extract.getResult() : Value();
+    else if (auto view = dyn_cast<memref::SubViewOp>(user))
+      slice = view.getSource() == arg ? view.getResult() : Value();
+    if (!slice)
+      return std::nullopt;
+    std::optional<double> sliceBytes = bytesOf(slice);
+    if (!sliceBytes)
+      return std::nullopt;
+    bytes += *sliceBytes;
+  }
+  // Overlapping slices read the same bytes twice from the cache, not DRAM.
+  if (std::optional<double> whole = bytesOf(arg))
+    bytes = std::min(bytes, *whole);
+  return bytes;
 }
 
 } // namespace
@@ -306,14 +341,16 @@ OffloadFootprint measureOffloadFootprint(ComputeBlockOp block) {
   // Traffic is the block's own boundary: what it captures crosses the wire
   // once per invocation, what it yields comes back, and what its ops hand
   // each other never leaves the device.
-  for (Value operand : block.getOperands()) {
+  for (auto [arg, operand] : block.zipArgsWithOperands()) {
     std::optional<double> bytes = bytesOf(operand);
     if (!bytes)
       return f;
-    if (cinm::isStaticValue(operand))
-      f.staticBytes += *bytes;
-    else
+    if (cinm::isStaticValue(operand)) {
+      f.staticBytes += bytesReadThroughSlices(arg).value_or(*bytes);
+      f.staticResidentBytes += *bytes;
+    } else {
       f.dynamicBytes += *bytes;
+    }
   }
   for (Value result : block.getResults()) {
     std::optional<double> bytes = bytesOf(result);

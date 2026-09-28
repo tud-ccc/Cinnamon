@@ -233,6 +233,11 @@ class Graph:
                         "loc": c["loc"],
                         "work_ops": f.get("work_ops", 0.0),
                         "static_bytes": f.get("static_bytes", 0.0),
+                        # What the device holds, where static_bytes is what
+                        # one execution reads (a layer of a stacked weight).
+                        "static_resident_bytes": f.get(
+                            "static_resident_bytes", f.get("static_bytes", 0.0)
+                        ),
                         "dynamic_bytes": f.get("dynamic_bytes", 0.0),
                         "dynamic_out_bytes": f.get("dynamic_out_bytes", 0.0),
                         "host_ms": host_ms,
