@@ -8,8 +8,12 @@ what it holds. Its top level:
     nodes                   every block of the graph: its class, location,
                             loops and predecessors
     classes                 per class of identical blocks: its operator, its
-                            fate, every point of its resource menu, and the
-                            groups the allocation gave it
+                            fate, every point of its resource menu, the
+                            groups the allocation gave it, and (under
+                            dump-dir) `reference`: the path, relative to the
+                            report, of its one-block module and the name of
+                            its function, which a point's `config` compiles
+                            from on its own (eval-solution)
     allocation              what the solve achieved; null when it did not
                             get that far (a dry run, everything on the host)
 

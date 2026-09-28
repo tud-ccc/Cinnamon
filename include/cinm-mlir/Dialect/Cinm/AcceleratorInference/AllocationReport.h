@@ -82,6 +82,16 @@ struct GraphRecord {
 /// must be prepared: the operator is read off them.
 void snapshotGraph(const ComputeGraph &graph, GraphRecord &record);
 
+/// Write each class's reference module to
+/// `<graphDir>/class_<i>/reference.mlir`, its function renamed
+/// `<graphName>_class<i>`, and record where in the class's entry of the
+/// report (`reference`: path relative to `graphDir`, and function). It holds
+/// the class's one compute block in the form the search space is read off,
+/// so a configuration from the report can be compiled from it on its own
+/// (InferenceOptions::evalSingleSolution).
+void writeReferenceModules(const std::filesystem::path &graphDir,
+                           StringRef graphName, GraphRecord &record);
+
 /// Write everything one graph's allocation did to `path` as JSON: the machine
 /// it priced against, the options it ran under, the graph, and per class the
 /// operator, every point of its menu with how it was priced and what became

@@ -11,6 +11,7 @@
 #include <llvm/Support/FormatVariadic.h>
 #include <llvm/Support/raw_ostream.h>
 
+#include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/Utils/StaticValueUtils.h>
 #include <mlir/IR/Location.h>
 #include <mlir/Interfaces/FunctionInterfaces.h>
@@ -222,11 +223,41 @@ void snapshotGraph(const ComputeGraph &graph, GraphRecord &record) {
     c["operator"] = record.references[ci]
                         ? describeComputeBlock(record.references[ci]->block)
                         : json::Value(nullptr);
+    c["reference"] = nullptr; // writeReferenceModules, when there is a dump
     record.classes.push_back(std::move(c));
     record.footprints.push_back(footprint);
     auto host = HostPlatformAttr::getInScope(rep);
     record.hosts.push_back(host ? std::optional(host.getModel())
                                 : std::nullopt);
+  }
+}
+
+void writeReferenceModules(const std::filesystem::path &graphDir,
+                           StringRef graphName, GraphRecord &record) {
+  for (auto [ci, reference] : llvm::enumerate(record.references)) {
+    if (!reference)
+      continue;
+    const std::string function = (graphName + "_class" + Twine(ci)).str();
+    const std::filesystem::path relative =
+        std::filesystem::path("class_" + std::to_string(ci)) / "reference.mlir";
+    ModuleOp source = reference->module.get();
+    OwningOpRef<ModuleOp> copy(cast<ModuleOp>(source->clone()));
+    copy->walk([&](func::FuncOp func) { func.setSymName(function); });
+
+    std::error_code ec;
+    std::filesystem::create_directories((graphDir / relative).parent_path(),
+                                        ec);
+    llvm::raw_fd_ostream os((graphDir / relative).string(), ec);
+    if (ec) {
+      llvm::errs() << "could not write " << (graphDir / relative).string()
+                   << ": " << ec.message() << "\n";
+      continue;
+    }
+    copy->print(os);
+    record.classes[ci]["reference"] = json::Object{
+        {"path", relative.string()},
+        {"function", function},
+    };
   }
 }
 

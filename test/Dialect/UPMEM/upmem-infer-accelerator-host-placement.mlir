@@ -1,6 +1,7 @@
-// RUN: cinm-opt %s --split-input-file --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=fast max-evals=4 n-init=2 graph-allocation=true latency-objective=true allow-host-placement=true allocation-report=%t" | FileCheck %s
-// RUN: FileCheck %s --input-file=%t/infer_slow_host.json --check-prefix=SLOW
-// RUN: FileCheck %s --input-file=%t/infer_fast_host.json --check-prefix=FAST
+// RUN: cinm-opt %s --split-input-file --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=fast max-evals=4 n-init=2 graph-allocation=true latency-objective=true allow-host-placement=true dump-dir=%t" | FileCheck %s
+// RUN: FileCheck %s --input-file=%t/infer_slow_host/allocation.json --check-prefix=SLOW
+// RUN: FileCheck %s --input-file=%t/infer_fast_host/allocation.json --check-prefix=FAST
+// RUN: FileCheck %s --input-file=%t/infer_slow_host/class_0/reference.mlir --check-prefix=REF
 
 // Where a block runs is the allocation's decision, not a screen's: every
 // class is offered a point that leaves it on the host, priced by the host's
@@ -20,6 +21,19 @@
 // SLOW: "priced_by": "host_roofline",
 // SLOW: "where": "host"
 // SLOW: "priced_by": "search",
+// SLOW: "reference": {
+// SLOW-NEXT: "function": "infer_slow_host_class0",
+// SLOW-NEXT: "path": "class_0/reference.mlir"
+//
+// Each class's reference module is dumped beside the report: its one
+// compute block in the form the space is read off, the weights still
+// static, and the host it is priced against, so that a configuration from
+// the report can be compiled from it alone.
+//
+// REF: func.func @infer_slow_host_class0(%{{.*}}: tensor<2048x2048xi8> {cinm.static}, %{{.*}}: tensor<2048xi8>)
+// REF-SAME: cinm.available_platforms = [#cinm.host_platform<ops_per_second = 1.000000e+09
+// REF: cinm.compute_block
+// REF: linalg.generic
 //
 // CHECK-LABEL: func.func @slow_host
 // CHECK: upmem.alloc_dpus

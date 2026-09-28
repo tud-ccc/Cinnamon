@@ -369,6 +369,10 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
   record.traces.resize(graph.classes.size());
   record.fates.resize(graph.classes.size());
   snapshotGraph(graph, record);
+  if (!baseDumpDir.empty())
+    writeReferenceModules(std::filesystem::path(baseDumpDir.str()) /
+                              graphName.str(),
+                          graphName, record);
 
   // The report describes the run however it ends, so it is set up before
   // anything can end it.
