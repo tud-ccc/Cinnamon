@@ -212,7 +212,10 @@ class Graph:
         (already slowed by the host's achieved fraction), the device
         roofline and its two terms, and the verdict. A class the screen
         could not price has its values kept with zero rooflines, as the
-        screen keeps them."""
+        screen keeps them. The host model priced against is in every row
+        (host_ops_per_s, host_dram_bytes_per_s, host_fraction), so that a
+        figure of the rooflines draws the ones the screen used."""
+        model = self.report["host"]
         rows = []
         for c in self.classes:
             f = c["footprint"]
@@ -233,6 +236,9 @@ class Graph:
                         "dynamic_bytes": f.get("dynamic_bytes", 0.0),
                         "dynamic_out_bytes": f.get("dynamic_out_bytes", 0.0),
                         "host_ms": host_ms,
+                        "host_ops_per_s": model["ops_per_s"],
+                        "host_dram_bytes_per_s": model["dram_bytes_per_s"],
+                        "host_fraction": model["achieved_fraction"],
                         "resource": p["resource"],
                         "device_ms": roof.get("ms", 0.0),
                         "transfer_ms": roof.get("transfer_ms", 0.0),
