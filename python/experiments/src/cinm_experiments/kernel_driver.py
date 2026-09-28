@@ -10,7 +10,9 @@ function's signature:
 
   - tensors are passed as bare pointers (the host lowering's
     use-bare-ptr-memref-call-conv), filled with small random values the way
-    the suites fill theirs;
+    the suites fill theirs, but never zero: a class's kernel may divide by
+    one of its operands (a softmax's sum, a norm's sigma), which in a model
+    is never zero and on a DPU faults when it is;
   - integer scalars are passed by value, `index` ones as 0 -- in a class they
     are offsets into a stacked weight, a layer index -- and the others as 1,
     which is a valid shift amount and divisor;
@@ -153,7 +155,7 @@ def render(reference_mlir: pathlib.Path, function: str) -> str:
 namespace {{
 
 // A xorshift fill, as the model drivers use: some of these operands are a
-// model's whole weight stack.
+// model's whole weight stack. Never zero, since a kernel may divide by one.
 template <class T> std::vector<T> rnd(size_t n) {{
   return bench::interleaved_pages([n] {{
     std::vector<T> v(n);
@@ -162,7 +164,7 @@ template <class T> std::vector<T> rnd(size_t n) {{
       s ^= s << 13;
       s ^= s >> 17;
       s ^= s << 5;
-      x = (T)(s % bench::kOperandRange);
+      x = (T)(1 + s % (bench::kOperandRange - 1));
     }}
     return v;
   }});
