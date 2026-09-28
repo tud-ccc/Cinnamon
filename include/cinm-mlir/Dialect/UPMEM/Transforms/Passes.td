@@ -214,7 +214,7 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "host cost model: transfer-bound work gains ~nothing from the "
            "device, while the conjunction keeps compute-bound classes that "
            "merely scale poorly. 0 (default) only surfaces transfer_share "
-           "in profiles.csv">,
+           "in the allocation report">,
     Option<"profileRepair", "profile-repair", "bool", "true",
            "Graph profiling only: keep each class's cost profile to its "
            "lower envelope. A menu point whose pinned search measured no "
@@ -222,10 +222,11 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "allocating R devices can always run the best configuration found "
            "at any R' < R and idle the rest, so it offers nothing the smaller "
            "point does not. The profile handed to the allocator is strictly "
-           "decreasing by construction; dropped points are only logged">,
+           "decreasing by construction; the allocation report says which "
+           "point dominated each dropped one">,
     Option<"profileSeeds", "profile-seeds", "int", "1",
            "Graph allocation only: how many independent searches to run per "
-           "menu point, dumped to profile_seeds.csv as a measurement of how "
+           "menu point, recorded in the allocation report as a measurement of how "
            "much of a profile's shape is search noise. Diagnostic: the "
            "allocator is always handed the first seed's point, so raising "
            "this cannot change an allocation, only what is reported about "
@@ -282,7 +283,10 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
     Option<"dumpDir", "dump-dir", "std::string", "\"\"",
            "If non-empty, write a pool.csv file to this directory containing "
            "all candidate configurations, their observed costs, and "
-           "surrogate model statistics (mu, sigma, acq) after inference">,
+           "surrogate model statistics (mu, sigma, acq) after inference. "
+           "Under graph-allocation, also each graph's allocation report as "
+           "<graph>/allocation.json, with the searches' dumps under "
+           "<graph>/class_<i>/">,
     Option<"exhaustiveSearch", "exhaustive-search", "bool", "false",
            "Evaluate every valid configuration in the search space exhaustively "
            "instead of running Bayesian optimisation">,
@@ -390,15 +394,18 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "Graph allocation only: the most DPU counts to profile per block "
            "after the screen, thinned geometrically. 0 profiles every count "
            "the screen leaves">,
-    Option<"menuScreenCsvDir", "menu-screen-csv", "std::string", "\"\"",
-           "Graph allocation only: where to write what the menu screen makes "
-           "of every block -- each candidate DPU count, both rooflines and "
-           "the verdict -- as <dir>/<graph>_menu_screen.csv. Empty writes it "
-           "beside the run's other dumps (dump-dir)">,
+    Option<"allocationReportDir", "allocation-report", "std::string", "\"\"",
+           "Graph allocation only: a directory to write each graph's "
+           "allocation report to, as <dir>/<graph>.json: per block class its "
+           "operator, every candidate DPU count with its rooflines, the "
+           "screen's verdict, the searches and what became of the point, and "
+           "the groups the allocation gave it. Written as "
+           "<dump-dir>/<graph>/allocation.json anyway when dump-dir is set; "
+           "this is for the report without the per-search dumps">,
     Option<"gateDryRun", "gate-dry-run", "bool", "false",
            "Graph allocation only: stop after the menu screen, profiling "
-           "nothing. Says what the screen decides and what it saves; the "
-           "program that comes out is all host">,
+           "nothing. The allocation report then says what the screen decides "
+           "and what it saves; the program that comes out is all host">,
     Option<"allowFloatReassociation", "allow-float-reassociation", "bool",
            "false",
            "Permit distributing a floating-point reduction across the "

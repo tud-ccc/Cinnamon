@@ -1,5 +1,5 @@
-// RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=2 n-init=2 graph-allocation=true menu-screen-csv=%t gate-dry-run=true" -o /dev/null
-// RUN: FileCheck %s --input-file=%t/infer_gemv_menu_screen.csv --check-prefix=CSV
+// RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=fast max-evals=2 n-init=2 graph-allocation=true allocation-report=%t gate-dry-run=true" -o /dev/null
+// RUN: FileCheck %s --input-file=%t/infer_gemv.json --check-prefix=REPORT
 // RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=2 n-init=2 graph-allocation=true screen-menu=true" 2>&1 | FileCheck %s --check-prefix=SCREEN
 
 // The menu screen prices this block's roofline at every DPU count the block
@@ -8,12 +8,22 @@
 // DRAM once while the device would have to send all of it over the wire --
 // no count can win, and the block never enters a search at all.
 //
-// The dry run reports that without deciding anything: one row per candidate
-// count, both rooflines, and the verdict.
+// The dry run reports that without deciding anything: the host as point 0,
+// then every candidate count with its roofline and the verdict, and nothing
+// allocated.
 //
-// CSV: graph,class,blocks,loc,work_ops,static_bytes,dynamic_bytes,dynamic_out_bytes,host_ms,resource,device_ms,transfer_ms,device_ops_per_s,transfer_ms_streamed,kept,candidates,kept_of_candidates,profiled
-// CSV: "infer_gemv",0,1,
-// CSV-NOT: ,1,{{[0-9]+}},{{[0-9]+}},1{{$}}
+// REPORT: "allocation": null
+// REPORT: "fate": "dry_run"
+// REPORT: "addi(out0, muli(in0, in1))"
+// REPORT: "kind": "cinm.op.gemv"
+// REPORT: "priced_by": "host_roofline"
+// REPORT: "where": "host"
+// REPORT: "priced_by": "device_roofline"
+// REPORT: "screen": "dropped"
+// REPORT-NOT: "screen": "kept"
+// REPORT-NOT: "selected": true
+// REPORT: "graph": "infer_gemv"
+// REPORT: "achieved_fraction": 0.5
 
 // SCREEN: no resource value beats the host on this block
 // SCREEN-NOT: cinm.compute_block on accelerator #upmem.array

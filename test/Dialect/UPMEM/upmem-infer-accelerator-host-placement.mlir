@@ -1,4 +1,6 @@
-// RUN: cinm-opt %s --split-input-file --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=fast max-evals=4 n-init=2 graph-allocation=true latency-objective=true allow-host-placement=true" | FileCheck %s
+// RUN: cinm-opt %s --split-input-file --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=fast max-evals=4 n-init=2 graph-allocation=true latency-objective=true allow-host-placement=true allocation-report=%t" | FileCheck %s
+// RUN: FileCheck %s --input-file=%t/infer_slow_host.json --check-prefix=SLOW
+// RUN: FileCheck %s --input-file=%t/infer_fast_host.json --check-prefix=FAST
 
 // Where a block runs is the allocation's decision, not a screen's: every
 // class is offered a point that leaves it on the host, priced by the host's
@@ -8,6 +10,16 @@
 // A host that streams 1 GB/s and computes 1 Gop/s takes 8.4 ms over this
 // matvec's 4 MB of weights; 1024 DPUs take a fraction of that, so the
 // allocation puts it there.
+//
+// The allocation report shows the decision: the host is point 0 of the
+// class, and the group the solve gave it holds devices.
+//
+// SLOW: "groups": [
+// SLOW: "on_host": false,
+// SLOW: "points": [
+// SLOW: "priced_by": "host_roofline",
+// SLOW: "where": "host"
+// SLOW: "priced_by": "search",
 //
 // CHECK-LABEL: func.func @slow_host
 // CHECK: upmem.alloc_dpus
@@ -32,6 +44,14 @@ func.func @slow_host(%A: tensor<2048x2048xi8> {cinm.static}, %x: tensor<2048xi8>
 // host reads those 4 MB from DRAM faster than the array can be filled with
 // them, so no size of device pays and the block stays where it is. It keeps
 // its graph_alloc record, which says so.
+//
+// FAST: "groups": [
+// FAST: "on_host": true,
+// FAST: "point_resource": 0,
+// FAST: "resource": 0,
+// FAST: "points": [
+// FAST: "in_profile": true,
+// FAST-NEXT: "priced_by": "host_roofline",
 //
 // CHECK-LABEL: func.func @fast_host
 // CHECK-NOT: upmem.alloc_dpus

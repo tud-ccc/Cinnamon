@@ -256,35 +256,13 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   int64_t sharedResourceMax() const override { return platform.getMaxDpus(); }
 
   /// Iteration-space sizes (product of loop extents) of every op the
-  /// pipeline would distribute in `block`, read off a throwaway linalg
-  /// conversion -- the same one the search space itself is derived from, so
-  /// the menu and the space agree about what gets distributed.
-  SmallVector<int64_t>
-  distributedIterationSizes(cinm::ComputeBlockOp block) const {
-    MLIRContext *ctx = block->getContext();
-    OpBuilder b(ctx);
-    Location loc = block.getLoc();
-    OwningOpRef<ModuleOp> module(ModuleOp::create(loc));
-    auto func = func::FuncOp::create(
-        loc, "menu_probe",
-        FunctionType::get(ctx, SmallVector<Type>(block->getOperandTypes()),
-                          SmallVector<Type>(block->getResultTypes())));
-    module->push_back(func);
-    Block *entry = func.addEntryBlock();
-    b.setInsertionPointToStart(entry);
-    IRMapping mapping;
-    for (auto [operand, arg] :
-         llvm::zip(block->getOperands(), entry->getArguments()))
-      mapping.map(operand, arg);
-    auto *clone = b.clone(*block, mapping);
-    func::ReturnOp::create(b, loc, clone->getResults());
-
-    auto pm = buildConvertPipeline(ctx, /*debug=*/false);
-    if (failed(pm->run(*module)))
-      return {};
-
+  /// pipeline would distribute in `reference`, a block already in the linalg
+  /// form the search space is derived from (prepareReference), so the menu
+  /// and the space agree about what gets distributed.
+  static SmallVector<int64_t>
+  distributedIterationSizes(cinm::ComputeBlockOp reference) {
     SmallVector<int64_t> sizes;
-    module->walk([&](Operation *op) {
+    reference.getBody().walk([&](Operation *op) {
       if (!isDistributionCandidate(op))
         return;
       auto extents = linalgLoopExtents(llvm::cast<linalg::LinalgOp>(op));
@@ -298,9 +276,9 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     return sizes;
   }
 
-  /// The DPU counts worth profiling `block` at. The workgroup must be filled
-  /// exactly -- the tiles of every distributed op multiply out to
-  /// dpus * tasklets -- and tasklets = 1 is always admissible, so the
+  /// The DPU counts worth profiling `reference` at. The workgroup must be
+  /// filled exactly -- the tiles of every distributed op multiply out to dpus *
+  /// tasklets -- and tasklets = 1 is always admissible, so the
   /// divisibility-feasible DPU counts are exactly the divisors of each op's
   /// iteration-space size: divisors of their gcd for the block. Among those
   /// the menu prefers multiples of the allocation granularity (rank-sized
@@ -310,12 +288,12 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   /// the pinned search still finds infeasible (capacity) becomes a hole in
   /// the profile.
   SmallVector<int64_t>
-  sharedResourceMenu(cinm::ComputeBlockOp block) const override {
+  sharedResourceMenu(cinm::ComputeBlockOp reference) const override {
     const int64_t maxDpus = sharedResourceMax();
     const int64_t granularity =
         std::max<int64_t>(1, opts.inference.allocationGranularity);
 
-    SmallVector<int64_t> sizes = distributedIterationSizes(block);
+    SmallVector<int64_t> sizes = distributedIterationSizes(reference);
     if (sizes.empty())
       return {};
     int64_t g = 0;
@@ -816,6 +794,29 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   std::optional<cinm::DistributedOpInfo>
   handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix, SpaceBuilder &b);
 
+  /// The space is derived from the *linalg* form of the block. Block sizes
+  /// are indexed by iteration dimension and only linalg states an iteration
+  /// space; deriving them from cinm ops instead would mean maintaining a
+  /// second, hand-written notion of each op's iteration space. That notion
+  /// already disagrees: `getTilableDimSizes` reports one flattened dimension
+  /// for an elementwise op where its linalg form has one per rank.
+  ///
+  /// The reference itself is converted, not a throwaway copy of it: the
+  /// conversion does not depend on the configuration, so doing it once here
+  /// both saves every trial from repeating it and lets the parameters be
+  /// stamped straight onto the ops the space was read from. Trials are clones
+  /// of what this leaves behind, so they inherit the annotations and start
+  /// where the search space starts.
+  LogicalResult prepareReference(ModuleOp reference) override {
+    auto pm = buildConvertPipeline(reference.getContext(),
+                                   opts.debugPrintsInPipeline);
+    if (failed(pm->run(reference)))
+      return reference.emitError(
+          "could not convert the compute block to linalg, so no search space "
+          "can be derived from it");
+    return success();
+  }
+
   void initializeSpace(cinm::ComputeBlockOp refClone,
                        cinm::SpaceBuilder &b) override {
     const int64_t maxDpus = platform.getMaxDpus();
@@ -859,60 +860,19 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       return;
     }
 
-    // The space is derived from the *linalg* form of the block. Block sizes
-    // are indexed by iteration dimension and only linalg states an iteration
-    // space; deriving them from cinm ops instead would mean maintaining a
-    // second, hand-written notion of each op's iteration space. That notion
-    // already disagrees: `getTilableDimSizes` reports one flattened dimension
-    // for an elementwise op where its linalg form has one per rank.
-    //
-    // The reference itself is converted, not a throwaway copy of it: the
-    // conversion does not depend on the configuration, so doing it once here
-    // both saves every trial from repeating it and lets the parameters be
-    // stamped straight onto the ops the space was read from. Trials are clones
-    // of what this leaves behind, so they inherit the annotations and start
-    // where the search space starts.
-    MLIRContext *ctx = refClone->getContext();
-    Location loc = refClone->getLoc();
-    cinm::ComputeBlockOp block = refClone;
-    if (!opts.inference.stampConfigs) {
-      ModuleOp refModule = refClone->getParentOfType<ModuleOp>();
-      {
-        auto pm = buildConvertPipeline(ctx, opts.debugPrintsInPipeline);
-        if (failed(pm->run(refModule))) {
-          emitError(loc, "could not convert the compute block to linalg, "
-                         "so no search space can be derived from it");
-          return;
-        }
-      }
-
-      // Not `refClone`: the pipeline above may have replaced the compute
-      // block op (canonicalization rebuilds it to drop an unused block
-      // argument), so the handle the framework passed in can be dangling by
-      // now.
-      block = nullptr;
-      refModule.walk([&](cinm::ComputeBlockOp op) { block = op; });
-      if (!block) {
-        emitError(loc, "the converted reference has no compute block");
-        return;
-      }
-    }
-    // In stamp mode the block IS the original, sitting in the real module
-    // among other blocks: nothing is converted here (the pass ran the
-    // conversion once, up front) and nothing may walk the enclosing module.
-
-    // Name each op's parameters after the cinm op it came from, e.g.
+    // The block is in the linalg form prepareReference put it in (see there
+    // for why). Name each op's parameters after the cinm op it came from, e.g.
     // `gemv.M0`. Count the kinds first so that a block with two gemvs gets
     // `gemv0`/`gemv1` while the common single-op case stays unadorned.
     llvm::StringMap<unsigned> kindCount;
-    block.getBody().walk([&](Operation *op) {
+    refClone.getBody().walk([&](Operation *op) {
       if (isDistributionCandidate(op))
         ++kindCount[searchNameFor(op)];
     });
 
     llvm::StringMap<unsigned> kindSeen;
     SmallVector<cinm::DistributedOpInfo, 2> distributed;
-    block.getBody().walk([&](Operation *op) {
+    refClone.getBody().walk([&](Operation *op) {
       if (!isDistributionCandidate(op))
         return;
       std::string kind = searchNameFor(op);
@@ -1024,7 +984,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   }
 
   /// Lower `trial` through the real pass pipeline. The trial starts in the
-  /// linalg form the search space was built from (see initializeSpace), so
+  /// linalg form the search space was built from (see prepareReference), so
   /// only the configuration-dependent stages are left.
   DiagnosedSilenceableFailure runLowering(cinm::TrialInfo &trial) {
     mlir::Location loc = trial.computeBlock->getLoc();
@@ -1519,7 +1479,7 @@ struct UpmemInferAcceleratorPass
     o.hostAchievedFraction = hostAchievedFraction;
     o.allowHostPlacement = allowHostPlacement;
     o.maxMenuPoints = maxMenuPoints;
-    o.menuScreenCsvDir = menuScreenCsvDir;
+    o.allocationReportDir = allocationReportDir;
     o.gateDryRun = gateDryRun;
     o.stampConfigs = stampConfigs;
     upmemOpts.annotateOpCosts = annotateOpCosts;

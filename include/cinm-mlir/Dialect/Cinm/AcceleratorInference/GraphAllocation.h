@@ -204,4 +204,10 @@ AllocationScore scoreAllocation(ArrayRef<ClassProfile> classes,
                                 ArrayRef<GraphNode> nodes,
                                 const AllocationResult &result);
 
+/// The profile point a group runs: a group on the host its class's host
+/// point, a pinned group the point measured at its allocated resource, and a
+/// timeshared one its best device point overall.
+const ProfilePoint *pointOf(const ClassProfile &profile,
+                            const GroupAllocation &group);
+
 } // namespace mlir::cinm

@@ -29,9 +29,8 @@ the band, which is what the filled versus hollow rings distinguish.
 Unlike its sibling plot_*.py scripts this one reads compiler dumps rather
 than results/*.csv: a profile is a solver artifact, not an assembled
 measurement. Point it at a dump-dir root (the `dump-dir=` given to
-upmem-infer-accelerator) and it draws every profiles.csv underneath, with
-the allocation.csv, groups.csv and profile_seeds.csv the same graph dumped
-beside it.
+upmem-infer-accelerator) and it draws every graph's allocation report
+underneath (cinm_experiments.profiles).
 """
 
 from __future__ import annotations
@@ -66,13 +65,15 @@ def _label(row) -> str:
 
 
 def _summary(alloc: pd.Series) -> str:
-    """The allocation.csv row as a subtitle. The host count is a fallback
-    count: these are blocks that target the platform but fit no
-    configuration, not the host-pinned parts of the program, which are never
-    part of this graph."""
+    """The allocation summary as a subtitle. The host count is a fallback
+    count: these are blocks that target the platform but never entered the
+    solve, not the host-pinned parts of the program, which are never part of
+    this graph."""
     pinned = f"{alloc['n_groups_pinned']} pinned"
     if alloc["n_groups_timeshared"]:
         pinned += f", {alloc['n_groups_timeshared']} timeshared"
+    if alloc["n_groups_host"]:
+        pinned += f", {alloc['n_groups_host']} on host"
     return (
         f"{alloc['n_classes']} classes -> {alloc['n_groups']} sets ({pinned}); "
         f"{alloc['n_blocks_device']}/{alloc['n_blocks']} blocks on "
@@ -87,8 +88,15 @@ def _draw(ax, graph: Graph) -> None:
     # (they stay on the host); they have nothing to plot but are worth
     # naming, since a graph that is mostly host tells a story the drawn
     # lines do not.
-    drawn = graph.profiles.dropna(subset=["resource", "cost_ms"])
-    host = graph.profiles["class"].nunique() - drawn["class"].nunique()
+    measured = graph.profiles.dropna(subset=["resource", "cost_ms"])
+    host = graph.profiles["class"].nunique() - measured["class"].nunique()
+    # The host point (resource 0) has no place on a log axis of device sizes:
+    # it is drawn as a level instead, what the device curve has to get under.
+    drawn = measured[measured["resource"] > 0]
+    host_cost = measured[measured["resource"] == 0].set_index("class")["cost_ms"]
+    on_host: set[int] = set()
+    if graph.groups is not None:
+        on_host = set(graph.groups[graph.groups["on_host"] == 1]["class"])
     ticks: set[float] = set()
     color_of_class: dict[int, str] = {}
     # A whole program has more classes than the default cycle has colors, and
@@ -105,6 +113,15 @@ def _draw(ax, graph: Graph) -> None:
             label=_label(cls.iloc[0]),
         )
         color_of_class[class_ix] = line.get_color()
+        # The host's roofline for the same block, solid where the allocation
+        # left the class there.
+        if class_ix in host_cost.index:
+            ax.axhline(
+                host_cost[class_ix],
+                ls="-" if class_ix in on_host else ":",
+                lw=1.2 if class_ix in on_host else 0.8,
+                color=line.get_color(),
+            )
         # How far independent searches of the same pinned space landed apart.
         # A wiggle in the line that the band covers is search luck, not shape.
         band = graph.spread(class_ix)
@@ -138,6 +155,8 @@ def _draw(ax, graph: Graph) -> None:
     pinned = timeshared = False
     if graph.groups is not None:
         for _, group in graph.groups.iterrows():
+            if group["on_host"]:
+                continue  # drawn as the solid host level above
             timeshared = timeshared or bool(group["timeshared"])
             pinned = pinned or not group["timeshared"]
             ax.plot(
@@ -171,7 +190,10 @@ def _draw(ax, graph: Graph) -> None:
     ax.xaxis.set_minor_locator(NullLocator())
     # The reference lines run below the measurements by construction; bound
     # the axis to the data so they do not squash it.
-    ax.set_ylim(drawn["cost_ms"].min() / 1.3, drawn["cost_ms"].max() * 1.3)
+    levels = pd.concat(
+        [drawn["cost_ms"], host_cost[host_cost.index.isin(drawn["class"])]]
+    )
+    ax.set_ylim(levels.min() / 1.3, levels.max() * 1.3)
     ax.set_xlabel("DPUs pinned")
     ax.set_ylabel("cost of best config (ms)")
 
@@ -240,6 +262,7 @@ def _seed_gains(
 
 def _draw_marginal(ax, graph: Graph) -> None:
     drawn = graph.profiles.dropna(subset=["resource", "cost_ms"])
+    drawn = drawn[drawn["resource"] > 0]
     cmap = plt.get_cmap("tab20" if drawn["class"].nunique() > 10 else "tab10")
     ticks: set[float] = set()
     convex = total = rises = solid = banded = 0
@@ -321,7 +344,7 @@ def main(argv: list[str] | None = None) -> int:
         "dumps",
         nargs="+",
         type=pathlib.Path,
-        help="dump-dir roots (or profiles.csv files) to draw",
+        help="dump-dir roots (or allocation reports) to draw",
     )
     parser.add_argument(
         "--out",
@@ -335,7 +358,10 @@ def main(argv: list[str] | None = None) -> int:
     graphs = profiles_mod.collect(roots)
     if not graphs:
         where = ", ".join(str(p) for p in roots)
-        print(f"no profiles.csv dumped yet -- nothing to draw (looked in {where})")
+        print(
+            "no allocation report with a profile yet -- nothing to draw "
+            f"(looked in {where})"
+        )
         return 0
 
     # Two rows per band of graphs: the profile, and the marginal returns of

@@ -88,6 +88,9 @@ class MeasureRoots:
     def bench_marker_of(self, c: compile_run.Config) -> pathlib.Path:
         return self.bench_marker(*self._id(c))
 
+    def __div__(self, suffix):
+        return MeasureRoots(self.compile_root / suffix, self.run_root / suffix)
+
 
 # ── compile actions (fallible per config, never raise) ──────────────────────
 

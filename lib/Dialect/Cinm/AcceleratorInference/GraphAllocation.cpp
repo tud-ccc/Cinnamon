@@ -559,4 +559,18 @@ AllocationScore scoreAllocation(ArrayRef<ClassProfile> classes,
   return score;
 }
 
+const ProfilePoint *pointOf(const ClassProfile &profile,
+                            const GroupAllocation &group) {
+  const ProfilePoint *point = nullptr;
+  for (const ProfilePoint &p : profile.points) {
+    if (p.onHost != group.onHost)
+      continue;
+    if (group.onHost || (group.resource ? p.resource == group.resource
+                                        : (!point || p.costMs < point->costMs)))
+      point = &p;
+  }
+  assert(point && "allocator chose a point the profile does not have");
+  return point;
+}
+
 } // namespace mlir::cinm

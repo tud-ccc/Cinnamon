@@ -1,4 +1,5 @@
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/GraphInference.h"
+#include "cinm-mlir/Dialect/Cinm/AcceleratorInference/AllocationReport.h"
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/GraphAllocation.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmUtils.h"
@@ -9,7 +10,6 @@
 #include <atomic>
 #include <cmath>
 #include <filesystem>
-#include <fstream>
 #include <optional>
 #include <string>
 #include <thread>
@@ -18,6 +18,7 @@
 #include <llvm/ADT/EquivalenceClasses.h>
 #include <llvm/ADT/MapVector.h>
 #include <llvm/ADT/STLExtras.h>
+#include <llvm/ADT/ScopeExit.h>
 #include <llvm/Support/Casting.h>
 #include <llvm/Support/Debug.h>
 
@@ -340,303 +341,6 @@ static std::string dumpDirFor(StringRef baseDir, StringRef name,
   return path.string();
 }
 
-/// Wrap `s` in double quotes, doubling any embedded quotes (RFC 4180).
-static std::string csvQuote(StringRef s) {
-  std::string out = "\"";
-  for (char c : s) {
-    if (c == '"')
-      out += '"';
-    out += c;
-  }
-  out += '"';
-  return out;
-}
-
-/// Write what the menu screen makes of every class of `graph` to `path` as
-/// CSV, one row per (class, candidate resource value), and profile nothing.
-///
-/// The screen is the offload decision taken where the feasible resource
-/// values are known (InferenceOptions::screenMenuAgainstHost), so this is
-/// how to see it before trusting it: every value a block admits, what the
-/// device roofline prices it at, the host roofline it is compared against,
-/// and whether it survives. `kept_of_candidates` per row says how much of
-/// the menu the screen leaves, which is what decides whether the survivors
-/// still need thinning (InferenceOptions::maxMenuPoints) or whether the
-/// screen is the thinning. The traffic is split in two because the two
-/// directions are not priced alike: `dynamic_out_bytes` is what comes back,
-/// and a gather is the slower way across.
-static void dumpMenuScreenCSV(const std::filesystem::path &path,
-                              const ComputeGraph &graph, StringRef graphName,
-                              InferencePluginFactory makePlugin,
-                              const InferenceOptions &opts) {
-  std::error_code ec;
-  std::filesystem::create_directories(path.parent_path(), ec);
-  llvm::raw_fd_ostream os(path.string(), ec);
-  if (ec) {
-    llvm::errs() << "could not write " << path.string() << ": " << ec.message()
-                 << "\n";
-    return;
-  }
-  // transfer_ms and device_ops_per_s are the two terms device_ms is the
-  // greater of. They are what the roof at this resource value *is* -- its
-  // slope and its ceiling -- and neither can be recovered from their
-  // maximum, so a reader of this file can only redraw the screen's reasoning
-  // if both are written down.
-  os << "graph,class,blocks,loc,work_ops,static_bytes,dynamic_bytes,"
-        "dynamic_out_bytes,host_ms,resource,device_ms,transfer_ms,"
-        "device_ops_per_s,transfer_ms_streamed,kept,candidates,"
-        "kept_of_candidates,profiled\n";
-
-  for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
-    cinm::ComputeBlockOp block = blockClass.representative();
-    std::unique_ptr<InferencePlugin> plugin = makePlugin(graph.platform);
-    SmallVector<int64_t> menu = plugin->sharedResourceMenu(block);
-    SmallVector<int64_t> survivors = menu;
-    MenuScreen screen =
-        screenMenu(block, *plugin, survivors, opts.hostAchievedFraction);
-    SmallVector<int64_t> profiled = survivors;
-    thinMenu(profiled, opts.maxMenuPoints);
-
-    cinm::OffloadFootprint f = cinm::measureOffloadFootprint(block);
-    std::string loc;
-    llvm::raw_string_ostream locStream(loc);
-    block.getLoc().print(locStream);
-
-    auto row = [&](int64_t resource, double deviceMs, double transferMs,
-                   double opsPerSecond, double transferMsStreamed, bool kept) {
-      os << csvQuote(graphName) << "," << ci << "," << blockClass.size() << ","
-         << csvQuote(loc) << "," << f.work << "," << f.staticBytes << ","
-         << f.dynamicBytes << "," << f.dynamicOutBytes << "," << screen.hostMs
-         << "," << resource << "," << deviceMs << "," << transferMs << ","
-         << opsPerSecond << "," << transferMsStreamed << "," << (kept ? 1 : 0)
-         << "," << menu.size() << "," << survivors.size() << ","
-         << (llvm::is_contained(profiled, resource) ? 1 : 0) << "\n";
-    };
-    if (screen.verdicts.empty())
-      // The screen could not run: a block it cannot measure, or a target
-      // with no device roofline. Recorded as candidates kept unscreened,
-      // which is what profileComputeBlock would do with them.
-      for (int64_t resource : menu)
-        row(resource, 0.0, 0.0, 0.0, 0.0, /*kept=*/true);
-    else
-      for (const MenuVerdict &v : screen.verdicts)
-        row(v.resource, v.deviceMs, v.transferMs, v.deviceOpsPerSecond,
-            v.transferMsIfNothingResident, v.kept);
-  }
-  llvm::errs() << "wrote " << path.string() << "\n";
-}
-
-/// Write the measured cost profiles of one graph to `path` as CSV: one row
-/// per (class, menu point), plus one measurement-less row per class that no
-/// menu point could run, so the file describes every class of the graph.
-/// This is exactly what the allocator solves over, laid out for offline
-/// analysis of the choice it made.
-static void dumpProfilesCSV(const std::filesystem::path &path,
-                            const ComputeGraph &graph,
-                            ArrayRef<ClassProfile> profiles,
-                            ArrayRef<int> solveIndexOfClass) {
-  // Level columns are the platform's declared levels, but a plugin may report
-  // residency in a level the platform does not declare -- such a level never
-  // binds the packing, yet dropping it here would lose measured data -- so the
-  // column set is the union, platform levels first.
-  SmallVector<std::string> levels;
-  for (CinmLevelDefAttr level : graph.platform.getLevels())
-    levels.push_back(level.getName().getValue().str());
-  for (const ClassProfile &profile : profiles)
-    for (const ProfilePoint &point : profile.points)
-      for (const LevelResidency &entry : point.residency.levels)
-        if (!llvm::is_contained(levels, entry.level))
-          levels.push_back(entry.level);
-
-  std::error_code ec;
-  std::filesystem::create_directories(path.parent_path(), ec);
-  std::ofstream out(path);
-  if (!out)
-    return;
-  // A menu value with no row is a hole: infeasible, or dominated by a
-  // smaller value (InferenceOptions::profileRepair). transfer_share is the
-  // incumbent's per-inference data-movement share (amortized weight
-  // scatters excluded); empty when it was not measured.
-  out << "class,debug_tag,location,multiplicity,resource,cost_ms,"
-         "transfer_share,weight_scatter_ms,config";
-  for (const std::string &level : levels)
-    out << ",static_" << level << ",dyn_" << level;
-  out << "\n";
-
-  for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
-    ComputeBlockOp rep = blockClass.representative();
-    auto tag = rep->getAttrOfType<StringAttr>(CinmDialect::DEBUG_TAG_NAME);
-    std::string location;
-    llvm::raw_string_ostream(location) << rep.getLoc();
-    auto classCols = [&]() {
-      out << ci << "," << csvQuote(tag ? tag.getValue() : StringRef()) << ","
-          << csvQuote(location) << "," << blockClass.size() << ",";
-    };
-
-    if (solveIndexOfClass[ci] < 0) {
-      // A class that stays on the host is kept for the record, with every
-      // measured column empty.
-      classCols();
-      out << ",,,,";
-      for (size_t i = 0, e = 2 * levels.size(); i < e; ++i)
-        out << ",";
-      out << "\n";
-      continue;
-    }
-
-    for (const ProfilePoint &point : profiles[solveIndexOfClass[ci]].points) {
-      // The configuration is one `dim=value;...` column rather than one column
-      // per dimension: the space is stated per class, so the classes of one
-      // graph need not agree on their dimensions. Sorted, since a StringMap
-      // has no order of its own.
-      SmallVector<StringRef> dims;
-      for (const auto &entry : point.config)
-        dims.push_back(entry.getKey());
-      llvm::sort(dims);
-      std::string config;
-      llvm::raw_string_ostream cfg(config);
-      llvm::interleave(
-          dims, cfg,
-          [&](StringRef dim) { cfg << dim << "=" << point.config.lookup(dim); },
-          ";");
-
-      classCols();
-      out << point.resource << "," << point.costMs << ",";
-      if (point.transferShare >= 0)
-        out << point.transferShare;
-      out << "," << point.residency.weightScatterMs << "," << csvQuote(config);
-      for (const std::string &level : levels) {
-        const LevelResidency *entry = point.residency.find(level);
-        out << ",";
-        if (entry)
-          out << entry->staticBytes;
-        out << ",";
-        if (entry)
-          out << entry->dynBytes;
-      }
-      out << "\n";
-    }
-  }
-}
-
-/// Write every search the profiling ran, one row per (class, menu point,
-/// repeat). With profileSeeds == 1 this is profiles.csv's cost column again;
-/// past that, the spread within one (class, resource) is the search noise the
-/// profile's shape has to be read against -- a difference between two menu
-/// points smaller than the spread at either of them says nothing.
-static void dumpProfileSeedsCSV(const std::filesystem::path &path,
-                                StringRef graphName,
-                                ArrayRef<SmallVector<ProfileSample>> samples) {
-  std::error_code ec;
-  std::filesystem::create_directories(path.parent_path(), ec);
-  std::ofstream out(path);
-  if (!out)
-    return;
-  out << "graph,class,resource,seed,cost_ms\n";
-  for (auto [ci, classSamples] : llvm::enumerate(samples))
-    for (const ProfileSample &sample : classSamples)
-      out << csvQuote(graphName) << "," << ci << "," << sample.resource << ","
-          << sample.seed << "," << sample.costMs << "\n";
-}
-
-/// The profile point a group runs: a pinned group replays the point measured
-/// at its allocated resource, a timeshared one its best point overall.
-static const ProfilePoint *pointOf(const ClassProfile &profile,
-                                   const GroupAllocation &group) {
-  const ProfilePoint *point = nullptr;
-  for (const ProfilePoint &p : profile.points)
-    if (group.resource ? p.resource == group.resource
-                       : (!point || p.costMs < point->costMs))
-      point = &p;
-  assert(point && "allocator chose a resource the profile does not have");
-  return point;
-}
-
-/// Write the shape of one graph's solved allocation to `path` as a
-/// single-row CSV: what the graph was made of (blocks, classes), how the
-/// allocator carved the device up (groups, pinned and timeshared, resource
-/// spent), and what it achieved.
-///
-/// The host/device split counts the blocks of *this* graph, which are only
-/// the ones that target `platformName`: a block goes to the host column when
-/// no menu configuration could run it. Blocks the program pins to the host
-/// up front are not part of the graph at all and are counted nowhere here.
-static void dumpAllocationCSV(
-    const std::filesystem::path &path, const ComputeGraph &graph,
-    StringRef graphName, StringRef platformName, const InferenceOptions &opts,
-    const AllocationOptions &allocOpts, const AllocationResult &alloc,
-    ArrayRef<ClassProfile> profiles, ArrayRef<int> solveIndexOfClass,
-    const AllocationScore &score) {
-  unsigned deviceBlocks = 0, groups = 0, pinnedGroups = 0;
-  for (auto [ci, blockClass] : llvm::enumerate(graph.classes))
-    if (solveIndexOfClass[ci] >= 0)
-      deviceBlocks += blockClass.size();
-  for (const ClassAllocation &classAlloc : alloc.perClass)
-    for (const GroupAllocation &group : classAlloc.groups) {
-      ++groups;
-      if (group.resource)
-        ++pinnedGroups;
-    }
-
-  std::error_code ec;
-  std::filesystem::create_directories(path.parent_path(), ec);
-  std::ofstream out(path);
-  if (!out)
-    return;
-  // objective_ms is the value of the objective this run solved for;
-  // throughput_ms and latency_ms score the same allocation under *both*, so
-  // the cost of having optimised the other one is readable off one row.
-  // latency_ms is empty when a set is timeshared (see scoreAllocation).
-  out << "graph,platform,objective,objective_ms,throughput_ms,latency_ms,"
-         "n_blocks,n_blocks_device,"
-         "n_blocks_host,n_classes,n_classes_device,n_classes_host,n_groups,"
-         "n_groups_pinned,n_groups_timeshared,resource_used,resource_budget\n";
-  out << csvQuote(graphName) << "," << csvQuote(platformName) << ","
-      << (opts.latencyObjective ? "latency" : "throughput") << ","
-      << alloc.objectiveMs << "," << score.throughputMs << ",";
-  if (std::isfinite(score.latencyMs))
-    out << score.latencyMs;
-  out << "," << graph.numBlocks() << "," << deviceBlocks << ","
-      << (graph.numBlocks() - deviceBlocks) << "," << graph.classes.size()
-      << "," << profiles.size() << ","
-      << (graph.classes.size() - profiles.size()) << "," << groups << ","
-      << pinnedGroups << "," << (groups - pinnedGroups) << ","
-      << alloc.resourceUsed << "," << allocOpts.resourceBudget << "\n";
-}
-
-/// Write one row per device set the allocator carved out. `resource` is what
-/// the set reserves (0 for a timeshared group, which reserves nothing);
-/// `point_resource` is the profile point it runs, which is what joins a row
-/// to profiles.csv. `load_ms` is the set's per-inference work -- the term the
-/// throughput objective takes the max over -- and exceeds the point's cost
-/// by the reload and rescatter a timeshared group pays.
-static void dumpGroupsCSV(const std::filesystem::path &path,
-                          const ComputeGraph &graph, StringRef graphName,
-                          const AllocationResult &alloc,
-                          ArrayRef<ClassProfile> profiles,
-                          ArrayRef<int> solveIndexOfClass) {
-  std::error_code ec;
-  std::filesystem::create_directories(path.parent_path(), ec);
-  std::ofstream out(path);
-  if (!out)
-    return;
-  out << "graph,class,group,size,resource,point_resource,cost_ms,load_ms,"
-         "timeshared\n";
-  for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
-    if (solveIndexOfClass[ci] < 0)
-      continue;
-    const ClassProfile &profile = profiles[solveIndexOfClass[ci]];
-    const ClassAllocation &classAlloc = alloc.perClass[solveIndexOfClass[ci]];
-    for (auto [gi, group] : llvm::enumerate(classAlloc.groups)) {
-      const ProfilePoint *point = pointOf(profile, group);
-      out << csvQuote(graphName) << "," << ci << "," << gi << "," << group.size
-          << "," << group.resource << "," << point->resource << ","
-          << point->costMs << "," << group.loadMs << ","
-          << (group.resource ? 0 : 1) << "\n";
-    }
-  }
-}
-
 /// The two-level solve over one graph: profile each class over the resource
 /// menu, allocate the device exactly over the profiles, then stamp each
 /// group's winning configuration onto its members and commit them through
@@ -648,34 +352,69 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
                    StringRef graphName) {
   Location loc = graph.classes.front().representative().getLoc();
 
-  // The screen decides what the program does -- a class that never reaches
-  // profiles.csv is one it rejected, and the reason is only here -- so its
-  // reading is written beside the run's own dumps. Re-pricing the menu costs
-  // a division per candidate against the search it gates.
-  if (!opts.menuScreenCsvDir.empty())
-    dumpMenuScreenCSV(std::filesystem::path(opts.menuScreenCsvDir.c_str()) /
-                          (graphName.str() + "_menu_screen.csv"),
-                      graph, graphName, makePlugin, opts);
-  else if (!baseDumpDir.empty())
-    dumpMenuScreenCSV(std::filesystem::path(baseDumpDir.str()) /
-                          graphName.str() / "menu_screen.csv",
-                      graph, graphName, makePlugin, opts);
+  // Every class's reference module, in the form the plugin states its space
+  // over: what the menu is read off, and what every search of the class
+  // clones its trials from. None for a class the plugin cannot rewrite (the
+  // error is emitted); it then has no menu and stays on the host.
+  GraphRecord record;
+  auto &references = record.references;
+  for (const BlockClass &blockClass : graph.classes) {
+    std::unique_ptr<InferencePlugin> plugin = makePlugin(graph.platform);
+    FailureOr<ReferenceModule> reference =
+        prepareReferenceModule(blockClass.representative(), *plugin);
+    references.push_back(failed(reference)
+                             ? std::nullopt
+                             : std::optional(std::move(*reference)));
+  }
+  record.traces.resize(graph.classes.size());
+  record.fates.resize(graph.classes.size());
+  snapshotGraph(graph, record);
 
-  if (opts.gateDryRun)
+  // The report describes the run however it ends, so it is set up before
+  // anything can end it.
+  SmallVector<std::filesystem::path> reportPaths;
+  if (!baseDumpDir.empty())
+    reportPaths.push_back(std::filesystem::path(baseDumpDir.str()) /
+                          graphName.str() / "allocation.json");
+  if (!opts.allocationReportDir.empty())
+    reportPaths.push_back(std::filesystem::path(opts.allocationReportDir) /
+                          (graphName.str() + ".json"));
+  auto writeReport = llvm::scope_exit([&] {
+    if (reportPaths.empty())
+      return;
+    std::unique_ptr<InferencePlugin> plugin = makePlugin(graph.platform);
+    for (const std::filesystem::path &path : reportPaths)
+      writeAllocationReport(path, graph, graphName, platformName, *plugin, opts,
+                            record);
+  });
+
+  if (opts.gateDryRun) {
     // Nothing profiled and nothing offloaded: the program that comes out
-    // runs entirely on the host, and the point of the run is the file above.
+    // runs entirely on the host, and the point of the run is the report --
+    // the screen's verdicts and the menus a run would have swept.
+    for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {
+      if (!references[ci])
+        continue;
+      std::unique_ptr<InferencePlugin> plugin = makePlugin(graph.platform);
+      record.traces[ci] = planProfile(blockClass.representative(),
+                                      references[ci]->block, *plugin, opts);
+    }
     return DiagnosedSilenceableFailure::success();
+  }
+  record.profiled = true;
 
   // Profiling: one cost profile per class, on its representative. A class the
   // platform cannot run at any menu point is not an error at the graph level:
   // its members simply stay on the host (they keep no accelerator annotation,
   // which is what the downstream lowering treats as host execution) and the
   // solve runs over the remaining classes. Only definite failures abort.
-  SmallVector<ClassProfile> profiles; // one entry per *kept* class
-  SmallVector<int> solveIndexOfClass(graph.classes.size(), -1);
+  auto &profiles = record.profiles; // one entry per *kept* class
+  auto &solveIndexOfClass = record.solveIndexOfClass;
+  solveIndexOfClass.assign(graph.classes.size(), -1);
   // Indexed by graph class, unlike `profiles`: a class that found no feasible
-  // configuration still ran searches, and what they cost is worth keeping.
-  SmallVector<SmallVector<ProfileSample>> samples(graph.classes.size());
+  // configuration still ran searches, and what they found is worth keeping.
+  auto &traces = record.traces;
+  auto &fates = record.fates;
 
   // The classes are independent searches over their own representatives, so
   // they run concurrently. This is where a whole program's parallelism
@@ -711,6 +450,11 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
 
   auto profileClass = [&](size_t ci) {
     const BlockClass &blockClass = graph.classes[ci];
+    if (!references[ci]) {
+      results[ci].silenced =
+          "no reference module could be prepared for this block";
+      return;
+    }
     std::unique_ptr<InferencePlugin> plugin = makePlugin(graph.platform);
     InferenceOptions profileOpts = opts;
     profileOpts.numWorkers = baseWorkers;
@@ -718,9 +462,9 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
       profileOpts.dumpDir = (std::filesystem::path(baseDumpDir.str()) /
                              graphName.str() / ("class_" + std::to_string(ci)))
                                 .string();
-    utils::Maybe<SmallVector<ProfilePoint>> points =
-        profileComputeBlock(blockClass.representative(), *plugin, profileOpts,
-                            &samples[ci], threaded ? &gate : nullptr);
+    utils::Maybe<SmallVector<ProfilePoint>> points = profileComputeBlock(
+        blockClass.representative(), *plugin, profileOpts, &traces[ci],
+        threaded ? &gate : nullptr, &*references[ci]);
     if (auto *fail = std::get_if<DiagnosedSilenceableFailure>(&points)) {
       if (fail->isDefiniteFailure())
         results[ci].definite = std::move(*fail);
@@ -796,18 +540,24 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
         if (std::optional<ProfilePoint> host =
                 hostPointOf(blockClass.representative())) {
           results[ci].points = SmallVector<ProfilePoint>{*host};
+          fates[ci].reason = results[ci].silenced;
         }
       }
     }
+    // A class that does not enter the solve stays on the host, and says why.
+    auto staysOnHost = [&](ClassFate::Kind kind, std::string reason) {
+      fates[ci] = {kind, reason};
+      blockClass.representative().emitWarning()
+          << reason << "; it stays on the host, along with the "
+          << (blockClass.size() - 1) << " other block(s) of its class";
+    };
     if (!results[ci].points) {
-      InFlightDiagnostic warning = blockClass.representative().emitWarning();
-      if (results[ci].silenced.empty())
-        warning << "no feasible '" << platformName
-                << "' configuration for this block";
-      else
-        warning << results[ci].silenced;
-      warning << "; it stays on the host, along with the "
-              << (blockClass.size() - 1) << " other block(s) of its class";
+      staysOnHost(ClassFate::Unprofiled,
+                  results[ci].silenced.empty()
+                      ? ("no feasible '" + platformName +
+                         "' configuration for this block")
+                            .str()
+                      : results[ci].silenced);
       continue;
     }
     SmallVector<ProfilePoint> &pts = *results[ci].points;
@@ -830,15 +580,13 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
           f.known && host ? cinm::hostRooflineSeconds(f, host.getModel()) * 1e3
                           : 0.0;
       if (hostMs > 0.0 && bestPt->costMs >= hostMs) {
-        blockClass.representative().emitWarning()
-            << llvm::formatv("the search found nothing on '{0}' that beats "
-                             "the host: its best, {1} device(s) at {2:F3} ms, "
-                             "against the host's {3:F3} ms",
-                             platformName, bestPt->resource, bestPt->costMs,
-                             hostMs)
-                   .str()
-            << "; it stays on the host, along with the "
-            << (blockClass.size() - 1) << " other block(s) of its class";
+        staysOnHost(ClassFate::LosesToHost,
+                    llvm::formatv("the search found nothing on '{0}' that "
+                                  "beats the host: its best, {1} device(s) "
+                                  "at {2:F3} ms, against the host's {3:F3} ms",
+                                  platformName, bestPt->resource,
+                                  bestPt->costMs, hostMs)
+                        .str());
         continue;
       }
     }
@@ -851,13 +599,13 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
     if (opts.hostTransferBoundShare > 0) {
       if (bestPt->resource == pts.front().resource &&
           bestPt->transferShare >= opts.hostTransferBoundShare) {
-        blockClass.representative().emitWarning()
-            << "transfer-bound on '" << platformName << "' ("
-            << static_cast<int>(bestPt->transferShare * 100)
-            << "% of its best point's cost is data movement, and more "
-               "devices do not improve it); it stays on the host, along "
-               "with the "
-            << (blockClass.size() - 1) << " other block(s) of its class";
+        staysOnHost(ClassFate::TransferBound,
+                    llvm::formatv("transfer-bound on '{0}' ({1}% of its best "
+                                  "point's cost is data movement, and more "
+                                  "devices do not improve it)",
+                                  platformName,
+                                  static_cast<int>(bestPt->transferShare * 100))
+                        .str());
         continue;
       }
     }
@@ -877,12 +625,6 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
     profiles.push_back({blockClass.size(), std::move(*results[ci].points),
                         double(executions) / double(blockClass.size())});
   }
-  if (!baseDumpDir.empty()) {
-    auto dir = std::filesystem::path(baseDumpDir.str()) / graphName.str();
-    dumpProfilesCSV(dir / "profiles.csv", graph, profiles, solveIndexOfClass);
-    dumpProfileSeedsCSV(dir / "profile_seeds.csv", graphName, samples);
-  }
-
   if (profiles.empty())
     return DiagnosedSilenceableFailure::success(); // whole graph on the host
 
@@ -898,8 +640,9 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
     allocOpts.capacities.push_back(
         {level.getName().getValue().str(), level.getSizeInBytes()});
   allocOpts.programReloadMs = opts.programReloadMs;
+  record.allocOpts = allocOpts;
 
-  std::optional<AllocationResult> alloc;
+  std::optional<AllocationResult> &alloc = record.alloc;
   SmallVector<int> solveIndexOfNode(graph.nodes.size(), -1);
   // The dependency edges, in the topological order the makespan requires.
   // Built for either objective: the latency solve optimises over them, and
@@ -952,17 +695,9 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
                      << ", load " << g.loadMs << " ms\n";
   });
 
-  if (!baseDumpDir.empty()) {
-    auto dir = std::filesystem::path(baseDumpDir.str()) / graphName.str();
-    // Score the allocation under both objectives, not just the one solved
-    // for: the off-diagonal is what says whether the choice mattered.
-    const AllocationScore score = scoreAllocation(profiles, nodes, *alloc);
-    dumpAllocationCSV(dir / "allocation.csv", graph, graphName, platformName,
-                      opts, allocOpts, *alloc, profiles, solveIndexOfClass,
-                      score);
-    dumpGroupsCSV(dir / "groups.csv", graph, graphName, *alloc, profiles,
-                  solveIndexOfClass);
-  }
+  // Score the allocation under both objectives, not just the one solved for:
+  // the off-diagonal is what says whether the choice mattered.
+  record.score = scoreAllocation(profiles, nodes, *alloc);
 
   // Finalization: stamp each group's argmin onto its members and commit. The
   // argmin is feasible under the packing by construction -- the allocator
@@ -974,7 +709,8 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
   // Which group each member landed on. The latency solve says so per node,
   // since its members are not interchangeable; the throughput solve leaves
   // that free, so members fill the groups in order.
-  SmallVector<SmallVector<unsigned>> groupOfMember(graph.classes.size());
+  auto &groupOfMember = record.groupOfMember;
+  groupOfMember.resize(graph.classes.size());
   for (auto [ci, blockClass] : llvm::enumerate(graph.classes))
     groupOfMember[ci].resize(blockClass.size(), 0);
   if (alloc->groupOfNode.empty()) {
@@ -997,11 +733,11 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
 
   // Record what the solve decided about each block, on the block. The
   // lowering reads the residency fields back (`slot`, `slots`, `sequence`:
-  // CnmToUPMEM's residency slots); the rest is what lets the CSV dumps be
-  // read against the IR they describe -- which of 644 compute blocks is the
-  // class-12 outlier, which blocks share a device set. Host classes are
-  // stamped too, since "which ones fell back" is exactly the question the
-  // dumps leave open.
+  // CnmToUPMEM's residency slots); the rest is what lets the allocation
+  // report be read against the IR it describes -- which of 644 compute
+  // blocks is the class-12 outlier, which blocks share a device set. Host
+  // classes are stamped too, so that the IR itself says which blocks fell
+  // back.
   {
     Builder builder(loc.getContext());
     for (auto [ci, blockClass] : llvm::enumerate(graph.classes)) {

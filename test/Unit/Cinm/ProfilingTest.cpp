@@ -110,7 +110,8 @@ TEST(Profiling, ProfilesTheMenuPointwise) {
     return failure();
   });
 
-  auto result = cinm::profileComputeBlock(block, plugin, opts);
+  cinm::ProfileTrace trace;
+  auto result = cinm::profileComputeBlock(block, plugin, opts, &trace);
   auto *points = std::get_if<SmallVector<cinm::ProfilePoint>>(&result);
   if (auto *fail = std::get_if<DiagnosedSilenceableFailure>(&result))
     FAIL() << "profiling failed (" << fail->getStatusString()
@@ -135,6 +136,28 @@ TEST(Profiling, ProfilesTheMenuPointwise) {
     EXPECT_EQ(mem->dynBytes, 10);
     EXPECT_DOUBLE_EQ(p.residency.weightScatterMs, 1.0);
   }
+
+  // The trace keeps what the profile drops: the out-of-range value was
+  // searched and found nothing, and says so. The mock has no device
+  // roofline, so the screen never ran and nothing carries a verdict.
+  ASSERT_EQ(trace.menu.size(), 4u);
+  EXPECT_EQ(trace.screenHostMs, 0.0);
+  for (const cinm::MenuPointTrace &point : trace.menu) {
+    EXPECT_FALSE(point.verdict);
+    EXPECT_TRUE(point.profiled);
+    EXPECT_EQ(point.dominatedBy, 0);
+    ASSERT_EQ(point.searches.size(), 1u);
+    EXPECT_EQ(point.searches[0].rngSeed, opts.rngSeed);
+  }
+  const cinm::MenuPointTrace &hole = trace.menu.back();
+  EXPECT_EQ(hole.resource, 128);
+  EXPECT_FALSE(hole.point);
+  EXPECT_FALSE(hole.searches[0].costMs);
+  EXPECT_FALSE(hole.searches[0].failure.empty());
+  const cinm::MenuPointTrace &first = trace.menu.front();
+  ASSERT_TRUE(first.point);
+  ASSERT_TRUE(first.searches[0].costMs);
+  EXPECT_DOUBLE_EQ(*first.searches[0].costMs, 1000.0 / 16.0 + 1.0);
 }
 
 } // namespace
