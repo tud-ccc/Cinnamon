@@ -20,6 +20,7 @@ doit connects stages.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import os
 import pathlib
 import shutil
@@ -95,6 +96,21 @@ class MeasureRoots:
 # ── compile actions (fallible per config, never raise) ──────────────────────
 
 
+def _digest(paths) -> str:
+    """A checksum over the contents of `paths` (missing ones skipped), in
+    order: what a marker records, so that doit's checksum of the marker moves
+    exactly when what it stands for does."""
+    h = hashlib.sha256()
+    for path in paths:
+        path = pathlib.Path(path)
+        if path.is_file():
+            h.update(path.name.encode())
+            with path.open("rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+    return h.hexdigest()
+
+
 def compile_one(
     config: compile_run.Config,
     roots: MeasureRoots,
@@ -120,9 +136,14 @@ def compile_one(
         # retry task would see nothing to retry.
         roots.bench_bin_of(config).unlink(missing_ok=True)
         error_file.write_text(f"{compiled.error}\n")
+        # The error, so that a retry that fails differently, or succeeds,
+        # reads as a change to the bench depending on this marker.
+        marker.write_text(f"failed {_digest([error_file])}\n")
     else:
         error_file.unlink(missing_ok=True)
-    marker.touch()
+        # The binary itself: a recompile that changes the code invalidates
+        # the bench, one that reproduces it does not.
+        marker.write_text(f"ok {_digest([roots.bench_bin_of(config)])}\n")
     return True
 
 
@@ -218,7 +239,10 @@ def _bench_one_config(
                 f"  FAIL run: {config.system} {config.fn_name} {config.label}: {r.error[:200]}"
             )
     bench_marker.parent.mkdir(parents=True, exist_ok=True)
-    bench_marker.touch()
+    # What the run left, so that whatever reads it downstream sees a re-bench.
+    output = roots.run_output_dir_of(config)
+    timings = sorted(output.rglob("*.csv")) if output.exists() else []
+    bench_marker.write_text(f"{_digest(timings)}\n")
     return True
 
 
