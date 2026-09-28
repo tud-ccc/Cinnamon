@@ -34,6 +34,7 @@
 #include "llvm/Support/FormatVariadic.h"
 #include <cstddef>
 #include <numeric>
+#include <variant>
 
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringRef.h>
@@ -258,6 +259,35 @@ static LogicalResult printValueOrConstant(CppEmitter &emitter, Value value) {
     }
   } else {
     emitter.ostream() << emitter.getOrCreateName(value);
+  }
+  return success();
+}
+
+/// An operand where an expression repeats or wraps it: its name, or, for a
+/// constant -- which is inlined rather than declared, so it has no name --
+/// the constant in parentheses (a negative one must not fuse with a
+/// neighbouring `-`).
+static LogicalResult printOperand(CppEmitter &emitter, Value value) {
+  if (!isa_and_nonnull<arith::ConstantOp>(value.getDefiningOp())) {
+    emitter.ostream() << emitter.getOrCreateName(value);
+    return success();
+  }
+  emitter.ostream() << "(";
+  if (failed(printValueOrConstant(emitter, value)))
+    return failure();
+  emitter.ostream() << ")";
+  return success();
+}
+
+/// Print `pieces`, each either literal text or an operand (printOperand).
+static LogicalResult
+printExpression(CppEmitter &emitter,
+                ArrayRef<std::variant<StringRef, Value>> pieces) {
+  for (const auto &piece : pieces) {
+    if (const auto *text = std::get_if<StringRef>(&piece))
+      emitter.ostream() << *text;
+    else if (failed(printOperand(emitter, std::get<Value>(piece))))
+      return failure();
   }
   return success();
 }
@@ -803,26 +833,20 @@ static LogicalResult printOperation(CppEmitter &emitter, arith::BitcastOp op) {
 static LogicalResult printOperation(CppEmitter &emitter,
                                     arith::CeilDivSIOp op) {
   // (a / b) + (((a % b) != 0) & ((a ^ b) >= 0))
-  raw_ostream &os = emitter.ostream();
   if (failed(emitter.emitAssignPrefix(*op.getOperation())))
     return failure();
-  StringRef a = emitter.getOrCreateName(op.getLhs());
-  StringRef b = emitter.getOrCreateName(op.getRhs());
-  os << "(" << a << " / " << b << ") + (((" << a << " % " << b << ") != 0) & (("
-     << a << " ^ " << b << ") >= 0))";
-  return success();
+  Value a = op.getLhs(), b = op.getRhs();
+  return printExpression(emitter, {"(", a, " / ", b, ") + (((", a, " % ", b,
+                                   ") != 0) & ((", a, " ^ ", b, ") >= 0))"});
 }
 
 static LogicalResult printOperation(CppEmitter &emitter,
                                     arith::CeilDivUIOp op) {
   // (a + b - 1) / b  (unsigned, no overflow risk when a>0)
-  raw_ostream &os = emitter.ostream();
   if (failed(emitter.emitAssignPrefix(*op.getOperation())))
     return failure();
-  StringRef a = emitter.getOrCreateName(op.getLhs());
-  StringRef b = emitter.getOrCreateName(op.getRhs());
-  os << "(" << a << " + " << b << " - 1) / " << b;
-  return success();
+  Value a = op.getLhs(), b = op.getRhs();
+  return printExpression(emitter, {"(", a, " + ", b, " - 1) / ", b});
 }
 
 static LogicalResult printCmpOp(CppEmitter &emitter, Operation *op,
@@ -963,14 +987,12 @@ static LogicalResult printOperation(CppEmitter &emitter, arith::ExtUIOp op) {
 static LogicalResult printOperation(CppEmitter &emitter,
                                     arith::FloorDivSIOp op) {
   // Signed floor div: (a - (((a % b) != 0) & ((a ^ b) < 0))) / b
-  raw_ostream &os = emitter.ostream();
   if (failed(emitter.emitAssignPrefix(*op.getOperation())))
     return failure();
-  StringRef a = emitter.getOrCreateName(op.getLhs());
-  StringRef b = emitter.getOrCreateName(op.getRhs());
-  os << "(" << a << " - (((" << a << " % " << b << ") != 0) & ((" << a << " ^ "
-     << b << ") < 0))) / " << b;
-  return success();
+  Value a = op.getLhs(), b = op.getRhs();
+  return printExpression(emitter,
+                         {"(", a, " - (((", a, " % ", b, ") != 0) & ((", a,
+                          " ^ ", b, ") < 0))) / ", b});
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::FPToSIOp op) {
@@ -994,13 +1016,12 @@ static LogicalResult printOperation(CppEmitter &emitter,
 // Helper for integer min/max via ternary: (a OP b) ? a : b
 static LogicalResult printMinMaxOp(CppEmitter &emitter, Operation *op,
                                    StringRef cmpOp) {
-  raw_ostream &os = emitter.ostream();
   if (failed(emitter.emitAssignPrefix(*op)))
     return failure();
-  StringRef a = emitter.getOrCreateName(op->getOperand(0));
-  StringRef b = emitter.getOrCreateName(op->getOperand(1));
-  os << "(" << a << " " << cmpOp << " " << b << ") ? " << a << " : " << b;
-  return success();
+  Value a = op->getOperand(0), b = op->getOperand(1);
+  std::string cmp = (" " + cmpOp + " ").str();
+  return printExpression(emitter,
+                         {"(", a, StringRef(cmp), b, ") ? ", a, " : ", b});
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::MaximumFOp op) {
@@ -1054,11 +1075,9 @@ static LogicalResult printOperation(CppEmitter & /*emitter*/,
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::NegFOp op) {
-  raw_ostream &os = emitter.ostream();
   if (failed(emitter.emitAssignPrefix(*op.getOperation())))
     return failure();
-  os << "-" << emitter.getOrCreateName(op.getOperand());
-  return success();
+  return printExpression(emitter, {"-", op.getOperand()});
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::OrIOp op) {
@@ -1066,12 +1085,10 @@ static LogicalResult printOperation(CppEmitter &emitter, arith::OrIOp op) {
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::RemFOp op) {
-  raw_ostream &os = emitter.ostream();
   if (failed(emitter.emitAssignPrefix(*op.getOperation())))
     return failure();
-  os << "fmodf(" << emitter.getOrCreateName(op.getLhs()) << ", "
-     << emitter.getOrCreateName(op.getRhs()) << ")";
-  return success();
+  return printExpression(emitter,
+                         {"fmodf(", op.getLhs(), ", ", op.getRhs(), ")"});
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::RemSIOp op) {
@@ -1083,13 +1100,10 @@ static LogicalResult printOperation(CppEmitter &emitter, arith::RemUIOp op) {
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::SelectOp op) {
-  raw_ostream &os = emitter.ostream();
   if (failed(emitter.emitAssignPrefix(*op.getOperation())))
     return failure();
-  os << emitter.getOrCreateName(op.getCondition()) << " ? "
-     << emitter.getOrCreateName(op.getTrueValue()) << " : "
-     << emitter.getOrCreateName(op.getFalseValue());
-  return success();
+  return printExpression(emitter, {op.getCondition(), " ? ", op.getTrueValue(),
+                                   " : ", op.getFalseValue()});
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::ShLIOp op) {
@@ -1116,19 +1130,16 @@ static LogicalResult printOperation(CppEmitter &emitter, arith::SubIOp op) {
   return printBinaryOperation(emitter, op.getOperation(), "-");
 }
 
-static LogicalResult printOperation(CppEmitter & /*emitter*/,
-                                    arith::TruncFOp /*op*/) {
-  assert(false && "todo: implement op printer");
+static LogicalResult printOperation(CppEmitter &emitter, arith::TruncFOp op) {
+  return printCastOp(emitter, op.getOperation());
 }
 
-static LogicalResult printOperation(CppEmitter & /*emitter*/,
-                                    arith::TruncIOp /*op*/) {
-  assert(false && "todo: implement op printer");
+static LogicalResult printOperation(CppEmitter &emitter, arith::TruncIOp op) {
+  return printCastOp(emitter, op.getOperation());
 }
 
-static LogicalResult printOperation(CppEmitter & /*emitter*/,
-                                    arith::UIToFPOp /*op*/) {
-  assert(false && "todo: implement op printer");
+static LogicalResult printOperation(CppEmitter &emitter, arith::UIToFPOp op) {
+  return printCastOp(emitter, op.getOperation());
 }
 
 static LogicalResult printOperation(CppEmitter &emitter, arith::XOrIOp op) {
@@ -1140,10 +1151,7 @@ static LogicalResult printOperation(CppEmitter &emitter, LLVM::ExpOp op) {
     return failure();
   }
 
-  emitter.ostream() << "expf(" << emitter.getOrCreateName(op.getOperand())
-                    << ")";
-
-  return success();
+  return printExpression(emitter, {"expf(", op.getOperand(), ")"});
 }
 
 static LogicalResult printOperation(CppEmitter &emitter,
@@ -1428,7 +1436,12 @@ static LogicalResult printBufferDecl(CppEmitter &emitter,
                                      upmem::StaticAllocOp op) {
   StringRef qualifier;
   if (op.isWram()) {
-    qualifier = "__dma_aligned";
+    // A named WRAM buffer is one the host writes by its symbol (a residency
+    // slot's index, say); the kernel only reads it. Without __host the DPU
+    // compiler sees a zero-initialised global nothing stores to, folds its
+    // loads to zero and drops the symbol, and the host's copy to it fails
+    // with an undefined symbol.
+    qualifier = op.getSymName() ? "__host __dma_aligned" : "__dma_aligned";
   } else if (op.getNoinit()) {
     qualifier = "__mram_noinit __dma_aligned";
   } else {
