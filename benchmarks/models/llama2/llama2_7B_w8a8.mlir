@@ -113,7 +113,7 @@ func.func @llama2_7B_w8a8(
 		%qkv = func.call @requant_qkv(%qkv_acc) : (tensor<12288xi32>) -> tensor<12288xi8>
 		%q = tensor.extract_slice %qkv [0] [4096] [1] : tensor<12288xi8> to tensor<4096xi8>
 		%k = tensor.extract_slice %qkv [4096] [4096] [1] : tensor<12288xi8> to tensor<4096xi8>
-		%v = tensor.extract_slice %qkv [1536] [4096] [1] : tensor<12288xi8> to tensor<4096xi8>
+		%v = tensor.extract_slice %qkv [8192] [4096] [1] : tensor<12288xi8> to tensor<4096xi8>
 
 		// RoPE on q and k, then the caches take this position's k and v
 		%q2 = func.call @irope(%q, %cos, %sin) : (tensor<4096xi8>, tensor<2048xi32>, tensor<2048xi32>) -> tensor<4096xi8>
