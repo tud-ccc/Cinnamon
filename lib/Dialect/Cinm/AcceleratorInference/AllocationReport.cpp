@@ -183,6 +183,8 @@ static StringRef fateName(const GraphRecord &record, ClassFate::Kind kind) {
     return "loses_to_host";
   case ClassFate::TransferBound:
     return "transfer_bound";
+  case ClassFate::HostUnpriced:
+    return "host_unpriced";
   }
   llvm_unreachable("unknown class fate");
 }

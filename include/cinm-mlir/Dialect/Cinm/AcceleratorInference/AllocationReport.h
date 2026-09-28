@@ -40,6 +40,10 @@ struct ClassFate {
     LosesToHost,
     /// InferenceOptions::hostTransferBoundShare.
     TransferBound,
+    /// The allocation places classes, but this one's footprint cannot be
+    /// read, so there is no host cost to offer it: a device point would
+    /// be chosen against nothing.
+    HostUnpriced,
   };
   Kind kind = Solved;
   /// The warning that said so; empty when it was solved.

@@ -2,6 +2,7 @@
 // RUN: FileCheck %s --input-file=%t/infer_slow_host/allocation.json --check-prefix=SLOW
 // RUN: FileCheck %s --input-file=%t/infer_fast_host/allocation.json --check-prefix=FAST
 // RUN: FileCheck %s --input-file=%t/infer_slow_host/class_0/reference.mlir --check-prefix=REF
+// RUN: FileCheck %s --input-file=%t/infer_unpriced/allocation.json --check-prefix=UNPRICED
 
 // Where a block runs is the allocation's decision, not a screen's: every
 // class is offered a point that leaves it on the host, priced by the host's
@@ -81,4 +82,43 @@ func.func @fast_host(%A: tensor<2048x2048xi8> {cinm.static}, %x: tensor<2048xi8>
     cinm.yield %g : tensor<2048xi32>
   }
   return %r : tensor<2048xi32>
+}
+
+// -----
+
+// A block whose host cost cannot be read -- a loop in its body runs a number
+// of times only known at run time, so its footprint is unknown -- has no host
+// point to offer the allocation. Its device points would then be chosen
+// against nothing, whatever they cost; it stays on the host instead, and the
+// report says why.
+//
+// UNPRICED: "fate": "host_unpriced",
+//
+// CHECK-LABEL: func.func @unpriced
+// CHECK-NOT: upmem.alloc_dpus
+// CHECK: cinm.compute_block (
+// CHECK-NOT: upmem.alloc_dpus
+// CHECK: return
+#upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 16>
+#map = affine_map<(d0) -> (d0)>
+
+func.func @unpriced(%x: tensor<65536xi32>, %steps: index) -> tensor<65536xi32>
+    attributes {cinm.available_platforms = [#cinm.host_platform, #upmem]} {
+  %r = cinm.compute -> tensor<65536xi32> attributes {cinm.available_platforms = [#upmem]} {
+    %e = tensor.empty() : tensor<65536xi32>
+    %g = linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel"]}
+        ins(%x : tensor<65536xi32>) outs(%e : tensor<65536xi32>) {
+    ^bb0(%n: i32, %o: i32):
+      %c0 = arith.constant 0 : index
+      %c1 = arith.constant 1 : index
+      %c2 = arith.constant 2 : i32
+      %y = scf.for %k = %c0 to %steps step %c1 iter_args(%y0 = %n) -> (i32) {
+        %h = arith.divsi %y0, %c2 : i32
+        scf.yield %h : i32
+      }
+      linalg.yield %y : i32
+    } -> tensor<65536xi32>
+    cinm.yield %g : tensor<65536xi32>
+  }
+  return %r : tensor<65536xi32>
 }

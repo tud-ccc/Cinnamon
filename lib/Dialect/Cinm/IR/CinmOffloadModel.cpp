@@ -14,7 +14,9 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Matchers.h"
 
 #include <algorithm>
 
@@ -40,26 +42,80 @@ std::optional<double> bytesOf(Value v) {
   if (!shaped.hasStaticShape())
     return std::nullopt;
   Type elem = shaped.getElementType();
-  if (!elem.isIntOrFloat())
+  double elemBytes;
+  if (elem.isIndex())
+    elemBytes = 8.0;
+  else if (elem.isIntOrFloat())
+    elemBytes = llvm::divideCeil(elem.getIntOrFloatBitWidth(), 8);
+  else
     return std::nullopt;
-  return static_cast<double>(shaped.getNumElements()) *
-         llvm::divideCeil(elem.getIntOrFloatBitWidth(), 8);
+  return static_cast<double>(shaped.getNumElements()) * elemBytes;
 }
 
-/// Arithmetic ops in one iteration of a linalg body. A contraction's body is
-/// a multiply and an add, an elementwise body whatever it spells out; casts
-/// and yields are not arithmetic and are not counted.
-double arithOpsPerIteration(linalg::LinalgOp op) {
+/// The constant integer `v` holds inside `op`'s body: an arith.constant, or
+/// a body argument whose operand is a constant scalar or splat tensor (a
+/// loop bound handed in as a 0-d tensor, say).
+std::optional<int64_t> constantIn(linalg::LinalgOp op, Value v) {
+  APInt value;
+  if (matchPattern(v, m_ConstantInt(&value)))
+    return value.getSExtValue();
+  auto arg = dyn_cast<BlockArgument>(v);
+  if (!arg || arg.getOwner() != op.getBlock())
+    return std::nullopt;
+  Value outer = op.getMatchingOpOperand(arg)->get();
+  if (matchPattern(outer, m_ConstantInt(&value)))
+    return value.getSExtValue();
+  DenseIntElementsAttr dense;
+  if (matchPattern(outer, m_Constant(&dense)) && dense.isSplat())
+    return dense.getSplatValue<APInt>().getSExtValue();
+  return std::nullopt;
+}
+
+/// Arithmetic ops in `block`, counted once per execution of the block: a
+/// contraction's body is a multiply and an add, an elementwise body whatever
+/// it spells out. An scf.for counts its body once per trip, so its bounds
+/// must be constants; casts and yields are not arithmetic and are not
+/// counted. Nothing when a trip count is not known.
+std::optional<double> arithOpsIn(linalg::LinalgOp op, Block &block) {
   double n = 0.0;
-  op.getBlock()->walk([&](Operation *inner) {
+  for (Operation &inner : block) {
+    if (auto loop = dyn_cast<scf::ForOp>(inner)) {
+      std::optional<int64_t> lb = constantIn(op, loop.getLowerBound());
+      std::optional<int64_t> ub = constantIn(op, loop.getUpperBound());
+      std::optional<int64_t> step = constantIn(op, loop.getStep());
+      if (!lb || !ub || !step || *step <= 0)
+        return std::nullopt;
+      std::optional<double> body = arithOpsIn(op, *loop.getBody());
+      if (!body)
+        return std::nullopt;
+      if (*ub > *lb)
+        n += static_cast<double>(llvm::divideCeil(*ub - *lb, *step)) * *body;
+      continue;
+    }
+    for (Region &region : inner.getRegions())
+      for (Block &nested : region) {
+        std::optional<double> ops = arithOpsIn(op, nested);
+        if (!ops)
+          return std::nullopt;
+        n += *ops;
+      }
     if (isa<arith::ExtSIOp, arith::ExtUIOp, arith::ExtFOp, arith::TruncIOp,
             arith::TruncFOp, arith::SIToFPOp, arith::FPToSIOp,
             arith::IndexCastOp, arith::BitcastOp, linalg::YieldOp>(inner))
-      return;
-    if (isa<arith::ArithDialect, math::MathDialect>(inner->getDialect()))
+      continue;
+    if (isa<arith::ArithDialect, math::MathDialect>(inner.getDialect()))
       n += 1.0;
-  });
-  return std::max(1.0, n);
+  }
+  return n;
+}
+
+/// Arithmetic ops in one iteration of a linalg body (arithOpsIn), at least
+/// one.
+std::optional<double> arithOpsPerIteration(linalg::LinalgOp op) {
+  std::optional<double> n = arithOpsIn(op, *op.getBlock());
+  if (!n)
+    return std::nullopt;
+  return std::max(1.0, *n);
 }
 
 /// The element type the multiplies happen in, and the one the accumulation
@@ -81,8 +137,8 @@ std::pair<Type, Type> arithTypes(linalg::LinalgOp op) {
 }
 
 /// Fill in work and traffic for a linalg op. Fails when a shape or a loop
-/// bound is dynamic, which the caller reports as "unknown" rather than as a
-/// rejection.
+/// bound is dynamic -- the op's own or that of a loop in its body -- which
+/// the caller reports as "unknown" rather than as a rejection.
 LogicalResult measureLinalg(linalg::LinalgOp op, OffloadFootprint &f) {
   SmallVector<int64_t> ranges = op.getStaticLoopRanges();
   double iterations = 1.0;
@@ -91,7 +147,10 @@ LogicalResult measureLinalg(linalg::LinalgOp op, OffloadFootprint &f) {
       return failure();
     iterations *= static_cast<double>(r);
   }
-  f.work = iterations * arithOpsPerIteration(op);
+  std::optional<double> perIteration = arithOpsPerIteration(op);
+  if (!perIteration)
+    return failure();
+  f.work = iterations * *perIteration;
 
   for (OpOperand &operand : op->getOpOperands()) {
     std::optional<double> bytes = bytesOf(operand.get());

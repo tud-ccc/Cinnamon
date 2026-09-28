@@ -613,12 +613,27 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
         continue;
       }
     }
-    if (placementIsSolved)
-      if (std::optional<ProfilePoint> host =
-              hostPointOf(blockClass.representative()))
+    if (placementIsSolved) {
+      std::optional<ProfilePoint> host =
+          hostPointOf(blockClass.representative());
+      // A class the host cannot be priced for would enter the solve with
+      // device points only, and be offloaded whatever they cost -- a device
+      // point is only evidence against a host alternative. When a host is
+      // in scope and only the footprint is missing, the class stays there.
+      if (!host &&
+          cinm::HostPlatformAttr::getInScope(blockClass.representative()) &&
+          !cinm::measureOffloadFootprint(blockClass.representative()).known) {
+        staysOnHost(ClassFate::HostUnpriced,
+                    "the host cost of this block cannot be read (its "
+                    "footprint is unknown), so no device point can be "
+                    "weighed against it");
+        continue;
+      }
+      if (host)
         // First: points ascend in resource, and the allocation starts from
         // the cheapest one it can hold everyone on.
         results[ci].points->insert(results[ci].points->begin(), *host);
+    }
     solveIndexOfClass[ci] = static_cast<int>(profiles.size());
     // The load of a member is its cost times how often it runs: a block
     // inside a rolled loop runs once per iteration.

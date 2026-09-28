@@ -19,6 +19,7 @@ add_mlir_dialect_library(CinmIR
         MLIRArithDialect
         MLIRLinalgDialect
         MLIRMathDialect
+        MLIRSCFDialect
         MLIRAffineDialect
         CinmUtils
 )
