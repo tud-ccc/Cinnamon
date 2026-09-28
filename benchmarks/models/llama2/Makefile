@@ -13,7 +13,6 @@ OUT ?= .
 # llama2_110M_w8a8, llama_3B_w8a8 and llama2_7B_w8a8 are the integer decode
 # models of the E2E subsection.
 NAME ?= llama2_110M
-E2E_MODELS := llama2_110M_w8a8 llama_3B_w8a8 llama2_7B_w8a8
 .DEFAULT_GOAL := $(OUT)/$(NAME)_buffered.mlir
 
 # The schedule is preloaded from a sidecar so the payload never carries
@@ -33,12 +32,14 @@ endif
 # against every DPU count the block admits. The verdicts are still dumped
 # here, as what the whole-array model would have said.
 #
-# The host figure is the int8 one -- Cascade Lake's VNNI does 64 int8 MACs
-# per instruction, four times the int32 rate the default assumes -- because
-# both sides of the E2E comparison run quantized.
-ifneq (,$(filter $(NAME),$(E2E_MODELS)))
-ASSIGN_OPTS ?= host-ops-per-second=8.6e12
-endif
+# The host is the default #cinm.host_platform, whose ops_per_second is the
+# int32 rate (2.1e12 ops/s), although these models run int8, where Cascade
+# Lake's VNNI sustains ~8.6e12. The lower figure underprices the host's
+# arithmetic, which errs toward offloading -- the side the screen is meant
+# to err on. The pass writes the host it priced against onto each function,
+# so the allocation's screen and host point read the same machine; whether
+# the int8 figure is the right one is what measuring the host against tuned
+# TVM settles.
 ASSIGN_OPTS ?=
 # Every verdict the gate took, with its roofline terms, as JSON lines: the
 # input of the evaluation's roofline figure. Written for the ungated models

@@ -6,7 +6,7 @@
 
 // CHECK-LABEL: func.func @views_between
 // CHECK:         %[[E:.*]] = tensor.empty() : tensor<16xi32>
-// CHECK:         %[[M:.*]]:2 = cinm.compute -> tensor<16xi32>, tensor<8xi32> attributes {cinm.available_platforms = [#cinm.host_platform]}
+// CHECK:         %[[M:.*]]:2 = cinm.compute -> tensor<16xi32>, tensor<8xi32> attributes {cinm.available_platforms = [#cinm.host_platform<{{[^>]*}}>]}
 // CHECK-NEXT:      arith.addi
 // CHECK-NEXT:      tensor.collapse_shape
 // CHECK-NEXT:      tensor.insert_slice {{.*}} into %[[E]]
@@ -83,7 +83,7 @@ func.func @state_between(%x: tensor<8xi32>, %cache: tensor<4x8xi32>) -> (tensor<
 
 // CHECK-LABEL: func.func @in_loop
 // CHECK:         scf.for
-// CHECK:           cinm.compute -> tensor<8xi32> attributes {cinm.available_platforms = [#cinm.host_platform]}
+// CHECK:           cinm.compute -> tensor<8xi32> attributes {cinm.available_platforms = [#cinm.host_platform<{{[^>]*}}>]}
 // CHECK-NOT:       cinm.compute
 // CHECK:           scf.yield
 func.func @in_loop(%x0: tensor<8xi32>) -> tensor<8xi32> {

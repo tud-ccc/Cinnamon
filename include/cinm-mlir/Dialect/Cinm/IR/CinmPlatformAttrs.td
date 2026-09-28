@@ -21,11 +21,14 @@ def CinmHostPlatformAttr: Cinm_Attr<"HostPlatform", [
     Every parameter is optional and defaults to the bench machine, an Intel
     R2312WFTZSR holding 2x Xeon Silver 4216 (16 Cascade Lake cores each at
     2.1 GHz) alongside 20 PIM modules; `#cinm.host_platform` alone is that
-    machine. Only the parameters that differ from it are printed:
+    machine, and parameters that differ from it are given by key:
 
     ```mlir
     #cinm.host_platform<ops_per_second = 8.6e12>
     ```
+
+    Every parameter is printed, defaults included, so that printed IR states
+    the machine it is priced against.
 
     The host description a piece of IR is priced against is the nearest one
     in a `cinm.available_platforms` list of the op or an enclosing op

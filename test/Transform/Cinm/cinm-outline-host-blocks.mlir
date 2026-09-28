@@ -11,7 +11,7 @@
 // CHECK-LABEL: func.func @bridge
 // CHECK:         %[[V:.*]] = cinm.compute -> tensor<8xi32> attributes {cinm.available_platforms = [#upmem]}
 // CHECK:           cinm.op.gemv
-// CHECK:         %[[H:.*]] = cinm.compute -> tensor<8xi32> attributes {cinm.available_platforms = [#cinm.host_platform]}
+// CHECK:         %[[H:.*]] = cinm.compute -> tensor<8xi32> attributes {cinm.available_platforms = [#cinm.host_platform<{{[^>]*}}>]}
 // CHECK-NEXT:      %[[R:.*]] = func.call @bridge_host0(%[[V]]) : (tensor<8xi32>) -> tensor<8xi32>
 // CHECK-NEXT:      cinm.yield %[[R]]
 // CHECK:         cinm.compute -> tensor<8xi32> attributes {cinm.available_platforms = [#upmem]}
@@ -71,7 +71,7 @@ func.func @bridge(%a: tensor<8x8xi32>, %x: tensor<8xi32>) -> tensor<8xi32> {
 
 // CHECK-LABEL: func.func @in_loop
 // CHECK:         scf.for %[[I:[a-z0-9]+]] = {{.*}} iter_args(%[[X:[a-z0-9]+]] = {{.*}})
-// CHECK:           cinm.compute -> tensor<4xi32> attributes {cinm.available_platforms = [#cinm.host_platform]}
+// CHECK:           cinm.compute -> tensor<4xi32> attributes {cinm.available_platforms = [#cinm.host_platform<{{[^>]*}}>]}
 // CHECK-NEXT:        func.call @in_loop_host0(%[[I]], %[[X]]) : (index, tensor<4xi32>) -> tensor<4xi32>
 // CHECK:       module @outlined
 // CHECK:         func.func @in_loop_host0(%{{.*}}: index, %{{.*}}: tensor<4xi32>) -> tensor<4xi32>
@@ -97,7 +97,7 @@ func.func @in_loop(%x0: tensor<4xi32>) -> tensor<4xi32> {
 // body calls is copied into the outlined module (along with its own callee).
 
 // CHECK-LABEL: func.func @isolated
-// CHECK:         cinm.compute_block (%[[B:[a-z0-9]+]] = %{{[a-z0-9]+}} : tensor<4xi32>) -> tensor<4xi32> attributes {cinm.available_platforms = [#cinm.host_platform]}
+// CHECK:         cinm.compute_block (%[[B:[a-z0-9]+]] = %{{[a-z0-9]+}} : tensor<4xi32>) -> tensor<4xi32> attributes {cinm.available_platforms = [#cinm.host_platform<{{[^>]*}}>]}
 // CHECK-NEXT:      %[[R:.*]] = func.call @isolated_host0(%[[B]])
 // CHECK-NEXT:      cinm.yield %[[R]]
 // CHECK:       module @outlined

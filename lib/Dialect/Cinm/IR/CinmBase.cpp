@@ -205,7 +205,9 @@ template <typename Fn> static void forEachHostField(HostModel &model, Fn fn) {
 }
 
 /// `#cinm.host_platform` is the default machine; any parameter that differs
-/// is given as `<key = value, ...>`, and only those are printed.
+/// is given as `<key = value, ...>`. Every parameter is printed, so that
+/// printed IR states the machine it is priced against rather than leaving it
+/// to whichever defaults the reader was built with.
 Attribute HostPlatformAttr::parse(::mlir::AsmParser &parser, ::mlir::Type) {
   HostModel model;
   if (succeeded(parser.parseOptionalLess())) {
@@ -251,15 +253,12 @@ Attribute HostPlatformAttr::parse(::mlir::AsmParser &parser, ::mlir::Type) {
 void HostPlatformAttr::print(::mlir::AsmPrinter &printer) const {
   HostModel model = getModel();
   bool first = true;
-  forEachHostField(model, [&](llvm::StringRef key, double &value, double def) {
-    if (value == def)
-      return;
+  forEachHostField(model, [&](llvm::StringRef key, double &value, double) {
     printer << (first ? "<" : ", ") << key << " = ";
     printer.printFloat(llvm::APFloat(value));
     first = false;
   });
-  if (!first)
-    printer << ">";
+  printer << ">";
 }
 
 HostPlatformAttr HostPlatformAttr::getInScope(Operation *op) {

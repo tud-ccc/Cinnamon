@@ -91,6 +91,11 @@ ReferenceModule buildReferenceModule(cinm::ComputeBlockOp computeOp) {
           ctx, llvm::SmallVector<mlir::Type>(computeOp->getOperandTypes()),
           llvm::SmallVector<mlir::Type>(computeOp->getResultTypes())));
   module->getBody()->push_back(hostFunc);
+  // The host the original is priced against, which the enclosing scopes the
+  // clone leaves behind would otherwise have supplied: the cost model prices
+  // the host code around the block against it.
+  hostFunc->setAttr(CinmDialect::AVAILABLE_PLATFORMS_NAME,
+                    b.getArrayAttr({HostPlatformAttr::getInScope(computeOp)}));
   mlir::Block *entry = hostFunc.addEntryBlock();
   b.setInsertionPointToStart(entry);
 
