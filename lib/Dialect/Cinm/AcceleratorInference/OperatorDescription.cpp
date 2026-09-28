@@ -310,6 +310,20 @@ private:
       for (NamedAttribute attr : inner.getAttrs()) {
         if (isDefaultFlags(attr.getValue()))
           continue;
+        // A comparison's predicate by name: it is stored as the enum's
+        // integer, which says nothing without the enum beside it.
+        if (auto cmpi = dyn_cast<arith::CmpIOp>(inner);
+            cmpi && attr.getName() == cmpi.getPredicateAttrName()) {
+          attrs[attr.getName().getValue()] =
+              arith::stringifyCmpIPredicate(cmpi.getPredicate()).str();
+          continue;
+        }
+        if (auto cmpf = dyn_cast<arith::CmpFOp>(inner);
+            cmpf && attr.getName() == cmpf.getPredicateAttrName()) {
+          attrs[attr.getName().getValue()] =
+              arith::stringifyCmpFPredicate(cmpf.getPredicate()).str();
+          continue;
+        }
         if (std::optional<json::Value> number = numberOf(attr.getValue()))
           attrs[attr.getName().getValue()] = std::move(*number);
         else
