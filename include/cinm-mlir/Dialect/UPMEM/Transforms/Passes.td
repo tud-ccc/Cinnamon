@@ -78,6 +78,30 @@ def UpmemCoalesceLocalTransfersPass: Pass<"upmem-coalesce-local-transfers"> {
   ];
 }
 
+def UpmemAlignLocalTransfersPass: Pass<"upmem-align-local-transfers"> {
+  let summary = "Move sub-granule MRAM data through the aligned granule holding it";
+  let description = [{
+    An MRAM DMA moves whole 8-byte granules between granule-aligned
+    addresses. A `upmem.local_transfer` whose MRAM side is shorter than a
+    granule, or starts inside one, and whose data lies within a single
+    granule -- one element of a small tile, staged per loop trip -- is
+    rewritten to move that granule through a granule-sized WRAM buffer: a
+    read takes the granule and copies the data out of it; a write reads the
+    granule, copies the data in and writes it back.
+
+    A write rewrites the bytes around the data too, so it is only rewritten
+    when no other tasklet writes them: the program has one tasklet, or the
+    buffer is indexed by the tasklet and each tasklet's slice is whole
+    granules. Every other sub-granule transfer is left as it is, for the C
+    translator to reject.
+  }];
+  let dependentDialects = [
+    "::mlir::upmem::UPMEMDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::memref::MemRefDialect"
+  ];
+}
+
 def UpmemTileMRAMBuffersPass: Pass<"upmem-tile-mram-buffers"> {
   let summary = "Stage a launch body's non-leaf buffers down to the leaf memory level";
   let description = [{

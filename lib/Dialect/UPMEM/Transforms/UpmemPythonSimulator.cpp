@@ -215,6 +215,17 @@ struct DpuTranslator {
     return;
   }
 
+  /// A collapsed buffer is the same bytes, so subviews of it address the
+  /// buffer it collapses.
+  void translateCollapseShape(memref::CollapseShapeOp op) {
+    if (auto srcIt = buf_map.find(op.getSrc()); srcIt != buf_map.end()) {
+      buf_map[op.getResult()] = srcIt->second;
+      return;
+    }
+    if (auto subv = sv_map.find(op.getSrc()); subv != sv_map.end())
+      sv_map[op.getResult()] = subv->second;
+  }
+
   void translateReinterpretCast(memref::ReinterpretCastOp op) {
     bool iv_indexed = false;
     for (OpFoldResult off : op.getMixedOffsets())
@@ -512,6 +523,8 @@ struct DpuTranslator {
       translateSubView(o);
     else if (auto o = dyn_cast<memref::ExpandShapeOp>(&op))
       translateExpandShape(o);
+    else if (auto o = dyn_cast<memref::CollapseShapeOp>(&op))
+      translateCollapseShape(o);
     else if (auto o = dyn_cast<memref::ReinterpretCastOp>(&op))
       translateReinterpretCast(o);
     else if (auto o = dyn_cast<LocalTransferOp>(&op))

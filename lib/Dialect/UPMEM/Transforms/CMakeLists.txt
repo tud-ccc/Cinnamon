@@ -2,6 +2,7 @@ add_mlir_dialect_library(UPMEMTransforms
     DedupKernels.cpp
     HoistLoadPrograms.cpp
     UpmemLegalizeForTranslation.cpp
+    UpmemAlignLocalTransfers.cpp
     UpmemAnnotateCosts.cpp
     UpmemCheckOccupancy.cpp
     UpmemCoalesceLocalTransfers.cpp

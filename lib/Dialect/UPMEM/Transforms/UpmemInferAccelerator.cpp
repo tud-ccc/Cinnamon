@@ -751,6 +751,10 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(memref::createFoldMemRefAliasOpsPass());
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
+    // After the views are composed, since it reads a transfer's offset off one
+    // subview; with nothing after it that would fold the aligned offset's
+    // arithmetic into a form the translator cannot prove aligned.
+    pm->addPass(createUpmemAlignLocalTransfersPass());
     // Last, deliberately: what a configuration occupies is a property of the
     // program every pass above has finished optimizing, not of the
     // configuration itself. A trial that does not fit fails here
