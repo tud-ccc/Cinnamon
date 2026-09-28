@@ -108,15 +108,39 @@ typedef struct sg_xfer_context {
   size_t num_blocks;
   size_t block_num_elements;
   size_t (*base_offset)(size_t, size_t);
+  /// Padded slots: every blocks_per_slot blocks are followed on the DPU by
+  /// slot_padding_bytes that no host block owns. 0 when the blocks are
+  /// packed.
+  size_t blocks_per_slot;
+  size_t slot_padding_bytes;
 } sg_xfer_context;
+
+/// Where a slot's padding goes to and comes from: the DPU side of the
+/// transfer is one contiguous run, so the padding needs a host address too.
+/// What a gather leaves here is never read; a scatter sends its zeros.
+static uint8_t sg_padding_scratch[64];
 
 static bool get_sg_xfer_block(struct sg_block_info *out, uint32_t dpu_index,
                               uint32_t block_index, void *args) {
   const sg_xfer_context *ctx = (const sg_xfer_context *)args;
-  if (block_index >= ctx->num_blocks)
+  size_t block = block_index;
+  if (ctx->slot_padding_bytes) {
+    // Entry i of a slot is its i-th block, and the last entry its padding.
+    size_t per_slot = ctx->blocks_per_slot + 1;
+    size_t slot = block_index / per_slot, within = block_index % per_slot;
+    if (slot >= ctx->num_blocks / ctx->blocks_per_slot)
+      return false;
+    if (within == ctx->blocks_per_slot) {
+      out->addr = sg_padding_scratch;
+      out->length = ctx->slot_padding_bytes;
+      return true;
+    }
+    block = slot * ctx->blocks_per_slot + within;
+  } else if (block_index >= ctx->num_blocks) {
     return false;
+  }
 
-  out->addr = ctx->host_buffer + ctx->base_offset(dpu_index, block_index);
+  out->addr = ctx->host_buffer + ctx->base_offset(dpu_index, block);
   out->length = ctx->block_num_elements * ctx->element_size;
   return true;
 }
@@ -127,7 +151,8 @@ static void do_sg_xfer(dpu_xfer_t xfer_type, struct dpu_set_t *dpu_set,
                        void *host_buffer, size_t element_size,
                        size_t num_blocks, size_t block_num_elements,
                        const char *buffer_id, size_t symbol_offset,
-                       size_t (*base_offset)(size_t, size_t), const char *tag) {
+                       size_t (*base_offset)(size_t, size_t), const char *tag,
+                       size_t blocks_per_slot, size_t slot_padding_bytes) {
 #ifdef UPMEM_RT_STATS
   uint64_t t0 = upmemrt_now_ns();
 #endif
@@ -137,11 +162,18 @@ static void do_sg_xfer(dpu_xfer_t xfer_type, struct dpu_set_t *dpu_set,
       .num_blocks = num_blocks,
       .block_num_elements = block_num_elements,
       .base_offset = base_offset,
+      .blocks_per_slot = blocks_per_slot,
+      .slot_padding_bytes = slot_padding_bytes,
   };
+  assert(slot_padding_bytes <= sizeof(sg_padding_scratch) &&
+         (!slot_padding_bytes ||
+          (blocks_per_slot > 0 && num_blocks % blocks_per_slot == 0)));
   get_block_t get_block_info = {
       .f = get_sg_xfer_block, .args = &ctx, .args_size = sizeof(ctx)};
 
   size_t length = num_blocks * block_num_elements * element_size;
+  if (slot_padding_bytes)
+    length += num_blocks / blocks_per_slot * slot_padding_bytes;
   DPU_ASSERT(dpu_push_sg_xfer(*dpu_set, xfer_type, buffer_id, symbol_offset,
                               length, &get_block_info, DPU_SG_XFER_DEFAULT));
 #ifdef UPMEM_RT_STATS
@@ -168,7 +200,8 @@ void upmemrt_dpu_scatter_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
                            num_blocks * block_num_elements * element_size))
     return;
   do_sg_xfer(DPU_XFER_TO_DPU, dpu_set, host_buffer, element_size, num_blocks,
-             block_num_elements, buffer_id, symbol_offset, base_offset, tag);
+             block_num_elements, buffer_id, symbol_offset, base_offset, tag, 0,
+             0);
 }
 
 void upmemrt_dpu_gather_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
@@ -178,7 +211,29 @@ void upmemrt_dpu_gather_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
                                size_t (*base_offset)(size_t, size_t),
                                const char *tag) {
   do_sg_xfer(DPU_XFER_FROM_DPU, dpu_set, host_buffer, element_size, num_blocks,
-             block_num_elements, buffer_id, symbol_offset, base_offset, tag);
+             block_num_elements, buffer_id, symbol_offset, base_offset, tag, 0,
+             0);
+}
+
+void upmemrt_dpu_scatter_blocks_padded(
+    struct dpu_set_t *dpu_set, void *host_buffer, size_t element_size,
+    size_t num_blocks, size_t block_num_elements, const char *buffer_id,
+    size_t symbol_offset, size_t (*base_offset)(size_t, size_t),
+    const char *tag, size_t blocks_per_slot, size_t slot_padding_bytes) {
+  // Not a candidate for residency: a padded buffer is a per-tasklet output.
+  do_sg_xfer(DPU_XFER_TO_DPU, dpu_set, host_buffer, element_size, num_blocks,
+             block_num_elements, buffer_id, symbol_offset, base_offset, tag,
+             blocks_per_slot, slot_padding_bytes);
+}
+
+void upmemrt_dpu_gather_blocks_padded(
+    struct dpu_set_t *dpu_set, void *host_buffer, size_t element_size,
+    size_t num_blocks, size_t block_num_elements, const char *buffer_id,
+    size_t symbol_offset, size_t (*base_offset)(size_t, size_t),
+    const char *tag, size_t blocks_per_slot, size_t slot_padding_bytes) {
+  do_sg_xfer(DPU_XFER_FROM_DPU, dpu_set, host_buffer, element_size, num_blocks,
+             block_num_elements, buffer_id, symbol_offset, base_offset, tag,
+             blocks_per_slot, slot_padding_bytes);
 }
 
 void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,

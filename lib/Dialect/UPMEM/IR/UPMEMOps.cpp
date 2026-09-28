@@ -281,6 +281,17 @@ template <class Op> static LogicalResult verifyBlockTransfer(Op op) {
                           "start index in the host buffer");
   if (op.getNumBlocksPerDpu() < 1)
     return op.emitOpError("must transfer at least one block per DPU");
+  if (op.getSlotPadding()) {
+    if (*op.getSlotPadding() < 0)
+      return op.emitOpError("slot padding cannot be negative");
+    if (!op.getBlocksPerSlot())
+      return op.emitOpError("slot padding needs the number of blocks per slot");
+  }
+  if (std::optional<int64_t> perSlot = op.getBlocksPerSlot())
+    if (*perSlot < 1 || op.getNumBlocksPerDpu() % *perSlot != 0)
+      return op.emitOpError("blocks per slot (")
+             << *perSlot << ") must divide the blocks per DPU ("
+             << op.getNumBlocksPerDpu() << ")";
 
   SmallVector<int64_t> box = arrayBox(op.getHierarchy().getType());
   box.push_back(op.getNumBlocksPerDpu());

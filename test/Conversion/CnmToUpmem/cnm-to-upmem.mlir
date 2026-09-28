@@ -2,10 +2,16 @@
 
 // CHECK-DAG: #[[MAP:[^ ]*]] = affine_map<(d0) -> (d0, 0)>
 
+// The output @buf is one i32 per tasklet and there is one tasklet, so its
+// slot is shorter than a DMA granule and cannot be pooled either: it is padded
+// to one, 2 x i32 in WRAM and in MRAM alike, and the host transfers skip the
+// padding.
+//
 // The zero seed of @buf is one repeated constant, so it reaches every DPU as
-// a broadcast of a tile the size of the target MRAM buffer rather than as a
-// per-DPU slice of the 16x1 host constant, which is left unused.
-// CHECK: memref.global "private" constant @[[SEEDTILE:[^ ]*]] : memref<1xi32> = dense<0>
+// a broadcast of a tile the size of the target MRAM buffer -- padding
+// included -- rather than as a per-DPU slice of the 16x1 host constant, which
+// is left unused.
+// CHECK: memref.global "private" constant @[[SEEDTILE:[^ ]*]] : memref<1x2xi32> = dense<0>
 // CHECK-LABEL: func.func @main
 // CHECK: %[[ALLOC:.*]] = memref.alloc() {{.*}} : memref<64x64xi32>
 // CHECK: %[[DPU:.*]] = upmem.alloc_dpus : !upmem.hierarchy<16x1>
@@ -22,23 +28,24 @@
 // The scatter map for this operand does not depend on the processing element,
 // so --upmem-specialize-transfers narrows it to a broadcast.
 // CHECK: upmem.broadcast %[[ALLOC_T]] onto @buf_1 of %[[DPU]] {{{.*}}} : memref<1x64xi32> onto !upmem.hierarchy<16x1>
-// CHECK: %[[SEED:.*]] = memref.get_global @[[SEEDTILE]] : memref<1xi32>
-// CHECK: upmem.broadcast %[[SEED]] onto @buf of %[[DPU]] {{{.*}}} : memref<1xi32> onto !upmem.hierarchy<16x1>
+// CHECK: %[[SEED:.*]] = memref.get_global @[[SEEDTILE]] : memref<1x2xi32>
+// CHECK: upmem.broadcast %[[SEED]] onto @buf of %[[DPU]] {{{.*}}} : memref<1x2xi32> onto !upmem.hierarchy<16x1>
 // CHECK: upmem.wait_for %[[DPU]] : !upmem.hierarchy<16x1>
 // CHECK: %[[SV_OUT:.*]] = memref.subview %[[ALLOC]][%[[I]], %[[J]]] [16, 1] [1, 1] : memref<64x64xi32> to memref<16x1xi32, {{.*}}>
-// CHECK: upmem.gather_from_array %[[SV_OUT]][1 elts, #[[MAP]]] from @buf of %[[DPU]] {upmem.timing_tag = "dyn:{{[0-9]+}}"} : memref<16x1xi32, {{.*}}> from !upmem.hierarchy<16x1>
+// CHECK: upmem.gather_blocks %[[SV_OUT]][1 elts, {{.*}}, 1 blocks] from @buf of %[[DPU]] {blocksPerSlot = 1 : i64, slotPadding = 1 : i64, upmem.timing_tag = "dyn:{{[0-9]+}}"} : memref<16x1xi32, {{.*}}> from !upmem.hierarchy<16x1>
 // CHECK: upmem.free_dpus %[[DPU]] : !upmem.hierarchy<16x1>
 // CHECK: module @dpu_kernels
 // CHECK: upmem.dpu_program @program() tasklets(1) {
-// CHECK: %[[WRAM_C:.*]] = memref.alloca() : memref<i32, #upmem.wram>
-// CHECK: %[[MRAM_C:.*]] = upmem.static_alloc @buf(mram) noinit : memref<1xi32, #upmem.mram>
+// CHECK: %[[WRAM_C:.*]] = memref.alloca() : memref<2xi32, #upmem.wram>
+// CHECK: %[[MRAM_C:.*]] = upmem.static_alloc @buf(mram) noinit : memref<1x2xi32, #upmem.mram>
 // CHECK: %[[WRAM_B:.*]] = upmem.static_alloc @buf_0(wram) noinit : memref<64xi32, #upmem.wram>
 // CHECK: %[[MRAM_B:.*]] = upmem.static_alloc @buf_1(mram) noinit : memref<64xi32, #upmem.mram>
 // CHECK: %[[WRAM_A:.*]] = upmem.static_alloc @buf_2(wram) noinit : memref<64xi32, #upmem.wram>
 // CHECK: %[[MRAM_A:.*]] = upmem.static_alloc @buf_3(mram) noinit : memref<64xi32, #upmem.mram>
+// CHECK: %[[VIEW_C:.*]] = memref.subview %[[WRAM_C]][0] [1] [1] : memref<2xi32, #upmem.wram> to memref<i32, strided<[]>, #upmem.wram>
 // CHECK: %[[T0:.*]] = upmem.tasklet_dim()
-// CHECK: %[[SV0:.*]] = memref.subview %[[MRAM_C]][%[[T0]]] [1] [1] : memref<1xi32, #upmem.mram> to memref<i32, {{.*}}, #upmem.mram>
-// CHECK: upmem.local_transfer %[[SV0]] into %[[WRAM_C]] : memref<i32, {{.*}}, #upmem.mram> to memref<i32, #upmem.wram>
+// CHECK: %[[SV0:.*]] = memref.subview %[[MRAM_C]][%[[T0]], 0] [1, 2] [1, 1] : memref<1x2xi32, #upmem.mram> to memref<2xi32, {{.*}}, #upmem.mram>
+// CHECK: upmem.local_transfer %[[SV0]] into %[[WRAM_C]] : memref<2xi32, {{.*}}, #upmem.mram> to memref<2xi32, #upmem.wram>
 // CHECK: %[[T1:.*]] = upmem.tasklet_dim()
 // CHECK: arith.cmpi eq, %[[T1]],
 // CHECK: scf.if
@@ -49,10 +56,10 @@
 // CHECK: scf.if
 // CHECK: upmem.local_transfer %[[MRAM_A]] into %[[WRAM_A]] : memref<64xi32, #upmem.mram> to memref<64xi32, #upmem.wram>
 // CHECK: upmem.barrier()
-// CHECK: linalg.contract indexing_maps = [{{.*}}] ins(%[[WRAM_A]], %[[WRAM_B]] : memref<64xi32, #upmem.wram>, memref<64xi32, #upmem.wram>) outs(%[[WRAM_C]] : memref<i32, #upmem.wram>)
+// CHECK: linalg.contract indexing_maps = [{{.*}}] ins(%[[WRAM_A]], %[[WRAM_B]] : memref<64xi32, #upmem.wram>, memref<64xi32, #upmem.wram>) outs(%[[VIEW_C]] : memref<i32, strided<[]>, #upmem.wram>)
 // CHECK: %[[T3:.*]] = upmem.tasklet_dim()
-// CHECK: %[[SV3:.*]] = memref.subview %[[MRAM_C]][%[[T3]]] [1] [1] : memref<1xi32, #upmem.mram> to memref<i32, {{.*}}, #upmem.mram>
-// CHECK: upmem.local_transfer %[[WRAM_C]] into %[[SV3]] : memref<i32, #upmem.wram> to memref<i32, {{.*}}, #upmem.mram>
+// CHECK: %[[SV3:.*]] = memref.subview %[[MRAM_C]][%[[T3]], 0] [1, 2] [1, 1] : memref<1x2xi32, #upmem.mram> to memref<2xi32, {{.*}}, #upmem.mram>
+// CHECK: upmem.local_transfer %[[WRAM_C]] into %[[SV3]] : memref<2xi32, #upmem.wram> to memref<2xi32, {{.*}}, #upmem.mram>
 
 #map = affine_map<(d0, d1, i) -> (d0, i)>
 #map1 = affine_map<(d0, d1, i) -> (0, i)>

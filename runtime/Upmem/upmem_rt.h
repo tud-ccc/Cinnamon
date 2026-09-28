@@ -81,6 +81,24 @@ void upmemrt_dpu_gather_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
                                size_t (*base_offset)(size_t, size_t),
                                const char *tag);
 
+/// The same transfers over padded slots: on the DPU, every `blocks_per_slot`
+/// consecutive blocks are followed by `slot_padding_bytes` that belong to no
+/// host block, so block `b` sits at MRAM byte offset
+/// `b * block_bytes + (b / blocks_per_slot) * slot_padding_bytes`. That is
+/// the layout of an output whose per-tasklet tile is shorter than a DMA
+/// granule, padded so that each tasklet can write its slot back on its own.
+void upmemrt_dpu_scatter_blocks_padded(
+    struct dpu_set_t *dpu_set, void *host_buffer, size_t element_size,
+    size_t num_blocks, size_t block_num_elements, const char *buffer_id,
+    size_t symbol_offset, size_t (*base_offset)(size_t, size_t),
+    const char *tag, size_t blocks_per_slot, size_t slot_padding_bytes);
+
+void upmemrt_dpu_gather_blocks_padded(
+    struct dpu_set_t *dpu_set, void *host_buffer, size_t element_size,
+    size_t num_blocks, size_t block_num_elements, const char *buffer_id,
+    size_t symbol_offset, size_t (*base_offset)(size_t, size_t),
+    const char *tag, size_t blocks_per_slot, size_t slot_padding_bytes);
+
 /// Broadcast a buffer to the MRAM of every DPU in the set, identically.
 ///
 /// @param dpu_set     Pointer to DPU structure

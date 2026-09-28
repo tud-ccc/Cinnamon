@@ -252,15 +252,19 @@ void upmemrt_dpu_scatter_blocks(struct dpu_set_t *dpu_set,
 */
 static FailureOr<LLVM::LLVMFuncOp>
 getBlockTransferFunc(OpBuilder &rewriter, ModuleOp moduleOp,
-                     LLVMTypeConverter const *tyConverter, StringRef name) {
+                     LLVMTypeConverter const *tyConverter, StringRef name,
+                     bool padded) {
   auto ctx = moduleOp->getContext();
   auto ptrTy = untypedPtrType(ctx);
   auto sizeTy = tyConverter->getIndexType();
   auto funPtrTy = functionPtrTy(sizeTy, {sizeTy, sizeTy});
-  return LLVM::lookupOrCreateFn(
-      rewriter, moduleOp, name,
-      {ptrTy, ptrTy, sizeTy, sizeTy, sizeTy, ptrTy, sizeTy, funPtrTy, ptrTy},
-      LLVM::LLVMVoidType::get(ctx));
+  SmallVector<Type> params{ptrTy, ptrTy,  sizeTy,   sizeTy, sizeTy,
+                           ptrTy, sizeTy, funPtrTy, ptrTy};
+  // The padded forms take the slot's block count and its padding in bytes.
+  if (padded)
+    params.append({sizeTy, sizeTy});
+  return LLVM::lookupOrCreateFn(rewriter, moduleOp, name, params,
+                                LLVM::LLVMVoidType::get(ctx));
 }
 
 /*
@@ -879,9 +883,15 @@ static LogicalResult lowerBlockTransfer(Op op, typename Op::Adaptor adaptor,
   if (failed(affineMapFunOpt))
     return emitError(loc, "Cannot emit affine map");
 
-  auto runtimeFun = getBlockTransferFunc(
-      rewriter, moduleOp, tyConverter,
-      isGather ? "upmemrt_dpu_gather_blocks" : "upmemrt_dpu_scatter_blocks");
+  // Padded slots go through their own entry points, so a binary built
+  // before them keeps calling the functions it was linked against.
+  const bool padded = op.getSlotPaddingElements() > 0;
+  std::string runtimeName =
+      isGather ? "upmemrt_dpu_gather_blocks" : "upmemrt_dpu_scatter_blocks";
+  if (padded)
+    runtimeName += "_padded";
+  auto runtimeFun = getBlockTransferFunc(rewriter, moduleOp, tyConverter,
+                                         runtimeName, padded);
   if (llvm::failed(runtimeFun))
     return failure();
   auto funPtrOp = LLVM::AddressOfOp::create(rewriter0, loc, *affineMapFunOpt);
@@ -915,13 +925,21 @@ static LogicalResult lowerBlockTransfer(Op op, typename Op::Adaptor adaptor,
       symbolOffsetOf(op, adaptor, rewriter, tyConverter);
   if (failed(symbolOffset))
     return failure();
-  LLVM::CallOp::create(
-      rewriter0, loc, *runtimeFun,
-      ValueRange{adaptor.getHierarchy(), bareHostBuf,
-                 reifyAsIndex(rewriter, tyConverter, elementSize),
-                 reifyAsIndex(rewriter, tyConverter, numBlocksPerDpu),
-                 reifyAsIndex(rewriter, tyConverter, blockNumElements),
-                 bufferId, *symbolOffset, funPtrOp.getRes(), tag});
+  SmallVector<Value> args{adaptor.getHierarchy(),
+                          bareHostBuf,
+                          reifyAsIndex(rewriter, tyConverter, elementSize),
+                          reifyAsIndex(rewriter, tyConverter, numBlocksPerDpu),
+                          reifyAsIndex(rewriter, tyConverter, blockNumElements),
+                          bufferId,
+                          *symbolOffset,
+                          funPtrOp.getRes(),
+                          tag};
+  if (padded) {
+    args.push_back(reifyAsIndex(rewriter, tyConverter, *op.getBlocksPerSlot()));
+    args.push_back(reifyAsIndex(rewriter, tyConverter,
+                                op.getSlotPaddingElements() * elementSize));
+  }
+  LLVM::CallOp::create(rewriter0, loc, *runtimeFun, args);
 
   rewriter0.eraseOp(op);
   return success();
@@ -1209,7 +1227,14 @@ struct ConvertUPMEMToLLVMPass
         maxBlocks = std::max(
             maxBlocks, llvm::TypeSwitch<Operation *, uint64_t>(user)
                            .Case<upmem::ScatterBlocksOp, upmem::GatherBlocksOp>(
-                               [](auto op) { return op.getNumBlocksPerDpu(); })
+                               [](auto op) -> uint64_t {
+                                 // A padded transfer's list has one more
+                                 // entry per slot: its padding.
+                                 uint64_t blocks = op.getNumBlocksPerDpu();
+                                 if (op.getSlotPaddingElements() > 0)
+                                   blocks += blocks / *op.getBlocksPerSlot();
+                                 return blocks;
+                               })
                            .Default(uint64_t{0}));
       if (maxBlocks > 0)
         allocOp->setAttr(

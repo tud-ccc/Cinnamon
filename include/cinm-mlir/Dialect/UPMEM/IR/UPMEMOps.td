@@ -355,6 +355,13 @@ class BlockTransferLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
     extent of the `block` dimension. This is independent of the number of
     tasklets declared by `hierarchy`: blocks are units of transfer, and a
     single tasklet's data may well arrive as several of them.
+
+    On the DPU side the blocks are packed back to back, unless `slotPadding`
+    is set: then every `blocksPerSlot` consecutive blocks form a slot, which
+    is followed in MRAM by `slotPadding` elements the transfer skips. That is
+    the layout of an output whose per-tasklet tile is shorter than a DMA
+    granule: each tasklet's slot is padded to a whole granule so that it can
+    write it back on its own.
   }];
 
   let arguments = (ins Arg<AnyMemRef, "", [effect]>:$hostBuffer,
@@ -363,7 +370,9 @@ class BlockTransferLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
                   AffineMapAttr:$scatterMap,
                   DeviceHierarchyType:$hierarchy,
                   I64Attr:$numBlocksPerDpu,
-                  Optional<Index>:$slot);
+                  Optional<Index>:$slot,
+                  OptionalAttr<I64Attr>:$blocksPerSlot,
+                  OptionalAttr<I64Attr>:$slotPadding);
 
   let results = (outs);
 
@@ -374,6 +383,23 @@ class BlockTransferLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
 
     int64_t getDpuBufferSizeInBytes() {
       return getDpuBufferSizeInBits() / 8;
+    }
+
+    /// The padding elements that follow each slot on the DPU side, 0 when
+    /// the blocks are packed.
+    int64_t getSlotPaddingElements() {
+      return getSlotPadding().value_or(0);
+    }
+
+    /// Elements the transfer spans in one DPU's MRAM: the blocks, and the
+    /// padding after each slot of them.
+    int64_t getDpuSpanInElements() {
+      int64_t blocks = getNumBlocksPerDpu();
+      int64_t span = blocks * getTransferCount();
+      if (getSlotPaddingElements() > 0)
+        span += blocks / getBlocksPerSlot().value_or(1) *
+                getSlotPaddingElements();
+      return span;
     }
 
     /// Return the DpuProgramOp loaded on this hierarchy, or null.

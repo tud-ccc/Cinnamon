@@ -143,10 +143,23 @@ static void labelTransfer(Operation *op, Value hostValue, unsigned id) {
               StringAttr::get(op->getContext(), tag));
 }
 
+/// A tasklet's slot is `blocksPerSlot` blocks, followed on the DPU by
+/// `slotPadding` elements the transfer skips (see paddedWriteback in the
+/// launch conversion). Nothing is recorded for packed slots.
+template <class Op>
+static void setSlotPadding(Op op, int64_t blocksPerSlot, int64_t slotPadding) {
+  if (slotPadding <= 0)
+    return;
+  Builder b(op.getContext());
+  op.setBlocksPerSlotAttr(b.getI64IntegerAttr(blocksPerSlot));
+  op.setSlotPaddingAttr(b.getI64IntegerAttr(slotPadding));
+}
+
 static LogicalResult
 convertCnmGatherToUpmem(RewriterBase &rewriter, cnm::GatherOp op,
                         TypedValue<upmem::DeviceHierarchyType> hierarchy,
-                        StringAttr refToBuffer, unsigned id) {
+                        StringAttr refToBuffer, unsigned id,
+                        int64_t slotPadding) {
 
   rewriter.setInsertionPoint(op);
   Value outputBuf = op.getOutputBuf();
@@ -174,7 +187,9 @@ convertCnmGatherToUpmem(RewriterBase &rewriter, cnm::GatherOp op,
       keepTaskletDimAffineMapCnmToUpmem(map, bufferTy), hierarchy,
       blocksPerDpu(map, bufferTy, numTasklets,
                    /*sharedAcrossTasklets=*/false),
-      /*slot=*/Value());
+      /*slot=*/Value(), /*blocksPerSlot=*/IntegerAttr(),
+      /*slotPadding=*/IntegerAttr());
+  setSlotPadding(gather, perLeaf, slotPadding);
   labelTransfer(gather, op.getHostValue(), id);
 
   if (!isBufferized) {
@@ -189,11 +204,10 @@ convertCnmGatherToUpmem(RewriterBase &rewriter, cnm::GatherOp op,
 
 /// `slot` is the member's slot of a slotted resident buffer (see
 /// residencySlotOf), null when the buffer is not slotted.
-static LogicalResult
-convertCnmScatterToUpmem(RewriterBase &rewriter, cnm::ScatterOp op,
-                         bool sharedAcrossTasklets,
-                         TypedValue<upmem::DeviceHierarchyType> hierarchy,
-                         StringAttr refToBuffer, unsigned id, Value slot) {
+static LogicalResult convertCnmScatterToUpmem(
+    RewriterBase &rewriter, cnm::ScatterOp op, bool sharedAcrossTasklets,
+    TypedValue<upmem::DeviceHierarchyType> hierarchy, StringAttr refToBuffer,
+    unsigned id, Value slot, int64_t slotPadding) {
 
   rewriter.setInsertionPoint(op);
   const Value tensor = op.getInput();
@@ -216,7 +230,9 @@ convertCnmScatterToUpmem(RewriterBase &rewriter, cnm::ScatterOp op,
       rewriter, op->getLoc(), inputAsMemref, refToBuffer,
       op.getTransferCountInItems() / perLeaf,
       keepTaskletDimAffineMapCnmToUpmem(map, bufferTy), hierarchy,
-      blocksPerDpu(map, bufferTy, numTasklets, sharedAcrossTasklets), slot);
+      blocksPerDpu(map, bufferTy, numTasklets, sharedAcrossTasklets), slot,
+      /*blocksPerSlot=*/IntegerAttr(), /*slotPadding=*/IntegerAttr());
+  setSlotPadding(scatter, perLeaf, slotPadding);
   // The host value, not the cast of it: a cast is not one of the definitions
   // the staticness derivation walks through.
   labelTransfer(scatter, op.getHostValue(), id);
@@ -673,6 +689,10 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   // given its own WRAM staging (--upmem-tile-mram-buffers), so this pass must
   // not add a second one around it: the body binds straight to MRAM.
   llvm::DenseSet<Value> mramLevelBuffers;
+  // Output buffers whose per-tasklet result is shorter than a DMA granule and
+  // cannot be pooled either (see paddedWriteback below), mapped to the
+  // padding elements that complete each tasklet's slot.
+  llvm::DenseMap<Value, int64_t> paddedSlotBuffers;
 
   rewriter.setInsertionPointToStart(&dpuProgram.getBody().front());
 
@@ -890,11 +910,10 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       // -- a tasklet count is even -- but one tasklet holding one scalar
       // leaves the flush as sub-granule as the write it replaces, and the
       // host gather would round its own copy up over the next DPU's result.
-      // Pooling cannot rescue that, so it stays a transfer the emitter
-      // refuses and the search space rules out.
-      const int64_t tileBits =
-          computeProduct(bufShape) *
+      // Pooling cannot rescue that; the slots are padded instead (below).
+      const int64_t eltBits =
           bufferType.getElementType().getIntOrFloatBitWidth();
+      const int64_t tileBits = computeProduct(bufShape) * eltBits;
       const int64_t granuleBits = dmaGranuleBits(
           launch.getWg().getType().getAccelerator(), mramMemspaceAttr);
       bool pooledWriteback =
@@ -903,7 +922,30 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
           tileBits % granuleBits != 0 &&
           (tileBits * upmemTy.getNumTaskletsPerDpu()) % granuleBits == 0;
 
-      if (pooledWriteback) {
+      // The rest of the sub-granule outputs -- one tasklet, or an odd number
+      // of them, each holding one scalar -- get a slot of their own padded
+      // to a whole granule, in WRAM and in MRAM alike, so that each tasklet
+      // writes back one aligned granule. The body binds to the slot's
+      // leading elements; the host transfers skip the padding
+      // (upmem.gather_blocks's slotPadding). The tile is padded along its
+      // one dimension, so only tiles of rank 0 or 1 qualify.
+      const bool paddedWriteback =
+          !mramIsBroadcast && !pooledWriteback &&
+          llvm::is_contained(launch.getOutBuffers(), alloc.getResult()) &&
+          tileBits % granuleBits != 0 && bufShape.size() <= 1 &&
+          granuleBits % eltBits == 0;
+      const int64_t paddedElems =
+          llvm::alignTo(tileBits, granuleBits) / std::max<int64_t>(eltBits, 1);
+
+      if (paddedWriteback) {
+        auto padded = memref::AllocaOp::create(
+            rewriter, alloc.getLoc(),
+            MemRefType::get({paddedElems}, bufferType.getElementType(),
+                            MemRefLayoutAttrInterface{}, wramMemspaceAttr));
+        buffersToWramBufValue[alloc.getResult()] = padded.getResult();
+        paddedSlotBuffers[alloc.getResult()] =
+            paddedElems - computeProduct(bufShape);
+      } else if (pooledWriteback) {
         // One slot per tasklet, so the flush is one contiguous run whose
         // shape matches the MRAM buffer's exactly. The body binds to this
         // tasklet's slot, below -- including when it stages the buffer
@@ -940,6 +982,8 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
         buffersToWramBufValue[alloc.getResult()] = pwramBuf.getResult();
       }
 
+      if (paddedWriteback)
+        bufShape.assign({paddedElems});
       if (!mramIsBroadcast) {
         // the mram buffer type has tasklet dimension prepended - unless the
         // buffer is broadcasted.
@@ -982,15 +1026,17 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       if (!alloc || failed(convertCnmScatterToUpmem(
                         rewriter, scatter, sharedAcrossTasklets, hierarchy,
                         alloc.getSymNameAttr(), nextTransferId++,
-                        hostSlotOf(scatter.getBuffer())))) {
+                        hostSlotOf(scatter.getBuffer()),
+                        paddedSlotBuffers.lookup(scatter.getBuffer())))) {
         return failure();
       }
     }
     if (auto gather = llvm::dyn_cast_or_null<cnm::GatherOp>(user)) {
       auto alloc = buffersToMramBuf.lookup(gather.getBuffer());
-      if (!alloc || failed(convertCnmGatherToUpmem(rewriter, gather, hierarchy,
-                                                   alloc.getSymNameAttr(),
-                                                   nextTransferId++))) {
+      if (!alloc || failed(convertCnmGatherToUpmem(
+                        rewriter, gather, hierarchy, alloc.getSymNameAttr(),
+                        nextTransferId++,
+                        paddedSlotBuffers.lookup(gather.getBuffer())))) {
         return failure();
       }
     }
@@ -1014,6 +1060,24 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
                                           buffersToMramBuf[cnmBuf],
                                           cast<MemRefType>(memref.getType()),
                                           kernelSlotOf(cnmBuf)));
+      continue;
+    }
+    if (paddedSlotBuffers.count(cnmBuf)) {
+      // The body sees the slot's leading elements, in its own tile type;
+      // the padding after them is only there for the transfers.
+      auto tileTy = cast<MemRefType>(memref.getType());
+      auto slotBuf = buffersToWramBufValue[cnmBuf];
+      SmallVector<OpFoldResult> offsets{rewriter.getIndexAttr(0)};
+      SmallVector<OpFoldResult> sizes{
+          rewriter.getIndexAttr(tileTy.getRank() ? tileTy.getDimSize(0) : 1)};
+      SmallVector<OpFoldResult> strides{rewriter.getIndexAttr(1)};
+      auto viewTy = memref::SubViewOp::inferRankReducedResultType(
+          tileTy.getShape(), slotBuf.getType(), offsets, sizes, strides);
+      mapping.map(memref,
+                  memref::SubViewOp::create(rewriter, cnmBuf.getLoc(),
+                                            cast<MemRefType>(viewTy), slotBuf,
+                                            offsets, sizes, strides)
+                      .getResult());
       continue;
     }
     if (pooledWritebackBuffers.contains(cnmBuf)) {

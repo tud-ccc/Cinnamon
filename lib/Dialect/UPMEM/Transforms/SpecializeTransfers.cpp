@@ -97,8 +97,12 @@ Operation *broadcastUniformValue(Op op, RewriterBase &rewriter) {
     return nullptr;
   // A broadcast fills the buffer from its start, so the transfer has to be
   // the whole of it -- otherwise it would write bytes the scatter did not.
+  // Padded slots count in full: the constant lands on the padding too, which
+  // nothing reads.
   int64_t transferred = static_cast<int64_t>(op.getNumBlocksPerDpu()) *
                         static_cast<int64_t>(op.getTransferCount());
+  if constexpr (std::is_same_v<Op, upmem::ScatterBlocksOp>)
+    transferred = op.getDpuSpanInElements();
   if (targetTy.getNumElements() != transferred)
     return nullptr;
 
@@ -224,6 +228,9 @@ AffineMap dropBlockDim(AffineMap map) {
 /// transfer moves in one go -- no scatter/gather descriptors needed.
 template <class FlatOp, class BlockOp>
 Operation *collapseBlocksToOneRun(BlockOp op, RewriterBase &rewriter) {
+  // Padded slots are not one run on the DPU side, whatever the host side is.
+  if (op.getSlotPaddingElements() > 0)
+    return nullptr;
   MemRefType hostTy = op.getHostBuffer().getType();
   int64_t blockSize = op.getTransferCount();
   int64_t total = static_cast<int64_t>(op.getNumBlocksPerDpu()) * blockSize;
