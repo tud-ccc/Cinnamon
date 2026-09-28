@@ -37,6 +37,9 @@ class Config:
     ]
     # lower(fn_module, out_file, log_file) -> CompletedProcess; produces
     # out_file at the "upmem dialect" stage bench-single expects as input.
+    # Further make variables for bench-single, e.g. BENCH_DRIVER for a
+    # function whose driver is not the suite's <prim>.cpp.
+    make_vars: dict[str, str] = dataclasses.field(default_factory=dict)
 
     def dir(self, root: pathlib.Path):
         return root / self.system / self.fn_name / self.label
@@ -149,7 +152,7 @@ def compile_config(config: Config, *, compile_root: pathlib.Path) -> CompiledCon
         ir_dir,
         lowered,
         target="bench-single",
-        extra_vars={"BIN_DIR": str(bin_dir.resolve())},
+        extra_vars={**config.make_vars, "BIN_DIR": str(bin_dir.resolve())},
     )
     if r.returncode != 0:
         (config_dir / "make_stderr.txt").write_text(r.stderr)
@@ -180,7 +183,13 @@ def compute_cost(config: Config, *, compile_root: pathlib.Path) -> CompiledConfi
 
     ir_dir = config_dir / "ir"
     r = _run_make(
-        config.fn_name, config.prim, config_dir, ir_dir, lowered, target="costs-only"
+        config.fn_name,
+        config.prim,
+        config_dir,
+        ir_dir,
+        lowered,
+        target="costs-only",
+        extra_vars=config.make_vars,
     )
     if r.returncode != 0:
         (config_dir / "compile_error.txt").write_text(r.stderr)
