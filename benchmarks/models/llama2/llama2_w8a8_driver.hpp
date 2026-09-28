@@ -6,8 +6,12 @@
 // BENCH_CHECK=0).
 //
 // The model's dimensions come from the including file, which is the driver
-// of one size (llama2_110M_w8a8.cpp, llama2_7B_w8a8.cpp): everything below
-// is spelled in terms of them, as the .mlir beside each is.
+// of one size (llama2_110M_w8a8.cpp, llama2_7B_w8a8.cpp, llama3_8B_w8a8_*):
+// everything below is spelled in terms of them, as the .mlir beside each is.
+// KVH is the number of key/value heads: A for multi-head attention (the
+// Llama-2 models), fewer for grouped-query attention (Llama 3), where each
+// key/value head serves A / KVH query heads and the caches and the K and V
+// projections are KVH / A the width of the queries.
 //
 // What is specific to a decode step:
 //
@@ -32,7 +36,7 @@
 
 namespace {
 
-constexpr size_t QKV = 3 * H, PAIRS = H / 2, HEAD = H / A;
+constexpr size_t HEAD = H / A, KV = KVH * HEAD, QKV = H + 2 * KV, PAIRS = H / 2;
 constexpr int32_t POS = N / 2;
 
 // Filled by a xorshift rather than rand(): the 7B model materialises 7 GB
@@ -57,8 +61,8 @@ template <class T> std::vector<T> rnd(size_t n) {
 // out-parameter.
 #define LLAMA_ARGS(X)                                                          \
   X(attn_mask, int32_t, N)                                                     \
-  X(kc, int8_t, L * N * H)                                                     \
-  X(vc, int8_t, L * N * H)                                                     \
+  X(kc, int8_t, L * N * KV)                                                    \
+  X(vc, int8_t, L * N * KV)                                                    \
   X(rope_cos, int32_t, N *PAIRS)                                               \
   X(rope_sin, int32_t, N *PAIRS)                                               \
   X(embedding_table, int8_t, V *H)                                             \
@@ -115,8 +119,8 @@ struct LlamaDecode {
     // The classifier's pad rows are zero in the checkpoint.
     std::fill(wcls.begin() + V * H, wcls.end(), 0);
     out = bench::output_vector(V);
-    printf("%s  decode pos=%d H=%zu F=%zu L=%zu (W8A8)", TOSTR(BENCH_FN), POS,
-           H, F, L);
+    printf("%s  decode pos=%d H=%zu F=%zu L=%zu KVH=%zu N=%zu (W8A8)",
+           TOSTR(BENCH_FN), POS, H, F, L, KVH, N);
   }
 
   void run() {
