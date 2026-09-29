@@ -1522,6 +1522,11 @@ struct UpmemInferAcceleratorPass
   void runOnOperation() override {
     ModuleOp module = getOperation();
     UpmemInferenceOptions upmemOpts = buildOptions();
+    if (!allocationIn.empty() && !graphAllocation) {
+      module.emitError("allocation-in is committed by graph allocation only; "
+                       "set graph-allocation=true");
+      return signalPassFailure();
+    }
 
     // Stamp mode builds every block's search space on the block itself, so
     // the whole module has to be in the converted (linalg) form the space is
