@@ -40,6 +40,11 @@ class Config:
     # Further make variables for bench-single, e.g. BENCH_DRIVER for a
     # function whose driver is not the suite's <prim>.cpp.
     make_vars: dict[str, str] = dataclasses.field(default_factory=dict)
+    # host_kernels(ir_dir) -> make variables: another compiler's kernels for
+    # the host blocks. The outlined host module (HOST_OUTLINE=1, its
+    # manifest and object in ir_dir) is built first; the variables returned
+    # (HOST_KERNEL_OBJS, HOST_KERNEL_LDFLAGS) link the replacements.
+    host_kernels: Callable[[pathlib.Path], dict[str, str]] | None = None
 
     def dir(self, root: pathlib.Path):
         return root / self.system / self.fn_name / self.label
@@ -145,6 +150,30 @@ def compile_config(config: Config, *, compile_root: pathlib.Path) -> CompiledCon
         )
 
     ir_dir, bin_dir = config_dir / "ir", config_dir / "bin"
+    make_vars = dict(config.make_vars)
+    if config.host_kernels:
+        make_vars["HOST_OUTLINE"] = "1"
+        host_o = (ir_dir / f"{config.fn_name}.host.o").resolve()
+        r = _run_make(
+            config.fn_name,
+            config.prim,
+            config_dir,
+            ir_dir,
+            lowered,
+            target=str(host_o),
+            extra_vars=make_vars,
+            write_script=False,
+        )
+        if r.returncode != 0:
+            (config_dir / "make_stderr.txt").write_text(r.stderr)
+            return CompiledConfig(
+                config, config_dir, False, f"make failed:\n{r.stderr[-10000:]}"
+            )
+        try:
+            make_vars |= config.host_kernels(ir_dir)
+        except Exception as err:  # noqa: BLE001 -- reported as the config's failure
+            (config_dir / "host_kernels_error.txt").write_text(str(err))
+            return CompiledConfig(config, config_dir, False, f"host kernels: {err}")
     r = _run_make(
         config.fn_name,
         config.prim,
@@ -152,7 +181,7 @@ def compile_config(config: Config, *, compile_root: pathlib.Path) -> CompiledCon
         ir_dir,
         lowered,
         target="bench-single",
-        extra_vars={**config.make_vars, "BIN_DIR": str(bin_dir.resolve())},
+        extra_vars={**make_vars, "BIN_DIR": str(bin_dir.resolve())},
     )
     if r.returncode != 0:
         (config_dir / "make_stderr.txt").write_text(r.stderr)

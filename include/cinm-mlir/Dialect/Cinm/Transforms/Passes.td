@@ -512,8 +512,9 @@ def CinmOutlineHostBlocksPass : Pass<"cinm-outline-host-blocks", "mlir::ModuleOp
     Their boundary is also made callable from C under the bare-pointer
     memref convention, so that another compiler's kernels can stand in for
     them: a memref with a dynamic offset is passed as its view at offset 0
-    followed by the offset as an index, and a memref result, which is always
-    an argument written in place, is dropped in favour of that argument.
+    followed by the offset as an index, and a memref result, an argument
+    written in place, is dropped in favour of that argument. A block with
+    no such form (a result it allocates, a dynamic shape) stays in place.
   }];
 
   let options = [

@@ -49,6 +49,33 @@ bool isUnplaced(Operation *op) {
   return isa<ComputeOp, ComputeBlockOp>(op) && !op->getAttr("accelerator");
 }
 
+/// Whether the boundary of `op` has a C form (see callableAbi): memrefs of
+/// static shape and strides, memref results that are arguments written in
+/// place. Checked on what outlining passes: the region's arguments, then
+/// the values used from above.
+bool hasCForm(Operation *op) {
+  Region &region = op->getRegion(0);
+  llvm::SetVector<Value> captured;
+  getUsedValuesDefinedAbove(region, captured);
+  auto staticMemref = [](Type type) {
+    auto memref = dyn_cast<MemRefType>(type);
+    SmallVector<int64_t> strides;
+    int64_t offset;
+    return !memref || (memref.hasStaticShape() &&
+                       succeeded(memref.getStridesAndOffset(strides, offset)) &&
+                       llvm::none_of(strides, ShapedType::isDynamic));
+  };
+  for (Value v : llvm::concat<Value>(region.getArguments(), captured))
+    if (!staticMemref(v.getType()))
+      return false;
+  Block &body = region.front();
+  for (Value v : body.getTerminator()->getOperands())
+    if (isa<MemRefType>(v.getType()) &&
+        !(isa<BlockArgument>(v) && cast<BlockArgument>(v).getOwner() == &body))
+      return false;
+  return true;
+}
+
 struct OutlineHostBlocksPass
     : public impl::CinmOutlineHostBlocksPassBase<OutlineHostBlocksPass> {
   using Base::Base;
@@ -66,7 +93,9 @@ struct OutlineHostBlocksPass
       if (op->getParentOfType<ModuleOp>() != module)
         return WalkResult::advance();
       if (unplaced ? isUnplaced(op) : isHostComputeOp(op)) {
-        blocks.push_back(op);
+        // Without a C form, a block stays here with our code.
+        if (!unplaced || hasCForm(op))
+          blocks.push_back(op);
         return WalkResult::skip();
       }
       return WalkResult::advance();

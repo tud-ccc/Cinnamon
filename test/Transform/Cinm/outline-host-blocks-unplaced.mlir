@@ -23,6 +23,13 @@
 // CHECK:           cinm.yield %{{.*}} : memref<8xi32, strided<[1], offset: ?>>
 // CHECK:         return %[[R]]
 
+// A block returning a buffer it allocates has no C form and stays.
+
+// CHECK-LABEL: func.func @fresh
+// CHECK:         cinm.compute_block
+// CHECK-NEXT:      memref.alloc
+// CHECK-NOT:       func.call
+
 // CHECK:       module @outlined
 // CHECK:         func.func @row_sum_host0(%[[A:.*]]: memref<8xi32, strided<[1]>>, %[[O:.*]]: index, %[[B:.*]]: memref<8xi32>) {
 // CHECK:           %[[V:.*]] = memref.reinterpret_cast %[[A]] to offset: [%[[O]]], sizes: [8], strides: [1]
@@ -63,4 +70,13 @@ func.func @row_scale(%m: memref<4x8xi32>, %i: index) -> memref<8xi32, strided<[1
     cinm.yield %a : memref<8xi32, strided<[1], offset: ?>>
   }
   return %r : memref<8xi32, strided<[1], offset: ?>>
+}
+
+func.func @fresh(%x: memref<8xi32>) -> memref<8xi32> {
+  %r = cinm.compute_block (%a = %x : memref<8xi32>) -> memref<8xi32> attributes {cinm.available_platforms = [#upmem]} {
+    %y = memref.alloc() : memref<8xi32>
+    linalg.add ins(%a, %a : memref<8xi32>, memref<8xi32>) outs(%y : memref<8xi32>)
+    cinm.yield %y : memref<8xi32>
+  }
+  return %r : memref<8xi32>
 }
