@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cinttypes>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -384,6 +385,25 @@ template <class Op> int run(int argc, char **argv) {
     elapsed_ns[iter] = now_ns() - t0;
     printf("  iter %d  %.3f ms\n", iter, elapsed_ns[iter] / 1e6);
     fflush(stdout);
+  }
+
+  // BENCH_DIGEST=1 summarizes the output, so that two builds of a workload
+  // without a golden reference (the models) can be compared with each other.
+  if (const char *d = getenv("BENCH_DIGEST"); d && *d && strcmp(d, "0")) {
+    const auto &out = op.output();
+    double sum = 0, abs_sum = 0;
+    size_t argmax = 0;
+    for (size_t i = 0; i < out.size(); i++) {
+      sum += double(out[i]);
+      abs_sum += std::fabs(double(out[i]));
+      if (out[i] > out[argmax])
+        argmax = i;
+    }
+    printf("%s: digest n=%zu sum=%.9g abs_sum=%.9g argmax=%zu first=",
+           TOSTR(BENCH_FN), out.size(), sum, abs_sum, argmax);
+    for (size_t i = 0; i < out.size() && i < 4; i++)
+      printf("%s%.9g", i ? "," : "", double(out[i]));
+    printf("\n");
   }
 
   // The reference is only built when it is going to be used: it is the
