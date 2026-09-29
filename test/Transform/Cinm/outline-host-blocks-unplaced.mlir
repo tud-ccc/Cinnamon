@@ -13,6 +13,16 @@
 // CHECK:           %[[AT0:.*]] = memref.reinterpret_cast %[[BASE]] to offset: [0], sizes: [8], strides: [1]
 // CHECK:           func.call @row_sum_host0(%[[AT0]], %[[OFF]], %[[OUT]]) : (memref<8xi32, strided<[1]>>, index, memref<8xi32>) -> ()
 // CHECK:           cinm.yield %[[OUT]]
+// A row updated in place through its dynamic-offset view: the result is
+// the caller's view itself.
+
+// CHECK-LABEL: func.func @row_scale
+// CHECK:         %[[ROW:.*]] = memref.subview
+// CHECK:         %[[R:.*]] = cinm.compute_block
+// CHECK:           func.call @row_scale_host0(%{{.*}}, %{{.*}}) : (memref<8xi32, strided<[1]>>, index) -> ()
+// CHECK:           cinm.yield %{{.*}} : memref<8xi32, strided<[1], offset: ?>>
+// CHECK:         return %[[R]]
+
 // CHECK:       module @outlined
 // CHECK:         func.func @row_sum_host0(%[[A:.*]]: memref<8xi32, strided<[1]>>, %[[O:.*]]: index, %[[B:.*]]: memref<8xi32>) {
 // CHECK:           %[[V:.*]] = memref.reinterpret_cast %[[A]] to offset: [%[[O]]], sizes: [8], strides: [1]
@@ -31,6 +41,9 @@
 // MANIFEST:      "results": [
 // MANIFEST:          "in_place": 1
 // MANIFEST:          "kind": "memref"
+// MANIFEST:      "name": "row_scale_host0"
+// MANIFEST:      "results": [
+// MANIFEST:          "in_place": 0
 
 #upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 
@@ -41,4 +54,13 @@ func.func @row_sum(%m: memref<4x8xi32>, %i: index, %out: memref<8xi32>) -> memre
     cinm.yield %b : memref<8xi32>
   }
   return %r : memref<8xi32>
+}
+
+func.func @row_scale(%m: memref<4x8xi32>, %i: index) -> memref<8xi32, strided<[1], offset: ?>> {
+  %row = memref.subview %m[%i, 0] [1, 8] [1, 1] : memref<4x8xi32> to memref<8xi32, strided<[1], offset: ?>>
+  %r = cinm.compute_block (%a = %row : memref<8xi32, strided<[1], offset: ?>>) -> memref<8xi32, strided<[1], offset: ?>> attributes {cinm.available_platforms = [#upmem]} {
+    linalg.add ins(%a, %a : memref<8xi32, strided<[1], offset: ?>>, memref<8xi32, strided<[1], offset: ?>>) outs(%a : memref<8xi32, strided<[1], offset: ?>>)
+    cinm.yield %a : memref<8xi32, strided<[1], offset: ?>>
+  }
+  return %r : memref<8xi32, strided<[1], offset: ?>>
 }

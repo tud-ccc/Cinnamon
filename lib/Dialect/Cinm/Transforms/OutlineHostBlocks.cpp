@@ -55,6 +55,10 @@ struct OutlineHostBlocksPass
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
+    if (!manifestFile.empty() && !unplaced) {
+      module.emitError("manifest-file describes the C boundary of unplaced");
+      return signalPassFailure();
+    }
     ModuleOp outlined = getOrCreateOutlinedModule(module);
 
     SmallVector<Operation *> blocks;
@@ -250,16 +254,11 @@ private:
   }
 
   /// Makes the boundary between `call` and `fn` (declared by `decl`)
-  /// callable from C under the bare-pointer convention, which takes a memref
-  /// as a pointer and so needs its strides and offset static:
-  ///  - a memref with a dynamic offset is passed as the view of the same
-  ///    sizes and strides at offset 0 of its buffer, followed by the offset
-  ///    as an index; the function rebuilds the view from the two;
-  ///  - a memref result is dropped: it is the argument the function wrote
-  ///    in place, which the caller uses instead.
-  /// Describes the parameters in `params`, and the results in `results`: a
-  /// scalar result that remains, or the argument a dropped one was written
-  /// in (`in_place`, its position among the original arguments).
+  /// callable from C under the bare-pointer convention, which needs static
+  /// strides and offsets: a memref with a dynamic offset becomes its view at
+  /// offset 0 plus the offset as an index, and a memref result, the argument
+  /// written in place, is dropped for that argument. Describes the outcome
+  /// in `params` and `results` (`in_place`: the original argument).
   LogicalResult callableAbi(func::FuncOp fn, func::FuncOp decl,
                             func::CallOp call, llvm::json::Array &params,
                             llvm::json::Array &results) {
@@ -270,14 +269,31 @@ private:
     Location loc = call.getLoc();
     IndexType indexType = builder.getIndexType();
 
+    // Before the arguments are rewritten, which replaces their uses in the
+    // return too.
+    SmallVector<Value> kept;
+    llvm::DenseMap<unsigned, unsigned> dropped; // result -> argument
+    for (auto [ri, value] : llvm::enumerate(ret.getOperands())) {
+      if (!isa<MemRefType>(value.getType())) {
+        results.push_back(llvm::json::Object{
+            {"kind", "scalar"}, {"type", typeString(value.getType())}});
+        kept.push_back(value);
+        continue;
+      }
+      auto written = dyn_cast<BlockArgument>(value);
+      if (!written || written.getOwner() != &entry)
+        return fn.emitError() << "result " << ri
+                              << " is not one of the arguments; only a "
+                                 "result written in place has a C form";
+      dropped[ri] = written.getArgNumber();
+      results.push_back(llvm::json::Object{
+          {"kind", "memref"}, {"in_place", written.getArgNumber()}});
+    }
+
     SmallVector<Value> operands;
-    // The caller's value behind each original argument, for the results
-    // written in place.
-    llvm::DenseMap<Value, Value> passedFor;
     SmallVector<BlockArgument> args(entry.getArguments());
     for (auto [i, arg] : llvm::enumerate(args)) {
       Value operand = call.getOperand(i);
-      passedFor[arg] = operand;
       auto memref = dyn_cast<MemRefType>(arg.getType());
       if (!memref) {
         params.push_back(
@@ -332,37 +348,13 @@ private:
       arg.replaceAllUsesExcept(rebuilt.getResult(), rebuilt);
     }
 
-    SmallVector<Value> kept;
-    SmallVector<unsigned> dropped;
-    for (auto [ri, value] : llvm::enumerate(ret.getOperands())) {
-      if (!isa<MemRefType>(value.getType())) {
-        results.push_back(llvm::json::Object{
-            {"kind", "scalar"}, {"type", typeString(value.getType())}});
-        kept.push_back(value);
-        continue;
-      }
-      auto written = dyn_cast<BlockArgument>(value);
-      if (!written || written.getOwner() != &entry)
-        return fn.emitError() << "result " << ri
-                              << " is not one of the arguments; only a "
-                                 "result written in place has a C form";
-      dropped.push_back(ri);
-      results.push_back(llvm::json::Object{
-          {"kind", "memref"},
-          {"in_place",
-           static_cast<int64_t>(llvm::find(args, written) - args.begin())}});
-    }
-
     // The call's operands follow the entry block's arguments one to one.
     auto newCall = func::CallOp::create(builder, loc, fn.getSymName(),
                                         ValueRange(kept).getTypes(), operands);
     unsigned next = 0;
     for (auto [ri, result] : llvm::enumerate(call.getResults())) {
-      if (llvm::is_contained(dropped, ri)) {
-        auto written = cast<BlockArgument>(ret.getOperand(ri));
-        // The operand passed in that argument's place, before any view the
-        // offset split put there: the caller's own value.
-        result.replaceAllUsesWith(passedFor.lookup(written));
+      if (auto it = dropped.find(ri); it != dropped.end()) {
+        result.replaceAllUsesWith(call.getOperand(it->second));
         continue;
       }
       result.replaceAllUsesWith(newCall.getResult(next++));

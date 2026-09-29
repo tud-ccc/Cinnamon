@@ -525,8 +525,8 @@ def CinmOutlineHostBlocksPass : Pass<"cinm-outline-host-blocks", "mlir::ModuleOp
            "Outline every compute op without an accelerator instead: after "
            "allocation and lowering, the host's share of the program">,
     Option<"manifestFile", "manifest-file", "std::string", "\"\"",
-           "Write, per outlined function, its parameters and results and the "
-           "graph allocation's class and member of its block, as JSON">
+           "With unplaced: write, per outlined function, its parameters and "
+           "results and its block's graph-allocation class, as JSON">
   ];
 
   let dependentDialects = [

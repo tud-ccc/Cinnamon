@@ -153,13 +153,10 @@ LDFLAGS = -lUpmemDialectRuntime -ldpu -ldpuverbose -lopenblas -lnuma -Wl,-s \
 ASYNC_LAUNCHES ?= 0
 ASYNC_PASS = $(if $(filter-out 0,$(ASYNC_LAUNCHES)),--upmem-async-launches=noalias-arguments,)
 
-# HOST_OUTLINE=1 moves every host block into a function of a module of its
-# own, ir/<fn>.host.mlir (--cinm-outline-host-blocks=unplaced), whose
-# functions take C arguments (the bare-pointer memref convention) and are
-# listed with their graph-allocation class in ir/<fn>.host.json. The module
-# is compiled like the rest into ir/<fn>.host.o with every symbol weak, so
-# that an object in HOST_KERNEL_OBJS defining one of its functions -- another
-# compiler's kernel for that block -- replaces it at the link.
+# HOST_OUTLINE=1 moves every host block into a C-callable function of
+# ir/<fn>.host.mlir, listed in ir/<fn>.host.json, and compiles them into
+# ir/<fn>.host.o with weak symbols: a function defined by an object in
+# HOST_KERNEL_OBJS (another compiler's kernel) replaces ours at the link.
 HOST_OUTLINE ?= 0
 HOST_KERNEL_OBJS ?=
 HOST_KERNEL_LDFLAGS ?=
@@ -235,9 +232,9 @@ $(IR_DIR)/%.o: $(IR_DIR)/%.mlir
 	$(CINM_OPT) $< $(LOWER_PIPELINE) $(TO_LLVM_PIPELINE) -o - \
 	    | $(CINM_TRANS) --allow-unregistered-dialect --mlir-to-llvmir -o - \
 	    | $(CINM_BIN)/opt -O3 $(MCPU_FLAG) | $(CINM_BIN)/llc -O3 $(MCPU_FLAG) -filetype=obj -relocation-model=pic -code-model=medium -o $@
+	$(if $(OUTLINE_PASS),touch $(IR_DIR)/$*.host.mlir $(IR_DIR)/$*.host.json)
 
-# The outlined host module is written by the rule above; it goes through
-# the same lowering, bar the outlining.
+# Written by the rule above, and lowered the same way bar the outlining.
 $(IR_DIR)/%.host.mlir $(IR_DIR)/%.host.json: $(IR_DIR)/%.o ;
 
 $(IR_DIR)/%.host.o: $(IR_DIR)/%.host.mlir
