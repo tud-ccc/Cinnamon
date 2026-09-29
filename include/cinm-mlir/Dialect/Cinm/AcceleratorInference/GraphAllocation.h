@@ -90,6 +90,9 @@ struct GroupAllocation {
   /// The members stay on the host: no set, no budget, no residency. Only the
   /// latency solve produces these, and only from a ProfilePoint::onHost.
   bool onHost = false;
+  /// A timeshared group (`resource` 0): the resource of the point it runs.
+  /// 0 runs the cheapest point of the profile (pointOf).
+  int64_t pointResource = 0;
 };
 
 /// The chosen grouping of one class's members (sums to its multiplicity).

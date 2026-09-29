@@ -565,8 +565,10 @@ const ProfilePoint *pointOf(const ClassProfile &profile,
   for (const ProfilePoint &p : profile.points) {
     if (p.onHost != group.onHost)
       continue;
-    if (group.onHost || (group.resource ? p.resource == group.resource
-                                        : (!point || p.costMs < point->costMs)))
+    const int64_t wanted =
+        group.resource ? group.resource : group.pointResource;
+    if (group.onHost ||
+        (wanted ? p.resource == wanted : (!point || p.costMs < point->costMs)))
       point = &p;
   }
   assert(point && "allocator chose a point the profile does not have");

@@ -630,6 +630,16 @@ struct InferenceOptions {
   /// dumpDir also turns on.
   std::string allocationReportDir;
 
+  /// Graph allocation only: a directory holding the allocation to commit for
+  /// each graph, as `<dir>/<graph>.json` (the layout allocationReportDir
+  /// writes), in place of profiling and solving. Per class, its groups:
+  /// `members` (member indices), and either `"on_host": true` or the
+  /// `resource` of the point the group runs, the `config` to run there (in
+  /// evalSingleSolution currency) and optionally `"timeshared": true` and
+  /// `cost_ms`. Every class of the graph must be listed, and every member
+  /// placed exactly once.
+  std::string allocationIn;
+
   /// Graph profiling only: stop after the screen, profiling nothing. The
   /// surviving menu of each block is the sweep that would have run, so the
   /// allocation report of such a run says what the screen decides and what

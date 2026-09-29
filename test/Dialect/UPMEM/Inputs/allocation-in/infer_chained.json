@@ -1,0 +1,37 @@
+{
+  "graph": "infer_chained",
+  "classes": [
+    {
+      "class": 0,
+      "groups": [
+        {
+          "members": [
+            0
+          ],
+          "resource": 16,
+          "config": {
+            "dpus": 16,
+            "tasklets": 4,
+            "gemv.M.mram": 64,
+            "gemv.M.wram": 64,
+            "gemv.K.mram": 16,
+            "gemv.K.wram": 16,
+            "gemv.order[0]": 1,
+            "gemv.order[1]": 2
+          }
+        }
+      ]
+    },
+    {
+      "class": 1,
+      "groups": [
+        {
+          "members": [
+            0
+          ],
+          "on_host": true
+        }
+      ]
+    }
+  ]
+}

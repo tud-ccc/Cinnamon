@@ -1484,6 +1484,7 @@ struct UpmemInferAcceleratorPass
     o.allowHostPlacement = allowHostPlacement;
     o.maxMenuPoints = maxMenuPoints;
     o.allocationReportDir = allocationReportDir;
+    o.allocationIn = allocationIn;
     o.gateDryRun = gateDryRun;
     o.stampConfigs = stampConfigs;
     upmemOpts.annotateOpCosts = annotateOpCosts;

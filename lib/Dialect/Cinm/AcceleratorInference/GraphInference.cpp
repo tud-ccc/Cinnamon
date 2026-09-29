@@ -21,6 +21,8 @@
 #include <llvm/ADT/ScopeExit.h>
 #include <llvm/Support/Casting.h>
 #include <llvm/Support/Debug.h>
+#include <llvm/Support/JSON.h>
+#include <llvm/Support/MemoryBuffer.h>
 
 #include <mlir/Dialect/Utils/StaticValueUtils.h>
 #include <mlir/IR/Builders.h>
@@ -341,6 +343,148 @@ static std::string dumpDirFor(StringRef baseDir, StringRef name,
   return path.string();
 }
 
+/// One class of an imported allocation (InferenceOptions::allocationIn): the
+/// profile points its groups run, host first, and which group each member
+/// is on.
+struct ImportedClass {
+  SmallVector<ProfilePoint> points;
+  SmallVector<GroupAllocation> groups;
+  SmallVector<unsigned> groupOfMember;
+};
+
+/// Read the allocation in `path` for `graph`, named `graphName`; a file that
+/// names its graph must name this one. `resourceParam` is the configuration
+/// key that names a group's resource; a config that sets it must agree with
+/// the group. Returns the reason on failure.
+static std::optional<std::string>
+readImportedAllocation(StringRef path, const ComputeGraph &graph,
+                       StringRef graphName, StringRef resourceParam,
+                       std::vector<ImportedClass> &out) {
+  auto buffer = llvm::MemoryBuffer::getFile(path);
+  if (!buffer)
+    return ("cannot read '" + path + "': " + buffer.getError().message()).str();
+  llvm::Expected<llvm::json::Value> root =
+      llvm::json::parse((*buffer)->getBuffer());
+  if (!root)
+    return ("'" + path + "' is not JSON: " + llvm::toString(root.takeError()))
+        .str();
+  const llvm::json::Array *classes =
+      root->getAsObject() ? root->getAsObject()->getArray("classes") : nullptr;
+  if (!classes)
+    return ("'" + path + "' has no `classes` array").str();
+  if (std::optional<StringRef> named = root->getAsObject()->getString("graph");
+      named && *named != graphName)
+    return ("'" + path + "' is the allocation of '" + *named + "', not '" +
+            graphName + "'")
+        .str();
+
+  out.assign(graph.classes.size(), {});
+  SmallVector<bool> listed(graph.classes.size(), false);
+  for (const llvm::json::Value &entry : *classes) {
+    const llvm::json::Object *c = entry.getAsObject();
+    std::optional<int64_t> ci = c ? c->getInteger("class") : std::nullopt;
+    if (!ci || *ci < 0 || *ci >= static_cast<int64_t>(graph.classes.size()))
+      return std::string("a class entry has no valid `class` index");
+    if (listed[*ci])
+      return llvm::formatv("class {0} is listed twice", *ci).str();
+    listed[*ci] = true;
+    const unsigned size = graph.classes[*ci].size();
+    ImportedClass &imported = out[*ci];
+    imported.groupOfMember.assign(size, ~0u);
+    const llvm::json::Array *groups = c->getArray("groups");
+    if (!groups)
+      return llvm::formatv("class {0} has no `groups`", *ci).str();
+    for (const llvm::json::Value &g : *groups) {
+      const llvm::json::Object *group = g.getAsObject();
+      const llvm::json::Array *members =
+          group ? group->getArray("members") : nullptr;
+      if (!members)
+        return llvm::formatv("a group of class {0} has no `members`", *ci)
+            .str();
+      GroupAllocation alloc;
+      alloc.onHost = group->getBoolean("on_host").value_or(false);
+      alloc.size = members->size();
+      const double costMs = group->getNumber("cost_ms").value_or(0.0);
+      if (!alloc.onHost) {
+        // A timeshared group holds no set: it runs its point on a transient
+        // borrow of the device and takes no budget.
+        const int64_t resource = group->getInteger("resource").value_or(0);
+        if (group->getBoolean("timeshared").value_or(false))
+          alloc.pointResource = resource;
+        else
+          alloc.resource = resource;
+        const llvm::json::Object *config = group->getObject("config");
+        if (resource <= 0 || !config || config->empty())
+          return llvm::formatv("a device group of class {0} needs a positive "
+                               "`resource` and a `config`",
+                               *ci)
+              .str();
+        ProfilePoint point;
+        point.resource = resource;
+        point.costMs = costMs;
+        for (const auto &[key, value] : *config) {
+          std::optional<int64_t> v = value.getAsInteger();
+          if (!v)
+            return llvm::formatv("config entry `{0}` of class {1} is not an "
+                                 "integer",
+                                 key.str(), *ci)
+                .str();
+          point.config[key.str()] = static_cast<ParmValue>(*v);
+        }
+        auto it = point.config.find(resourceParam);
+        if (it != point.config.end() && it->second != resource)
+          return llvm::formatv("class {0}: a group on {1} runs a config with "
+                               "{2}={3}",
+                               *ci, resource, resourceParam, it->second)
+              .str();
+        // Groups of a class on the same resource run the same configuration:
+        // that is how a group finds its point (pointOf).
+        auto same = llvm::find_if(imported.points, [&](const ProfilePoint &p) {
+          return !p.onHost && p.resource == resource;
+        });
+        if (same == imported.points.end())
+          imported.points.push_back(std::move(point));
+        else if (same->config != point.config)
+          return llvm::formatv("class {0} has two groups on {1} with different "
+                               "configs",
+                               *ci, resource)
+              .str();
+      } else if (llvm::none_of(imported.points, [](const ProfilePoint &p) {
+                   return p.onHost;
+                 })) {
+        ProfilePoint host;
+        host.resource = 0;
+        host.costMs = costMs;
+        host.onHost = true;
+        imported.points.insert(imported.points.begin(), std::move(host));
+      }
+      const unsigned gi = imported.groups.size();
+      for (const llvm::json::Value &m : *members) {
+        std::optional<int64_t> mi = m.getAsInteger();
+        if (!mi || *mi < 0 || *mi >= size)
+          return llvm::formatv("class {0} has {1} members; a group lists "
+                               "another",
+                               *ci, size)
+              .str();
+        if (imported.groupOfMember[*mi] != ~0u)
+          return llvm::formatv("member {0} of class {1} is in two groups", *mi,
+                               *ci)
+              .str();
+        imported.groupOfMember[*mi] = gi;
+      }
+      imported.groups.push_back(alloc);
+    }
+    for (auto [mi, gi] : llvm::enumerate(imported.groupOfMember))
+      if (gi == ~0u)
+        return llvm::formatv("member {0} of class {1} is in no group", mi, *ci)
+            .str();
+  }
+  for (auto [ci, isListed] : llvm::enumerate(listed))
+    if (!isListed)
+      return llvm::formatv("class {0} is not listed", ci).str();
+  return std::nullopt;
+}
+
 /// The two-level solve over one graph: profile each class over the resource
 /// menu, allocate the device exactly over the profiles, then stamp each
 /// group's winning configuration onto its members and commit them through
@@ -452,6 +596,22 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
   };
   std::vector<ClassResult> results(graph.classes.size());
 
+  // An imported allocation replaces profiling and the solve: its groups'
+  // points are the profiles, and it is committed as it stands.
+  std::vector<ImportedClass> imported;
+  if (!opts.allocationIn.empty()) {
+    std::unique_ptr<InferencePlugin> plugin = makePlugin(graph.platform);
+    if (std::optional<std::string> error = readImportedAllocation(
+            (std::filesystem::path(opts.allocationIn) /
+             (graphName.str() + ".json"))
+                .string(),
+            graph, graphName, plugin->sharedResourceParam(), imported))
+      return emitDefiniteFailure(loc) << "allocation-in: " << *error;
+    for (auto [ci, cls] : llvm::enumerate(imported))
+      results[ci].points = cls.points;
+  }
+  const bool isImported = !imported.empty();
+
   auto profileClass = [&](size_t ci) {
     const BlockClass &blockClass = graph.classes[ci];
     if (!references[ci]) {
@@ -484,7 +644,9 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
     results[ci].points = std::move(std::get<SmallVector<ProfilePoint>>(points));
   };
 
-  if (classThreads <= 1) {
+  if (isImported) {
+    // Nothing to profile.
+  } else if (classThreads <= 1) {
     for (size_t ci = 0; ci < graph.classes.size(); ++ci)
       profileClass(ci);
   } else {
@@ -569,7 +731,7 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
 
     // The menu screen again, with the device's side priced by the search
     // instead of bounded by its roofline.
-    if (opts.screenMenuAgainstHost && !placementIsSolved) {
+    if (opts.screenMenuAgainstHost && !placementIsSolved && !isImported) {
       cinm::OffloadFootprint f =
           cinm::measureOffloadFootprint(blockClass.representative());
       auto host =
@@ -596,7 +758,7 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
     // class whose best point is the smallest menu value gains nothing from
     // more devices, and when that point is also mostly transfer the device
     // buys it essentially nothing at all.
-    if (opts.hostTransferBoundShare > 0) {
+    if (opts.hostTransferBoundShare > 0 && !isImported) {
       if (bestPt->resource == pts.front().resource &&
           bestPt->transferShare >= opts.hostTransferBoundShare) {
         staysOnHost(ClassFate::TransferBound,
@@ -609,7 +771,7 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
         continue;
       }
     }
-    if (placementIsSolved) {
+    if (placementIsSolved && !isImported) {
       std::optional<ProfilePoint> host =
           hostPointOf(blockClass.representative());
       // A class the host cannot be priced for would enter the solve with
@@ -689,10 +851,35 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
            node.memberIndex, std::move(preds), node.executions});
     }
   }
-  if (opts.latencyObjective)
+  if (isImported) {
+    AllocationResult result;
+    result.perClass.resize(profiles.size());
+    for (auto [ci, solveIndex] : llvm::enumerate(solveIndexOfClass))
+      if (solveIndex >= 0) {
+        result.perClass[solveIndex].groups = imported[ci].groups;
+        for (const GroupAllocation &g : imported[ci].groups)
+          result.resourceUsed += g.onHost ? 0 : g.resource;
+      }
+    SmallVector<unsigned> classOfSolveIndex(profiles.size());
+    for (auto [ci, solveIndex] : llvm::enumerate(solveIndexOfClass))
+      if (solveIndex >= 0)
+        classOfSolveIndex[solveIndex] = ci;
+    for (const GraphNode &node : nodes)
+      result.groupOfNode.push_back(imported[classOfSolveIndex[node.classIndex]]
+                                       .groupOfMember[node.memberIndex]);
+    if (result.resourceUsed > allocOpts.resourceBudget)
+      return emitDefiniteFailure(loc)
+             << "allocation-in: the groups take " << result.resourceUsed
+             << " of a budget of " << allocOpts.resourceBudget;
+    const AllocationScore score = scoreAllocation(profiles, nodes, result);
+    result.objectiveMs =
+        opts.latencyObjective ? score.latencyMs : score.throughputMs;
+    alloc = std::move(result);
+  } else if (opts.latencyObjective) {
     alloc = allocateGraphForLatency(profiles, nodes, allocOpts);
-  else
+  } else {
     alloc = allocateGraph(profiles, allocOpts);
+  }
   if (!alloc)
     return emitSilenceableFailure(loc)
            << "no feasible device allocation for this graph: some class fits "

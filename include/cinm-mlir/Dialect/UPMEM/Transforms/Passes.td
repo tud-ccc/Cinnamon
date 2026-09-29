@@ -416,6 +416,12 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "Graph allocation only: the most DPU counts to profile per block "
            "after the screen, thinned geometrically. 0 profiles every count "
            "the screen leaves">,
+    Option<"allocationIn", "allocation-in", "std::string", "\"\"",
+           "Graph allocation only: a directory holding each graph's "
+           "allocation as <dir>/<graph>.json, committed instead of profiling "
+           "and solving. Per class, its groups: member indices, and either "
+           "on_host or a resource and the config to run there, laid out as in "
+           "the allocation report">,
     Option<"allocationReportDir", "allocation-report", "std::string", "\"\"",
            "Graph allocation only: a directory to write each graph's "
            "allocation report to, as <dir>/<graph>.json: per block class its "

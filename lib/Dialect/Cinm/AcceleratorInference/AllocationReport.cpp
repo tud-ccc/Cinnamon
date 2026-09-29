@@ -318,6 +318,9 @@ void writeAllocationReport(const std::filesystem::path &path,
       {"sample_n", static_cast<int64_t>(opts.sampleN)},
       {"stamp_configs", opts.stampConfigs},
       {"gate_dry_run", opts.gateDryRun},
+      {"allocation_in", opts.allocationIn.empty()
+                            ? json::Value(nullptr)
+                            : json::Value(opts.allocationIn)},
   };
 
   root["nodes"] = json::Value(json::Array(record.nodes));
