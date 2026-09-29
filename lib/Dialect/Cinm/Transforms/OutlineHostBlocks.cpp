@@ -17,9 +17,11 @@
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
 
 #include <llvm/ADT/SetVector.h>
+#include <llvm/Support/JSON.h>
 #include <llvm/Support/raw_ostream.h>
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
 #include <mlir/Dialect/Func/IR/FuncOps.h>
+#include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/Dialect/Tensor/IR/Tensor.h>
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/IRMapping.h>
@@ -42,6 +44,11 @@ bool isClonedIn(Value v) {
   return def->hasTrait<OpTrait::ConstantLike>() || isa<tensor::EmptyOp>(def);
 }
 
+/// A compute op no accelerator was chosen for: host code.
+bool isUnplaced(Operation *op) {
+  return isa<ComputeOp, ComputeBlockOp>(op) && !op->getAttr("accelerator");
+}
+
 struct OutlineHostBlocksPass
     : public impl::CinmOutlineHostBlocksPassBase<OutlineHostBlocksPass> {
   using Base::Base;
@@ -51,15 +58,32 @@ struct OutlineHostBlocksPass
     ModuleOp outlined = getOrCreateOutlinedModule(module);
 
     SmallVector<Operation *> blocks;
-    module->walk([&](Operation *op) {
-      if (op->getParentOfType<ModuleOp>() == module && isHostComputeOp(op))
+    module->walk<WalkOrder::PreOrder>([&](Operation *op) {
+      if (op->getParentOfType<ModuleOp>() != module)
+        return WalkResult::advance();
+      if (unplaced ? isUnplaced(op) : isHostComputeOp(op)) {
         blocks.push_back(op);
+        return WalkResult::skip();
+      }
+      return WalkResult::advance();
     });
 
     llvm::StringMap<unsigned> counters;
     for (Operation *op : blocks)
       if (failed(outline(op, module, outlined, counters)))
         return signalPassFailure();
+
+    if (!manifestFile.empty()) {
+      std::error_code ec;
+      llvm::raw_fd_ostream os(manifestFile, ec);
+      if (ec) {
+        module.emitError() << "cannot write the manifest to '" << manifestFile
+                           << "': " << ec.message();
+        return signalPassFailure();
+      }
+      os << llvm::formatv("{0:1}", llvm::json::Value(std::move(manifest)))
+         << '\n';
+    }
 
     if (outlinedFile.empty())
       return;
@@ -76,6 +100,9 @@ struct OutlineHostBlocksPass
   }
 
 private:
+  /// Per outlined function, its entry in the manifest.
+  llvm::json::Array manifest;
+
   ModuleOp getOrCreateOutlinedModule(ModuleOp module) {
     for (auto nested : module.getBody()->getOps<ModuleOp>())
       if (nested.getSymName() == StringRef(moduleName))
@@ -193,6 +220,162 @@ private:
     auto call =
         func::CallOp::create(builder, loc, name, type.getResults(), passed);
     YieldOp::create(builder, loc, call.getResults());
+
+    llvm::json::Array params, results;
+    if (unplaced && failed(callableAbi(fn, decl, call, params, results)))
+      return failure();
+    if (!manifestFile.empty()) {
+      llvm::json::Object entry{{"name", name},
+                               {"params", std::move(params)},
+                               {"results", std::move(results)}};
+      if (auto alloc = op->getAttrOfType<DictionaryAttr>(
+              CinmDialect::GRAPH_ALLOC_NAME)) {
+        if (auto graph = alloc.getAs<StringAttr>("graph"))
+          entry["graph"] = graph.getValue();
+        if (auto cls = alloc.getAs<IntegerAttr>("class"))
+          entry["class"] = cls.getInt();
+        if (auto member = alloc.getAs<IntegerAttr>("member"))
+          entry["member"] = member.getInt();
+      }
+      manifest.push_back(std::move(entry));
+    }
+    return success();
+  }
+
+  static std::string typeString(Type type) {
+    std::string text;
+    llvm::raw_string_ostream os(text);
+    type.print(os);
+    return text;
+  }
+
+  /// Makes the boundary between `call` and `fn` (declared by `decl`)
+  /// callable from C under the bare-pointer convention, which takes a memref
+  /// as a pointer and so needs its strides and offset static:
+  ///  - a memref with a dynamic offset is passed as the view of the same
+  ///    sizes and strides at offset 0 of its buffer, followed by the offset
+  ///    as an index; the function rebuilds the view from the two;
+  ///  - a memref result is dropped: it is the argument the function wrote
+  ///    in place, which the caller uses instead.
+  /// Describes the parameters in `params`, and the results in `results`: a
+  /// scalar result that remains, or the argument a dropped one was written
+  /// in (`in_place`, its position among the original arguments).
+  LogicalResult callableAbi(func::FuncOp fn, func::FuncOp decl,
+                            func::CallOp call, llvm::json::Array &params,
+                            llvm::json::Array &results) {
+    Block &entry = fn.getBody().front();
+    auto ret = cast<func::ReturnOp>(fn.getBody().back().getTerminator());
+    OpBuilder builder(call);
+    OpBuilder inside = OpBuilder::atBlockBegin(&entry);
+    Location loc = call.getLoc();
+    IndexType indexType = builder.getIndexType();
+
+    SmallVector<Value> operands;
+    // The caller's value behind each original argument, for the results
+    // written in place.
+    llvm::DenseMap<Value, Value> passedFor;
+    SmallVector<BlockArgument> args(entry.getArguments());
+    for (auto [i, arg] : llvm::enumerate(args)) {
+      Value operand = call.getOperand(i);
+      passedFor[arg] = operand;
+      auto memref = dyn_cast<MemRefType>(arg.getType());
+      if (!memref) {
+        params.push_back(
+            llvm::json::Object{{"kind", "scalar"},
+                               {"arg", i},
+                               {"type", typeString(arg.getType())}});
+        operands.push_back(operand);
+        continue;
+      }
+      SmallVector<int64_t> strides;
+      int64_t offset;
+      if (!memref.hasStaticShape() ||
+          failed(memref.getStridesAndOffset(strides, offset)) ||
+          llvm::any_of(strides, ShapedType::isDynamic))
+        return fn.emitError() << "argument " << i << " of type " << memref
+                              << " has no C form: its shape and strides "
+                                 "must be static";
+      llvm::json::Object param{{"kind", "memref"},
+                               {"arg", i},
+                               {"dtype", typeString(memref.getElementType())},
+                               {"shape", llvm::json::Array(memref.getShape())},
+                               {"strides", llvm::json::Array(strides)}};
+      if (!ShapedType::isDynamic(offset)) {
+        param["offset"] = offset;
+        params.push_back(std::move(param));
+        operands.push_back(operand);
+        continue;
+      }
+      auto atZero = MemRefType::get(
+          memref.getShape(), memref.getElementType(),
+          StridedLayoutAttr::get(memref.getContext(), 0, strides),
+          memref.getMemorySpace());
+      auto metadata =
+          memref::ExtractStridedMetadataOp::create(builder, loc, operand);
+      Value view = memref::ReinterpretCastOp::create(
+          builder, loc, atZero, metadata.getBaseBuffer(), 0, memref.getShape(),
+          strides);
+      operands.push_back(view);
+      operands.push_back(metadata.getOffset());
+      param["offset"] = "next";
+      params.push_back(std::move(param));
+      params.push_back(llvm::json::Object{
+          {"kind", "offset"}, {"arg", i}, {"type", "index"}});
+
+      arg.setType(atZero);
+      Value offsetArg =
+          entry.insertArgument(arg.getArgNumber() + 1, indexType, arg.getLoc());
+      auto rebuilt = memref::ReinterpretCastOp::create(
+          inside, loc, memref, arg, OpFoldResult(offsetArg),
+          getAsIndexOpFoldResult(fn.getContext(), memref.getShape()),
+          getAsIndexOpFoldResult(fn.getContext(), strides));
+      arg.replaceAllUsesExcept(rebuilt.getResult(), rebuilt);
+    }
+
+    SmallVector<Value> kept;
+    SmallVector<unsigned> dropped;
+    for (auto [ri, value] : llvm::enumerate(ret.getOperands())) {
+      if (!isa<MemRefType>(value.getType())) {
+        results.push_back(llvm::json::Object{
+            {"kind", "scalar"}, {"type", typeString(value.getType())}});
+        kept.push_back(value);
+        continue;
+      }
+      auto written = dyn_cast<BlockArgument>(value);
+      if (!written || written.getOwner() != &entry)
+        return fn.emitError() << "result " << ri
+                              << " is not one of the arguments; only a "
+                                 "result written in place has a C form";
+      dropped.push_back(ri);
+      results.push_back(llvm::json::Object{
+          {"kind", "memref"},
+          {"in_place",
+           static_cast<int64_t>(llvm::find(args, written) - args.begin())}});
+    }
+
+    // The call's operands follow the entry block's arguments one to one.
+    auto newCall = func::CallOp::create(builder, loc, fn.getSymName(),
+                                        ValueRange(kept).getTypes(), operands);
+    unsigned next = 0;
+    for (auto [ri, result] : llvm::enumerate(call.getResults())) {
+      if (llvm::is_contained(dropped, ri)) {
+        auto written = cast<BlockArgument>(ret.getOperand(ri));
+        // The operand passed in that argument's place, before any view the
+        // offset split put there: the caller's own value.
+        result.replaceAllUsesWith(passedFor.lookup(written));
+        continue;
+      }
+      result.replaceAllUsesWith(newCall.getResult(next++));
+    }
+    call.erase();
+    OpBuilder at(ret);
+    func::ReturnOp::create(at, ret.getLoc(), kept);
+    ret.erase();
+
+    auto type = FunctionType::get(fn.getContext(), entry.getArgumentTypes(),
+                                  ValueRange(kept).getTypes());
+    fn.setType(type);
+    decl.setType(type);
     return success();
   }
 };

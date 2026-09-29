@@ -153,7 +153,22 @@ LDFLAGS = -lUpmemDialectRuntime -ldpu -ldpuverbose -lopenblas -lnuma -Wl,-s \
 ASYNC_LAUNCHES ?= 0
 ASYNC_PASS = $(if $(filter-out 0,$(ASYNC_LAUNCHES)),--upmem-async-launches=noalias-arguments,)
 
-LOWER_PIPELINE = \
+# HOST_OUTLINE=1 moves every host block into a function of a module of its
+# own, ir/<fn>.host.mlir (--cinm-outline-host-blocks=unplaced), whose
+# functions take C arguments (the bare-pointer memref convention) and are
+# listed with their graph-allocation class in ir/<fn>.host.json. The module
+# is compiled like the rest into ir/<fn>.host.o with every symbol weak, so
+# that an object in HOST_KERNEL_OBJS defining one of its functions -- another
+# compiler's kernel for that block -- replaces it at the link.
+HOST_OUTLINE ?= 0
+HOST_KERNEL_OBJS ?=
+HOST_KERNEL_LDFLAGS ?=
+OUTLINE_PASS = $(if $(filter-out 0,$(HOST_OUTLINE)),--cinm-outline-host-blocks="unplaced=true outlined-file=$(IR_DIR)/$*.host.mlir manifest-file=$(IR_DIR)/$*.host.json",)
+HOST_OBJS = $(if $(filter-out 0,$(HOST_OUTLINE)),$(IR_DIR)/$(BENCH_FN).host.o $(HOST_KERNEL_OBJS),)
+
+LOWER_PIPELINE = $(OUTLINE_PASS) $(LOWER_PASSES)
+
+LOWER_PASSES = \
     --cinm-unwrap-compute-blocks \
     --upmem-dedup-kernels \
     --upmem-hoist-load-programs \
@@ -178,7 +193,7 @@ TO_LLVM_PIPELINE = \
 
 .PHONY: bench-single costs-only clean relink
 
-.PRECIOUS: $(IR_DIR)/%.mlir $(IR_DIR)/%.kernels.mlir $(IR_DIR)/%.dpu.c
+.PRECIOUS: $(IR_DIR)/%.mlir $(IR_DIR)/%.kernels.mlir $(IR_DIR)/%.dpu.c $(IR_DIR)/%.host.mlir
 
 $(IR_DIR) $(BIN_DIR):
 	mkdir -p $@
@@ -221,6 +236,17 @@ $(IR_DIR)/%.o: $(IR_DIR)/%.mlir
 	    | $(CINM_TRANS) --allow-unregistered-dialect --mlir-to-llvmir -o - \
 	    | $(CINM_BIN)/opt -O3 $(MCPU_FLAG) | $(CINM_BIN)/llc -O3 $(MCPU_FLAG) -filetype=obj -relocation-model=pic -code-model=medium -o $@
 
+# The outlined host module is written by the rule above; it goes through
+# the same lowering, bar the outlining.
+$(IR_DIR)/%.host.mlir $(IR_DIR)/%.host.json: $(IR_DIR)/%.o ;
+
+$(IR_DIR)/%.host.o: $(IR_DIR)/%.host.mlir
+	$(CINM_OPT) $< $(LOWER_PASSES) $(TO_LLVM_PIPELINE) -o - \
+	    | $(CINM_TRANS) --allow-unregistered-dialect --mlir-to-llvmir -o - \
+	    | $(CINM_BIN)/opt -O3 $(MCPU_FLAG) | $(CINM_BIN)/llc -O3 $(MCPU_FLAG) -filetype=obj -relocation-model=pic -code-model=medium -o $@.strong
+	$(CINM_BIN)/llvm-objcopy --weaken $@.strong $@
+	rm -f $@.strong
+
 # The stages the rule above pipes through, for when a compile fails and the
 # intermediate IR is what you want to look at. Nothing depends on these; ask
 # for one by name (`make ir/foo.final.mlir`).
@@ -248,11 +274,11 @@ $(BIN_DIR)/$(BENCH_FN): $(IR_DIR)/$(BENCH_FN).dpu.c | $(BIN_DIR)
 
 define LINK_BENCH
 	$(BENCH_CXX) $(CXXFLAGS) -DBENCH_FN=$(BENCH_FN) $(BENCH_DRIVER) \
-	    $(IR_DIR)/$(BENCH_FN).o $(LDFLAGS) \
+	    $(IR_DIR)/$(BENCH_FN).o $(HOST_OBJS) $(LDFLAGS) $(HOST_KERNEL_LDFLAGS) \
 	    -o $(BIN_DIR)/bench_$(BENCH_FN)
 endef
 
-bench-single: $(IR_DIR)/$(BENCH_FN).o $(BIN_DIR)/$(BENCH_FN) $(IR_DIR)/cost.csv | $(BIN_DIR)
+bench-single: $(IR_DIR)/$(BENCH_FN).o $(HOST_OBJS) $(BIN_DIR)/$(BENCH_FN) $(IR_DIR)/cost.csv | $(BIN_DIR)
 	$(LINK_BENCH)
 
 # Just the final link step (e.g. after editing BENCH_DRIVER or the runtime

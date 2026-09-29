@@ -505,13 +505,28 @@ def CinmOutlineHostBlocksPass : Pass<"cinm-outline-host-blocks", "mlir::ModuleOp
 
     With `outlined-file`, the outlined module is written to that path and
     removed from the IR, which splits the program in one invocation.
+
+    With `unplaced`, the ops outlined are every compute op the lowering left
+    without an accelerator, outermost only: on a lowered module, whatever
+    runs on the host, the blocks the allocation placed there included.
+    Their boundary is also made callable from C under the bare-pointer
+    memref convention, so that another compiler's kernels can stand in for
+    them: a memref with a dynamic offset is passed as its view at offset 0
+    followed by the offset as an index, and a memref result, which is always
+    an argument written in place, is dropped in favour of that argument.
   }];
 
   let options = [
     Option<"moduleName", "module-name", "std::string", "\"outlined\"",
            "Symbol name of the module that receives the outlined functions">,
     Option<"outlinedFile", "outlined-file", "std::string", "\"\"",
-           "Write the outlined module to this path and remove it from the IR (empty: keep it nested)">
+           "Write the outlined module to this path and remove it from the IR (empty: keep it nested)">,
+    Option<"unplaced", "unplaced", "bool", "false",
+           "Outline every compute op without an accelerator instead: after "
+           "allocation and lowering, the host's share of the program">,
+    Option<"manifestFile", "manifest-file", "std::string", "\"\"",
+           "Write, per outlined function, its parameters and results and the "
+           "graph allocation's class and member of its block, as JSON">
   ];
 
   let dependentDialects = [
