@@ -145,6 +145,14 @@ LDFLAGS = -lUpmemDialectRuntime -ldpu -ldpuverbose -lopenblas -lnuma -Wl,-s \
 # allocation -- a resident program is loaded once per set lifetime, not once
 # per member block. (The DPU-side %.kernels.mlir target compiles from the
 # pre-LOWER module, so deduplicated symbols still resolve to a binary.)
+# ASYNC_LAUNCHES=1 issues every DPU launch and transfer asynchronously and
+# syncs each set only where the host reads what it produced
+# (--upmem-async-launches), so that sets run concurrently with each other and
+# with independent host code. The bench drivers pass every buffer separately,
+# which is what noalias-arguments assumes.
+ASYNC_LAUNCHES ?= 0
+ASYNC_PASS = $(if $(filter-out 0,$(ASYNC_LAUNCHES)),--upmem-async-launches=noalias-arguments,)
+
 LOWER_PIPELINE = \
     --cinm-unwrap-compute-blocks \
     --upmem-dedup-kernels \
@@ -155,6 +163,7 @@ LOWER_PIPELINE = \
     --convert-linalg-to-affine-loops \
 		--affine-scalrep $(SUPER_VECTORIZE) --affine-expand-index-ops-as-affine \
 		--convert-vector-to-amx --convert-vector-to-scf --convert-vector-to-llvm \
+    $(ASYNC_PASS) \
     --canonicalize --cse
 #     --cinm-unwrap-compute-blocks
 

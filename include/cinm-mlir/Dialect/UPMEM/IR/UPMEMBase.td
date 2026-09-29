@@ -45,6 +45,14 @@ def UPMEM_Dialect : Dialect {
       /// Absent means the transfer is unattributed.
       constexpr static StringRef TIMING_TAG_NAME = "upmem.timing_tag";
 
+      /// A UnitAttr on upmem.wait_for, upmem.scatter_on_array,
+      /// upmem.gather_from_array and upmem.broadcast: the op is only issued,
+      /// on its DPU set's queue, and the host goes on. The set's operations
+      /// run in issue order; what they read and write on the host is only
+      /// settled at the next upmem.sync of the set
+      /// (--upmem-async-launches places those).
+      constexpr static StringRef ASYNC_NAME = "upmem.async";
+
     private:
         void registerOps();
         void registerTypes();

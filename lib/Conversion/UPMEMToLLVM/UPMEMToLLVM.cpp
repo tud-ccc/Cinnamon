@@ -68,6 +68,14 @@ static LLVM::LLVMPointerType functionPtrTy(Type resultTy, ArrayRef<Type>) {
   return untypedPtrType(resultTy.getContext());
 }
 
+/// The runtime entry point for `op`: `base`, or its `_async` variant when the
+/// op only issues (upmem.async).
+static std::string runtimeEntry(Operation *op, StringRef base) {
+  if (op->hasAttr(upmem::UPMEMDialect::ASYNC_NAME))
+    return (base + "_async").str();
+  return base.str();
+}
+
 static Value reifyAsIndex(ImplicitLocOpBuilder &builder,
                           LLVMTypeConverter const *converter, int64_t value) {
   return LLVM::ConstantOp::create(builder, converter->getIndexType(), value);
@@ -274,11 +282,11 @@ void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
 */
 static FailureOr<LLVM::LLVMFuncOp>
 getBroadcastFunc(OpBuilder &rewriter, ModuleOp moduleOp,
-                 LLVMTypeConverter const *tyConverter) {
+                 LLVMTypeConverter const *tyConverter, StringRef name) {
   auto ctx = moduleOp->getContext();
   auto ptrTy = untypedPtrType(ctx);
   auto sizeTy = tyConverter->getIndexType();
-  return LLVM::lookupOrCreateFn(rewriter, moduleOp, "upmemrt_dpu_broadcast",
+  return LLVM::lookupOrCreateFn(rewriter, moduleOp, name,
                                 {ptrTy, ptrTy, sizeTy, ptrTy, sizeTy, ptrTy},
                                 LLVM::LLVMVoidType::get(ctx));
 }
@@ -961,7 +969,8 @@ static LogicalResult lowerBroadcast(upmem::BroadcastOp op,
     return failure();
   auto [bareHostBuf, bufferId] = *bufsOrFailure;
 
-  auto runtimeFun = getBroadcastFunc(rewriter, moduleOp, tyConverter);
+  auto runtimeFun = getBroadcastFunc(rewriter, moduleOp, tyConverter,
+                                     runtimeEntry(op, "upmemrt_dpu_broadcast"));
   if (llvm::failed(runtimeFun))
     return failure();
   Value tag = reifyTimingTag(rewriter, moduleOp, op);
@@ -1025,7 +1034,8 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
 
   auto runtimeScatterFun = getScatterOrGatherFunc(
       rewriter, moduleOp, tyConverter,
-      isGather ? "upmemrt_dpu_gather" : "upmemrt_dpu_scatter");
+      runtimeEntry(op,
+                   isGather ? "upmemrt_dpu_gather" : "upmemrt_dpu_scatter"));
 
   if (llvm::failed(runtimeScatterFun))
     return failure();
@@ -1161,9 +1171,27 @@ struct WaitForOpToFuncCallLowering
 
     // void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set) {
     auto funcOp = appendOrGetFuncOp(
-        rewriter, "upmemrt_dpu_launch", resultType,
+        rewriter, runtimeEntry(op, "upmemrt_dpu_launch"), resultType,
         {getTypeConverter()->convertType(op.getDpuSet().getType())}, op);
 
+    if (llvm::failed(funcOp))
+      return failure();
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, *funcOp, adaptor.getDpuSet());
+    return success();
+  }
+};
+
+struct SyncOpToFuncCallLowering : public ConvertOpToLLVMPattern<upmem::SyncOp> {
+  using ConvertOpToLLVMPattern<upmem::SyncOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(upmem::SyncOp op, typename upmem::SyncOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // void upmemrt_dpu_sync(struct dpu_set_t *void_dpu_set)
+    auto funcOp = appendOrGetFuncOp(
+        rewriter, "upmemrt_dpu_sync",
+        LLVM::LLVMVoidType::get(rewriter.getContext()),
+        {getTypeConverter()->convertType(op.getDpuSet().getType())}, op);
     if (llvm::failed(funcOp))
       return failure();
     rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, *funcOp, adaptor.getDpuSet());
@@ -1204,6 +1232,7 @@ void populateUPMEMToLLVMConversionPatterns(LLVMTypeConverter &typeConverter,
   patterns.add<BroadcastOpToFuncCallLowering>(typeConverter);
   patterns.add<GatherFromArrayOpToFuncCallLowering>(typeConverter);
   patterns.add<GatherBlocksOpToFuncCallLowering>(typeConverter);
+  patterns.add<SyncOpToFuncCallLowering>(typeConverter);
   patterns.add<WaitForOpToFuncCallLowering>(typeConverter);
   patterns.add<FreeDPUsOpToFuncCallLowering>(typeConverter);
   patterns.add<CompactBufferOpToFuncCallLowering>(typeConverter);

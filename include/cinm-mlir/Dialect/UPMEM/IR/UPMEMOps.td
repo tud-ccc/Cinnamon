@@ -225,8 +225,11 @@ def DpuResource : Resource<"DpuSetResource">;
 // thing that changes going down the family is how many blocks there are and
 // where they may sit. --upmem-specialize-transfers narrows an op to a lower
 // level when its map permits.
+// The host-side effect sits on the host buffer operand, not on the op: a
+// value-less effect would read as "some memory", and nothing could be
+// ordered against it.
 class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect, MemoryEffect dpuEffect>
-  : Upmem_Op<mnemonic, [MemoryEffects<[effect, dpuEffect]>,
+  : Upmem_Op<mnemonic, [MemoryEffects<[dpuEffect]>,
                         DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
 
   let arguments = (ins Arg<AnyMemRef, "", [effect]>:$hostBuffer,
@@ -331,7 +334,7 @@ def GatherFromArrayOp: ScatterGatherLike<"gather_from_array", "from", MemWrite, 
 }
 
 class BlockTransferLike<string mnemonic, string kw, MemoryEffect effect, MemoryEffect dpuEffect>
-  : Upmem_Op<mnemonic, [MemoryEffects<[effect, dpuEffect]>,
+  : Upmem_Op<mnemonic, [MemoryEffects<[dpuEffect]>,
                         DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let description = [{
     Transfers `numBlocksPerDpu` blocks of `transferCount` elements each between
@@ -449,7 +452,7 @@ def GatherBlocksOp: BlockTransferLike<"gather_blocks", "from", MemWrite, MemRead
 }
 
 def BroadcastOp: Upmem_Op<"broadcast", [
-      MemoryEffects<[MemRead, MemWrite<DpuResource>]>,
+      MemoryEffects<[MemWrite<DpuResource>]>,
       DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary = "copy a host buffer into the MRAM of every DPU, identically";
   let description = [{
@@ -631,7 +634,8 @@ def WaitForOp : Upmem_Op<"wait_for", [MemoryEffects<[MemRead<DpuResource>, MemWr
   let description = [{
     Triggers execution of the DPU program previously loaded by
     `upmem.load_program` on all DPUs in the hierarchy. Blocks the host until
-    every DPU finishes.
+    every DPU finishes, unless the op carries `upmem.async`: it then only
+    issues the launch, and `upmem.sync` waits for it.
     After this op, the results can be retrieved with `upmem.gather_from_array`.
 
     ```mlir
@@ -647,6 +651,24 @@ def WaitForOp : Upmem_Op<"wait_for", [MemoryEffects<[MemRead<DpuResource>, MemWr
     /// Return the DpuProgramOp running on this hierarchy, or null.
     DpuProgramOp getDpuProgram();
   }];
+}
+
+def SyncOp : Upmem_Op<"sync", [MemoryEffects<[MemRead<DpuResource>, MemWrite<DpuResource>]>]> {
+  let summary = "block until every operation issued on a DPU set completed";
+  let description = [{
+    Waits for the operations issued on the hierarchy's DPU set with the
+    `upmem.async` attribute (launches and transfers): after it, the host
+    buffers those transfers read may be reused and the ones they write may
+    be read. A no-op on a set with nothing in flight.
+
+    ```mlir
+    upmem.sync %dpus : !upmem.hierarchy<64x16>
+    ```
+  }];
+
+  let arguments = (ins DeviceHierarchyType:$dpuSet);
+
+  let assemblyFormat = " $dpuSet attr-dict `:` qualified(type($dpuSet))";
 }
 
 def ReturnOp : Upmem_Op<"return", [ParentOneOf<["DpuProgramOp"]>, Pure, Terminator]>,

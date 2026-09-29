@@ -18,6 +18,34 @@ def UPMEMDedupKernelsPass: Pass<"upmem-dedup-kernels", "ModuleOp"> {
   ];
 }
 
+def UpmemAsyncLaunchesPass : Pass<"upmem-async-launches"> {
+  let summary = "Issue DPU launches and transfers asynchronously, synced where the host needs them";
+  let description = [{
+    Marks every `upmem.wait_for`, `upmem.scatter_on_array`,
+    `upmem.gather_from_array` and `upmem.broadcast` with `upmem.async`: each
+    is then only issued on its DPU set's queue, which runs the set's
+    operations in issue order. For every set, an `upmem.sync` goes before
+    the first host op that reads a buffer its transfers in flight write,
+    writes a buffer they read, or operates on the set itself, and before the
+    end of each block.
+
+    Each sync is then moved as late as the ops after it allow: an op that
+    depends neither on the sync nor on what is carried along with it --
+    another set's launch, or host work independent of the results -- is
+    moved before it, so that it runs while the set works. Dependences are
+    memory effects under alias analysis, SSA uses and shared DPU sets; an op
+    with effects that cannot be described (a call) depends on everything.
+
+    Runs on host code with memref semantics, after bufferization.
+  }];
+  let options = [
+    Option<"noaliasArguments", "noalias-arguments", "bool", "false",
+           "Take distinct memref arguments of a function to be distinct "
+           "buffers, as when every caller passes separate allocations">,
+  ];
+  let dependentDialects = ["mlir::upmem::UPMEMDialect"];
+}
+
 def UpmemHoistLoadProgramsPass : Pass<"upmem-hoist-load-programs"> {
   let summary = "Load each DPU set's resident program once, where the set is allocated";
   let description = [{

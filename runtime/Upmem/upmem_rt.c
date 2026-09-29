@@ -13,6 +13,19 @@
 #define TRANSFER_FLAGS DPU_XFER_DEFAULT
 #endif
 
+/// Whether the `_async` entry points issue asynchronously: unless
+/// UPMEM_RT_ASYNC=0, which makes them their synchronous counterparts (timer
+/// rows included) and upmemrt_dpu_sync a no-op, so that a binary built with
+/// --upmem-async-launches also runs, and is timed, in program order.
+static int rt_async_enabled(void) {
+  static int enabled = -1;
+  if (enabled < 0) {
+    const char *v = getenv("UPMEM_RT_ASYNC");
+    enabled = !(v && strcmp(v, "0") == 0);
+  }
+  return enabled;
+}
+
 // Residency cache, defined below the transfer functions that consult it.
 static int rt_transfer_resident(struct dpu_set_t *set, const char *tag,
                                 const char *symbol, size_t symbol_offset,
@@ -21,7 +34,7 @@ static int rt_transfer_resident(struct dpu_set_t *set, const char *tag,
 void do_dpu_transfer(dpu_xfer_t xfer_type, struct dpu_set_t *dpu_set,
                      void *host_buffer, size_t copy_bytes, const char *buf_id,
                      size_t symbol_offset, size_t padding_ratio,
-                     size_t (*base_offset)(size_t)) {
+                     size_t (*base_offset)(size_t), dpu_xfer_flags_t flags) {
   assert(copy_bytes > 0);
 
   // Retrieve results
@@ -42,7 +55,29 @@ void do_dpu_transfer(dpu_xfer_t xfer_type, struct dpu_set_t *dpu_set,
   }
 
   DPU_ASSERT(dpu_push_xfer(*dpu_set, xfer_type, buf_id, symbol_offset,
-                           copy_bytes, TRANSFER_FLAGS));
+                           copy_bytes, flags));
+}
+
+void upmemrt_dpu_scatter_async(struct dpu_set_t *dpu_set, void *hostBuffer,
+                               size_t element_size, size_t num_elements,
+                               size_t num_elements_per_tasklet,
+                               size_t copy_bytes, const char *bufId,
+                               size_t symbol_offset,
+                               size_t (*base_offset)(size_t), const char *tag) {
+  if (!rt_async_enabled()) {
+    upmemrt_dpu_scatter(dpu_set, hostBuffer, element_size, num_elements,
+                        num_elements_per_tasklet, copy_bytes, bufId,
+                        symbol_offset, base_offset, tag);
+    return;
+  }
+  (void)element_size;
+  (void)num_elements;
+  (void)num_elements_per_tasklet;
+  if (rt_transfer_resident(dpu_set, tag, bufId, symbol_offset, hostBuffer,
+                           copy_bytes))
+    return;
+  do_dpu_transfer(DPU_XFER_TO_DPU, dpu_set, hostBuffer, copy_bytes, bufId,
+                  symbol_offset, 1, base_offset, DPU_XFER_ASYNC);
 }
 
 void upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *hostBuffer,
@@ -60,7 +95,7 @@ void upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *hostBuffer,
   uint64_t t0 = upmemrt_now_ns();
 #endif
   do_dpu_transfer(DPU_XFER_TO_DPU, dpu_set, hostBuffer, copy_bytes, bufId,
-                  symbol_offset, 1, base_offset);
+                  symbol_offset, 1, base_offset, TRANSFER_FLAGS);
 #ifdef UPMEM_RT_STATS
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
@@ -80,12 +115,13 @@ void upmemrt_dpu_gather(struct dpu_set_t *dpu_set, void *host_buffer,
 #endif
   if (num_elements * element_size >= 8) {
     do_dpu_transfer(DPU_XFER_FROM_DPU, dpu_set, host_buffer, copy_bytes, bufid,
-                    symbol_offset, 1, base_offset);
+                    symbol_offset, 1, base_offset, TRANSFER_FLAGS);
   } else {
     void *padded_result =
         malloc(num_elements * element_size * (8 / element_size));
     do_dpu_transfer(DPU_XFER_FROM_DPU, dpu_set, padded_result, copy_bytes,
-                    bufid, symbol_offset, 8 / element_size, base_offset);
+                    bufid, symbol_offset, 8 / element_size, base_offset,
+                    TRANSFER_FLAGS);
     for (size_t i = 0; i < num_elements; i++) {
       memcpy(host_buffer + i * element_size, padded_result + i * 8,
              element_size);
@@ -97,6 +133,25 @@ void upmemrt_dpu_gather(struct dpu_set_t *dpu_set, void *host_buffer,
   upmemrt_record_gather(upmemrt_now_ns() - t0, copy_bytes, nr_dpus,
                         /*num_blocks=*/1, "array", tag);
 #endif
+}
+
+void upmemrt_dpu_gather_async(struct dpu_set_t *dpu_set, void *host_buffer,
+                              size_t element_size, size_t num_elements,
+                              size_t num_elements_per_tasklet,
+                              size_t copy_bytes, const char *bufid,
+                              size_t symbol_offset,
+                              size_t (*base_offset)(size_t), const char *tag) {
+  // Under 8 bytes the result arrives padded and is unpadded on the host,
+  // which needs it there: that path waits for the set and gathers in place.
+  if (num_elements * element_size < 8 || !rt_async_enabled()) {
+    DPU_ASSERT(dpu_sync(*dpu_set));
+    upmemrt_dpu_gather(dpu_set, host_buffer, element_size, num_elements,
+                       num_elements_per_tasklet, copy_bytes, bufid,
+                       symbol_offset, base_offset, tag);
+    return;
+  }
+  do_dpu_transfer(DPU_XFER_FROM_DPU, dpu_set, host_buffer, copy_bytes, bufid,
+                  symbol_offset, 1, base_offset, DPU_XFER_ASYNC);
 }
 
 /// Arguments closed over by get_sg_xfer_block, passed through the UPMEM SDK's
@@ -236,6 +291,21 @@ void upmemrt_dpu_gather_blocks_padded(
              blocks_per_slot, slot_padding_bytes);
 }
 
+void upmemrt_dpu_broadcast_async(struct dpu_set_t *dpu_set, void *host_buffer,
+                                 size_t copy_bytes, const char *buffer_id,
+                                 size_t symbol_offset, const char *tag) {
+  if (!rt_async_enabled()) {
+    upmemrt_dpu_broadcast(dpu_set, host_buffer, copy_bytes, buffer_id,
+                          symbol_offset, tag);
+    return;
+  }
+  if (rt_transfer_resident(dpu_set, tag, buffer_id, symbol_offset, host_buffer,
+                           copy_bytes))
+    return;
+  DPU_ASSERT(dpu_broadcast_to(*dpu_set, buffer_id, symbol_offset, host_buffer,
+                              copy_bytes, DPU_XFER_ASYNC));
+}
+
 void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
                            size_t copy_bytes, const char *buffer_id,
                            size_t symbol_offset, const char *tag) {
@@ -327,6 +397,7 @@ static uint64_t rt_evict(rt_cache_entry *victim) {
   dpu_get_nr_dpus(*victim->set, &nr_dpus);
   uint64_t t0 = upmemrt_now_ns();
 #endif
+  DPU_ASSERT(dpu_sync(*victim->set)); // settle what was issued on it
   DPU_ASSERT(dpu_free(*victim->set));
 #ifdef UPMEM_RT_STATS
   elapsed = upmemrt_now_ns() - t0;
@@ -512,6 +583,7 @@ void upmemrt_dpu_load(struct dpu_set_t *dpu_set, const char *dpu_binary_path) {
 #ifdef UPMEM_RT_STATS
   uint64_t t0 = upmemrt_now_ns();
 #endif
+  DPU_ASSERT(dpu_sync(*dpu_set)); // nothing issued may run past the load
   DPU_ASSERT(dpu_load(*dpu_set, dpu_binary_path, NULL));
   if (cached) {
     // A (re)load defines a new MRAM layout: whatever transfers were
@@ -552,6 +624,28 @@ void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set) {
   DPU_ASSERT(error);
 }
 
+void upmemrt_dpu_launch_async(struct dpu_set_t *void_dpu_set) {
+  if (!rt_async_enabled()) {
+    upmemrt_dpu_launch(void_dpu_set);
+    return;
+  }
+  struct dpu_set_t *dpu_set = (struct dpu_set_t *)void_dpu_set;
+  DPU_ASSERT(dpu_launch(*dpu_set, DPU_ASYNCHRONOUS));
+  if (getenv("UPMEM_LOG")) {
+    DPU_ASSERT(dpu_sync(*dpu_set));
+    size_t i = 0;
+    (void)i;
+    struct dpu_set_t dpu;
+    DPU_FOREACH(*dpu_set, dpu, i) { dpu_log_read(dpu, stdout); }
+  }
+}
+
+void upmemrt_dpu_sync(struct dpu_set_t *void_dpu_set) {
+  if (!rt_async_enabled())
+    return; // everything issued already completed
+  DPU_ASSERT(dpu_sync(*(struct dpu_set_t *)void_dpu_set));
+}
+
 void upmemrt_dpu_free(struct dpu_set_t *void_dpu_set) {
   struct dpu_set_t *dpu_set = (struct dpu_set_t *)void_dpu_set;
   // A cached set is released, not freed: it stays allocated (program and
@@ -567,6 +661,7 @@ void upmemrt_dpu_free(struct dpu_set_t *void_dpu_set) {
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
   uint64_t t0 = upmemrt_now_ns();
 #endif
+  DPU_ASSERT(dpu_sync(*dpu_set)); // settle what was issued on it
   DPU_ASSERT(dpu_free(*dpu_set));
 #ifdef UPMEM_RT_STATS
   upmemrt_record_free(upmemrt_now_ns() - t0, nr_dpus);
