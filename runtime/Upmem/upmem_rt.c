@@ -3,9 +3,135 @@
 #include "upmem_rt.h"
 #include "timers.h"
 #include <assert.h>
+#include <dpu_management.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+// ─── Placement trace (UPMEM_RT_TRACE_PLACEMENT=1) ───────────────────────────
+//
+// To stderr: for every set allocated, its DPUs, ranks, memory channels and
+// sockets; for every transfer site, once, on which NUMA nodes the host pages
+// its DPUs' slices start on lie, against each DPU's own rank's node.
+
+static int rt_trace_placement(void) {
+  static int enabled = -1;
+  if (enabled < 0) {
+    const char *v = getenv("UPMEM_RT_TRACE_PLACEMENT");
+    enabled = v && v[0] && strcmp(v, "0") != 0;
+  }
+  return enabled;
+}
+
+enum { RT_MAX_RANKS = 256 };
+
+static int rt_channel_of(int rank_id) {
+  char path[128];
+  snprintf(path, sizeof(path), "/sys/class/dpu_rank/dpu_rank%d/channel_id",
+           rank_id);
+  FILE *f = fopen(path, "r");
+  if (!f)
+    return -1;
+  int ch = -1;
+  if (fscanf(f, "%d", &ch) != 1)
+    ch = -1;
+  fclose(f);
+  return ch;
+}
+
+static void rt_trace_set(struct dpu_set_t set, int32_t wanted) {
+  struct dpu_set_t dpu;
+  uint32_t i, nr_dpus = 0;
+  int seen[RT_MAX_RANKS] = {0}, per_channel[RT_MAX_RANKS] = {0};
+  int per_node[2] = {0, 0};
+  dpu_get_nr_dpus(set, &nr_dpus);
+  DPU_FOREACH(set, dpu, i) {
+    struct dpu_rank_t *rank = dpu_get_rank(dpu_from_set(dpu));
+    int id = dpu_get_rank_id(rank) & 0xFFF;
+    if (id < 0 || id >= RT_MAX_RANKS || seen[id]++)
+      continue;
+    int ch = rt_channel_of(id);
+    if (ch >= 0 && ch < RT_MAX_RANKS)
+      per_channel[ch]++;
+    int node = dpu_get_rank_numa_node(rank);
+    if (node == 0 || node == 1)
+      per_node[node]++;
+  }
+  int ranks = 0, channels = 0, busiest = 0;
+  for (int r = 0; r < RT_MAX_RANKS; r++) {
+    ranks += seen[r] != 0;
+    if (per_channel[r]) {
+      channels++;
+      busiest = per_channel[r] > busiest ? per_channel[r] : busiest;
+    }
+  }
+  fprintf(stderr,
+          "[rt placement] alloc %d DPUs: got %u over %d ranks, %d channels "
+          "(busiest %d), ranks per socket %d/%d:",
+          wanted, nr_dpus, ranks, channels, busiest, per_node[0], per_node[1]);
+  for (int r = 0; r < RT_MAX_RANKS; r++)
+    if (seen[r])
+      fprintf(stderr, " %d(%d DPUs)", r, seen[r]);
+  fprintf(stderr, "\n");
+}
+
+/// Once per transfer site: where the host pages the DPUs' slices start on
+/// lie, local to the DPU's rank, remote, or not present yet.
+static void rt_trace_pages(struct dpu_set_t *set, const char *what,
+                           const char *tag, void *host, size_t copy_bytes,
+                           size_t padding_ratio,
+                           size_t (*base_offset)(size_t)) {
+  enum { MAX_SITES = 1024 };
+  static const char *reported[MAX_SITES];
+  static int nr_reported = 0;
+  if (!tag)
+    tag = "untagged";
+  for (int s = 0; s < nr_reported; s++)
+    if (reported[s] == tag)
+      return;
+  if (nr_reported < MAX_SITES)
+    reported[nr_reported++] = tag;
+
+  uint32_t nr_dpus = 0;
+  dpu_get_nr_dpus(*set, &nr_dpus);
+  void **pages = malloc(nr_dpus * sizeof(void *));
+  int *rank_node = malloc(nr_dpus * sizeof(int));
+  int *status = malloc(nr_dpus * sizeof(int));
+  long page = sysconf(_SC_PAGESIZE);
+  struct dpu_set_t dpu;
+  size_t i = 0;
+  DPU_FOREACH(*set, dpu, i) {
+    uintptr_t addr = (uintptr_t)host + base_offset(i) * padding_ratio;
+    pages[i] = (void *)(addr & ~(uintptr_t)(page - 1));
+    rank_node[i] = dpu_get_rank_numa_node(dpu_get_rank(dpu_from_set(dpu)));
+  }
+  long rc = syscall(SYS_move_pages, 0, (unsigned long)nr_dpus, pages, NULL,
+                    status, 0);
+  int local = 0, remote = 0, absent = 0, on_node[2] = {0, 0};
+  for (uint32_t d = 0; rc == 0 && d < nr_dpus; d++) {
+    if (status[d] < 0) {
+      absent++;
+      continue;
+    }
+    if (status[d] == 0 || status[d] == 1)
+      on_node[status[d]]++;
+    if (status[d] == rank_node[d])
+      local++;
+    else
+      remote++;
+  }
+  fprintf(stderr,
+          "[rt placement] %s %s: %u DPUs x %zu B, host slices local %d, "
+          "remote %d, absent %d (pages on node 0/1: %d/%d)%s\n",
+          what, tag, nr_dpus, copy_bytes, local, remote, absent, on_node[0],
+          on_node[1], rc == 0 ? "" : " -- move_pages failed");
+  free(pages);
+  free(rank_node);
+  free(status);
+}
 
 #ifdef ASYNC_TRANSFERS
 #define TRANSFER_FLAGS DPU_XFER_ASYNC
@@ -34,7 +160,8 @@ static int rt_transfer_resident(struct dpu_set_t *set, const char *tag,
 void do_dpu_transfer(dpu_xfer_t xfer_type, struct dpu_set_t *dpu_set,
                      void *host_buffer, size_t copy_bytes, const char *buf_id,
                      size_t symbol_offset, size_t padding_ratio,
-                     size_t (*base_offset)(size_t), dpu_xfer_flags_t flags) {
+                     size_t (*base_offset)(size_t), dpu_xfer_flags_t flags,
+                     const char *tag) {
   assert(copy_bytes > 0);
 
   // Retrieve results
@@ -56,6 +183,10 @@ void do_dpu_transfer(dpu_xfer_t xfer_type, struct dpu_set_t *dpu_set,
 
   DPU_ASSERT(dpu_push_xfer(*dpu_set, xfer_type, buf_id, symbol_offset,
                            copy_bytes, flags));
+  // After the transfer: a gather's pages are only placed by its writes.
+  if (rt_trace_placement() && flags != DPU_XFER_ASYNC)
+    rt_trace_pages(dpu_set, xfer_type == DPU_XFER_TO_DPU ? "scatter" : "gather",
+                   tag, host_buffer, copy_bytes, padding_ratio, base_offset);
 }
 
 void upmemrt_dpu_scatter_async(struct dpu_set_t *dpu_set, void *hostBuffer,
@@ -77,7 +208,7 @@ void upmemrt_dpu_scatter_async(struct dpu_set_t *dpu_set, void *hostBuffer,
                            copy_bytes))
     return;
   do_dpu_transfer(DPU_XFER_TO_DPU, dpu_set, hostBuffer, copy_bytes, bufId,
-                  symbol_offset, 1, base_offset, DPU_XFER_ASYNC);
+                  symbol_offset, 1, base_offset, DPU_XFER_ASYNC, tag);
 }
 
 void upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *hostBuffer,
@@ -95,7 +226,7 @@ void upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *hostBuffer,
   uint64_t t0 = upmemrt_now_ns();
 #endif
   do_dpu_transfer(DPU_XFER_TO_DPU, dpu_set, hostBuffer, copy_bytes, bufId,
-                  symbol_offset, 1, base_offset, TRANSFER_FLAGS);
+                  symbol_offset, 1, base_offset, TRANSFER_FLAGS, tag);
 #ifdef UPMEM_RT_STATS
   uint32_t nr_dpus = 0;
   dpu_get_nr_dpus(*dpu_set, &nr_dpus);
@@ -115,13 +246,13 @@ void upmemrt_dpu_gather(struct dpu_set_t *dpu_set, void *host_buffer,
 #endif
   if (num_elements * element_size >= 8) {
     do_dpu_transfer(DPU_XFER_FROM_DPU, dpu_set, host_buffer, copy_bytes, bufid,
-                    symbol_offset, 1, base_offset, TRANSFER_FLAGS);
+                    symbol_offset, 1, base_offset, TRANSFER_FLAGS, tag);
   } else {
     void *padded_result =
         malloc(num_elements * element_size * (8 / element_size));
     do_dpu_transfer(DPU_XFER_FROM_DPU, dpu_set, padded_result, copy_bytes,
                     bufid, symbol_offset, 8 / element_size, base_offset,
-                    TRANSFER_FLAGS);
+                    TRANSFER_FLAGS, tag);
     for (size_t i = 0; i < num_elements; i++) {
       memcpy(host_buffer + i * element_size, padded_result + i * 8,
              element_size);
@@ -151,7 +282,7 @@ void upmemrt_dpu_gather_async(struct dpu_set_t *dpu_set, void *host_buffer,
     return;
   }
   do_dpu_transfer(DPU_XFER_FROM_DPU, dpu_set, host_buffer, copy_bytes, bufid,
-                  symbol_offset, 1, base_offset, DPU_XFER_ASYNC);
+                  symbol_offset, 1, base_offset, DPU_XFER_ASYNC, tag);
 }
 
 /// Arguments closed over by get_sg_xfer_block, passed through the UPMEM SDK's
@@ -499,7 +630,10 @@ static dpu_error_t rt_alloc_raw(int32_t num_dpus, size_t max_blocks_per_dpu,
   } else {
     profile[0] = '\0';
   }
-  return dpu_alloc(num_dpus, profile[0] ? profile : NULL, out);
+  dpu_error_t err = dpu_alloc(num_dpus, profile[0] ? profile : NULL, out);
+  if (err == DPU_OK && rt_trace_placement())
+    rt_trace_set(*out, num_dpus);
+  return err;
 }
 
 struct dpu_set_t *upmemrt_dpu_alloc_cached(void **slot, int32_t num_dpus,
