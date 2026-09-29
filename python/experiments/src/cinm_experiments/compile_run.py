@@ -266,14 +266,15 @@ def recompute_cost(config_dir: pathlib.Path, *, prim: str) -> str | None:
 
 
 def _merge_process_outputs(
-    output_dir: pathlib.Path, parts: list[pathlib.Path], iters: int
+    output_dir: pathlib.Path, parts: list[pathlib.Path], iters: int, warmups: int = 1
 ) -> None:
     """Fold the CSVs of several processes' runs into one set in `output_dir`.
 
     Every row gains `process` (0, 1, ...) and `warmup` (1 for the process's
-    iteration 0), and process p's iterations are renumbered from p * iters,
-    so an iteration number still names one inference: the readers group by
-    it, and two processes' iteration 3 must not be summed as one."""
+    first `warmups` iterations), and process p's iterations are renumbered
+    from p * iters, so an iteration number still names one inference: the
+    readers group by it, and two processes' iteration 3 must not be summed
+    as one."""
     names = sorted({f.name for part in parts for f in part.glob("*.csv")})
     for name in names:
         header: list[str] | None = None
@@ -292,7 +293,7 @@ def _merge_process_outputs(
                 for row in reader:
                     if not row:
                         continue
-                    first = int(row[it]) == 0
+                    first = int(row[it]) < warmups
                     row[it] = str(int(row[it]) + process * iters)
                     rows.append(row + [str(process), "1" if first else "0"])
         if header is None:
@@ -309,9 +310,10 @@ def run_config(
     run_root: pathlib.Path,
     iters: int,
     processes: int = 1,
+    warmups: int = 1,
 ) -> RunResult:
     """Run a compiled config's benchmark `processes` times, `iters` iterations
-    each, iteration 0 of each being a warmup. Transfer times move between
+    each, the first `warmups` of each being warmups. Transfer times move between
     processes as well as between iterations -- a 512 MB scatter measured
     27 to 35 ms by process -- so a median over one process's iterations can
     rank near-ties by which process got lucky. With several, the CSVs are
@@ -360,7 +362,7 @@ def run_config(
             break
     if processes > 1:
         if not err:
-            _merge_process_outputs(output_dir, parts, iters)
+            _merge_process_outputs(output_dir, parts, iters, warmups)
         for part in parts:
             shutil.rmtree(part, ignore_errors=True)
 

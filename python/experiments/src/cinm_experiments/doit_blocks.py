@@ -179,6 +179,7 @@ def bench_one_config(
     *,
     iters: int,
     processes: int = 1,
+    warmups: int = 1,
     bench_marker: pathlib.Path | None = None,
     env: dict[str, str] | None = None,
 ) -> bool:
@@ -199,7 +200,12 @@ def bench_one_config(
         os.environ[k] = v
     try:
         return _bench_one_config(
-            config, roots, iters=iters, processes=processes, bench_marker=bench_marker
+            config,
+            roots,
+            iters=iters,
+            processes=processes,
+            warmups=warmups,
+            bench_marker=bench_marker,
         )
     finally:
         for k, v in saved.items():
@@ -215,6 +221,7 @@ def _bench_one_config(
     *,
     iters: int,
     processes: int = 1,
+    warmups: int = 1,
     bench_marker: pathlib.Path | None = None,
 ) -> bool:
     bench_marker = bench_marker or roots.bench_marker_of(config)
@@ -227,12 +234,20 @@ def _bench_one_config(
         )
     else:
         r = compile_run.run_config(
-            compiled, run_root=roots.run_root, iters=iters, processes=processes
+            compiled,
+            run_root=roots.run_root,
+            iters=iters,
+            processes=processes,
+            warmups=warmups,
         )
         if not r.ok and compile_run.is_dpu_allocation_error(r.error):
             # retry once: allocation races with whatever else holds ranks
             r = compile_run.run_config(
-                compiled, run_root=roots.run_root, iters=iters, processes=processes
+                compiled,
+                run_root=roots.run_root,
+                iters=iters,
+                processes=processes,
+                warmups=warmups,
             )
         if not r.ok:
             print(
