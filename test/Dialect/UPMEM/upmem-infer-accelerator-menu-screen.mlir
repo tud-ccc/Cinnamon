@@ -23,7 +23,7 @@
 // REPORT-NOT: "screen": "kept"
 // REPORT-NOT: "selected": true
 // REPORT: "graph": "infer_gemv"
-// REPORT: "achieved_fraction": 0.5
+// REPORT: "achieved_fraction": {{0\.64[0-9]*}}
 
 // SCREEN: no resource value beats the host on this block
 // SCREEN-NOT: cinm.compute_block on accelerator #upmem.array

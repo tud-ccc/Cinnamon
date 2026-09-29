@@ -408,12 +408,10 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "profile point that stays there. A block then falls back when the "
            "DPUs it would take are worth more elsewhere, which a screen in "
            "front of the solve cannot know">,
-    Option<"hostAchievedFraction", "host-achieved-fraction", "double", "0.5",
-           "Graph allocation only: what share of its roofline the host is "
-           "taken to reach when the menu screen prices it. The roofline is "
-           "peak, so pruning against it prunes DPU counts a real host would "
-           "have lost to; the screen after profiling compares against the "
-           "roofline itself">,
+    Option<"hostAchievedFraction", "host-achieved-fraction", "double", "0.64",
+           "Graph allocation only: the share of its roofline the host is "
+           "taken to achieve. Every host cost the allocation uses is the "
+           "roofline divided by it">,
     Option<"maxMenuPoints", "max-menu-points", "int64_t", "16",
            "Graph allocation only: the most DPU counts to profile per block "
            "after the screen, thinned geometrically. 0 profiles every count "

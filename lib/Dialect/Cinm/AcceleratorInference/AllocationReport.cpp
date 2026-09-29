@@ -327,9 +327,13 @@ void writeAllocationReport(const std::filesystem::path &path,
     json::Object c = record.classes[ci];
     const OffloadFootprint &footprint = record.footprints[ci];
     const std::optional<HostModel> &host = record.hosts[ci];
-    const double hostMs = footprint.known && host
-                              ? hostRooflineSeconds(footprint, *host) * 1e3
-                              : 0.0;
+    const double rooflineMs = footprint.known && host
+                                  ? hostRooflineSeconds(footprint, *host) * 1e3
+                                  : 0.0;
+    const double hostMs =
+        footprint.known && host
+            ? hostSeconds(footprint, *host, opts.hostAchievedFraction) * 1e3
+            : 0.0;
 
     const ClassFate &fate = record.fates[ci];
     c["fate"] = fateName(record, fate.kind);
@@ -346,16 +350,15 @@ void writeAllocationReport(const std::filesystem::path &path,
              });
     };
 
-    // Point 0 is the host: what it would take for one execution, as a
-    // roofline. The menu screen compares against it slowed down to what a
-    // real host achieves; the screen after profiling, and the allocation when
-    // it decides placement, against the roofline itself.
+    // Point 0 is the host: what it takes for one execution (hostSeconds), the
+    // cost every host comparison uses, and the roofline it is derived from.
     json::Array points;
     if (hostMs > 0.0) {
       json::Object hostPoint{{"resource", 0},
                              {"where", "host"},
                              {"priced_by", "host_roofline"},
                              {"cost_ms", hostMs},
+                             {"roofline_ms", rooflineMs},
                              {"in_profile", inProfile(0, true)}};
       hostPoint["screen_cost_ms"] =
           record.traces[ci].screenHostMs > 0.0

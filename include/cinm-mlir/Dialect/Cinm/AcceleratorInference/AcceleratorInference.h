@@ -216,10 +216,9 @@ struct InferencePlugin {
   /// of the device's arithmetic and its traffic. Nothing when the target has
   /// no such model, which turns the menu screen off (profileComputeBlock).
   ///
-  /// It is a lower bound, and so is the host number it is compared against
-  /// (cinm::hostRooflineSeconds), so the screen drops a resource value only
-  /// when an idealized device at that value loses to an idealized host. What
-  /// makes that worth doing is that both terms move with `resource` --
+  /// It is a lower bound, so the screen drops a resource value only when an
+  /// idealized device at that value loses to the host (cinm::hostSeconds).
+  /// What makes that worth doing is that both terms move with `resource` --
   /// arithmetic down, the transfer's fixed cost up -- so the screen answers
   /// "at which sizes could this ever pay", which no single-valued gate can.
   ///
@@ -602,18 +601,11 @@ struct InferenceOptions {
   /// running a search or changing a program.
   bool screenMenuAgainstHost = true;
 
-  /// What share of its roofline the host is taken to achieve, when the menu
-  /// screen prices it. The roofline is peak -- this machine's own measured
-  /// single-core stream is 10.8 of 23 GB/s -- so a screen that prunes
-  /// against it prunes device sizes that a real host would have lost to.
-  /// Halving it is the cheap insurance: over the E2E models it keeps one
-  /// more block class of a hundred, and a quarter would keep eight.
-  ///
-  /// Only the menu screen relaxes. The screen after profiling compares a
-  /// measured device cost against the roofline itself, because there the
-  /// device's side is no longer a bound and the strict comparison is the
-  /// honest one.
-  double hostAchievedFraction = 0.5;
+  /// The share of its roofline the host is taken to achieve. Every host cost
+  /// the graph allocation uses -- the menu screen, the host profile point and
+  /// the screen after profiling -- is the roofline divided by it
+  /// (cinm::hostSeconds).
+  double hostAchievedFraction = 0.64;
 
   /// Graph allocation only, latency objective only: offer every class the
   /// option of staying on the host, as a profile point costed by the host
@@ -683,7 +675,7 @@ struct ProfilePoint {
   /// InferenceOptions::hostTransferBoundShare. Negative when not measured.
   double transferShare = -1;
   /// Whether this point is the block staying where it is: `costMs` is then
-  /// what the host would take for it (cinm::hostRooflineSeconds), it holds
+  /// what the host would take for it (cinm::hostSeconds), it holds
   /// no device and pins nothing. A profile carries at most one, first, so
   /// that the allocation starts from everything on the host and spends the
   /// device where it buys the most -- which is what makes placement part of
@@ -717,10 +709,9 @@ struct MenuScreen {
   SmallVector<MenuVerdict> verdicts;
 };
 
-/// Price every value of `menu` against the host roofline of `block` and
-/// erase the ones that cannot beat it, in place. `hostAchievedFraction`
-/// slows the host down to what a real one reaches; 1.0 compares against the
-/// roofline itself.
+/// Price every value of `menu` against the host cost of `block`
+/// (cinm::hostSeconds at `hostAchievedFraction`) and erase, in place, the
+/// ones whose device roofline cannot beat it.
 MenuScreen screenMenu(cinm::ComputeBlockOp block, InferencePlugin &plugin,
                       SmallVectorImpl<int64_t> &menu,
                       double hostAchievedFraction = 1.0);
@@ -806,8 +797,8 @@ struct MenuPointTrace {
 /// Everything profileComputeBlock did to one block, including the menu values
 /// that never reached the profile and why.
 struct ProfileTrace {
-  /// The host time the menu screen compared against, already slowed by
-  /// InferenceOptions::hostAchievedFraction; 0 when the screen did not run.
+  /// The host time the menu screen compared against (cinm::hostSeconds); 0
+  /// when the screen did not run.
   double screenHostMs = 0.0;
   /// Every value sharedResourceMenu offered, in menu order.
   std::vector<MenuPointTrace> menu;

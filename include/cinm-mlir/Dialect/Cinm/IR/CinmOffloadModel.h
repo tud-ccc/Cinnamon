@@ -160,6 +160,11 @@ OffloadFootprint measureOffloadFootprint(ComputeBlockOp block);
 /// can miss it by an order of magnitude.
 double hostRooflineSeconds(const OffloadFootprint &f, const HostModel &host);
 
+/// hostRooflineSeconds over `achievedFraction`, the share of its roofline the
+/// host is taken to reach. A fraction outside (0, 1] reads as 1.
+double hostSeconds(const OffloadFootprint &f, const HostModel &host,
+                   double achievedFraction);
+
 } // namespace mlir::cinm
 
 #endif // CINM_OFFLOAD_MODEL_H

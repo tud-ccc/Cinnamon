@@ -1348,11 +1348,9 @@ MenuScreen screenMenu(cinm::ComputeBlockOp block, InferencePlugin &plugin,
   auto hostPlatform = cinm::HostPlatformAttr::getInScope(block);
   if (!hostPlatform)
     return screen;
-  const double fraction =
-      hostAchievedFraction > 0.0 ? std::min(hostAchievedFraction, 1.0) : 1.0;
-  const double hostMs =
-      cinm::hostRooflineSeconds(footprint, hostPlatform.getModel()) * 1e3 /
-      fraction;
+  const double hostMs = cinm::hostSeconds(footprint, hostPlatform.getModel(),
+                                          hostAchievedFraction) *
+                        1e3;
   if (hostMs <= 0.0)
     return screen;
 

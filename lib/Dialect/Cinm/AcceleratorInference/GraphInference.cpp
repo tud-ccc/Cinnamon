@@ -504,18 +504,17 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
       t.join();
   }
 
-  // What the host would take for one execution of a class, as a profile
-  // point the allocation may choose (InferenceOptions::allowHostPlacement).
-  // Zero resource, no residency, and the cost is the roofline itself: the
-  // device's side is measured by then, so the honest comparison is against
-  // an idealized host.
+  // What the host would take for one execution of a class (cinm::hostSeconds),
+  // as a profile point the allocation may choose
+  // (InferenceOptions::allowHostPlacement): zero resource, no residency.
   auto hostPointOf =
       [&](cinm::ComputeBlockOp block) -> std::optional<ProfilePoint> {
     cinm::OffloadFootprint f = cinm::measureOffloadFootprint(block);
     auto host = cinm::HostPlatformAttr::getInScope(block);
     if (!f.known || !host)
       return std::nullopt;
-    const double ms = cinm::hostRooflineSeconds(f, host.getModel()) * 1e3;
+    const double ms =
+        cinm::hostSeconds(f, host.getModel(), opts.hostAchievedFraction) * 1e3;
     if (!(ms > 0.0))
       return std::nullopt;
     ProfilePoint point;
@@ -568,21 +567,18 @@ runGraphAllocation(const ComputeGraph &graph, StringRef platformName,
     const ProfilePoint *bestPt = &*llvm::min_element(
         pts, [](const auto &a, const auto &b) { return a.costMs < b.costMs; });
 
-    // The screen again, now that the device's side is measured rather than
-    // bounded. The menu screen let a size through on a roofline and against
-    // a host slowed to what a real one reaches
-    // (InferenceOptions::hostAchievedFraction); here the search has priced
-    // the block for real, so the comparison is against the host's roofline
-    // itself -- what survives beats an idealized host, which is the claim
-    // worth making.
+    // The menu screen again, with the device's side priced by the search
+    // instead of bounded by its roofline.
     if (opts.screenMenuAgainstHost && !placementIsSolved) {
       cinm::OffloadFootprint f =
           cinm::measureOffloadFootprint(blockClass.representative());
       auto host =
           cinm::HostPlatformAttr::getInScope(blockClass.representative());
-      const double hostMs =
-          f.known && host ? cinm::hostRooflineSeconds(f, host.getModel()) * 1e3
-                          : 0.0;
+      const double hostMs = f.known && host
+                                ? cinm::hostSeconds(f, host.getModel(),
+                                                    opts.hostAchievedFraction) *
+                                      1e3
+                                : 0.0;
       if (hostMs > 0.0 && bestPt->costMs >= hostMs) {
         staysOnHost(ClassFate::LosesToHost,
                     llvm::formatv("the search found nothing on '{0}' that "

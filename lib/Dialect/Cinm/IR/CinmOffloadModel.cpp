@@ -370,4 +370,11 @@ double hostRooflineSeconds(const OffloadFootprint &f, const HostModel &host) {
                   (f.staticBytes + f.dynamicBytes) / host.dramBytesPerSecond);
 }
 
+double hostSeconds(const OffloadFootprint &f, const HostModel &host,
+                   double achievedFraction) {
+  if (!(achievedFraction > 0.0 && achievedFraction <= 1.0))
+    achievedFraction = 1.0;
+  return hostRooflineSeconds(f, host) / achievedFraction;
+}
+
 } // namespace mlir::cinm
