@@ -31,27 +31,54 @@
 
 #include "../../common.hpp"
 
+#include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <memory>
+#include <thread>
+
+// An operand buffer whose elements start uninitialised, so that the threads
+// filling it are the ones faulting its pages in.
+template <class T> struct Uninit : std::allocator<T> {
+  template <class U> struct rebind {
+    using other = Uninit<U>;
+  };
+  template <class U> void construct(U *p) { ::new (static_cast<void *>(p)) U; }
+};
+template <class T> using Buffer = std::vector<T, Uninit<T>>;
 
 namespace {
 
 constexpr size_t HEAD = H / A, KV = KVH * HEAD, QKV = H + 2 * KV, PAIRS = H / 2;
 constexpr int32_t POS = N / 2;
 
-// Filled by a xorshift rather than rand(): the 7B model materialises 7 GB
-// of operands, and libc's generator would make that the slowest part of
-// the run by far. The values are in the same range rand() would give.
-template <class T> std::vector<T> rnd(size_t n) {
+// Filled by a xorshift per chunk, on every core: a model materialises
+// gigabytes of operands, which one thread takes tens of seconds to fill.
+// The values are in the same range rand() would give.
+template <class T> Buffer<T> rnd(size_t n) {
   return bench::interleaved_pages([n] {
-    std::vector<T> v(n);
-    uint32_t s = 0x9e3779b9u;
-    for (auto &x : v) {
-      s ^= s << 13;
-      s ^= s >> 17;
-      s ^= s << 5;
-      x = (T)(s % bench::kOperandRange);
-    }
+    Buffer<T> v(n);
+    constexpr size_t kChunk = size_t(1) << 22;
+    size_t chunks = (n + kChunk - 1) / kChunk;
+    std::atomic<size_t> next{0};
+    auto work = [&] {
+      for (size_t c; (c = next++) < chunks;) {
+        uint32_t s = (0x9e3779b9u ^ (uint32_t(c) * 0x85ebca6bu)) | 1u;
+        for (size_t i = c * kChunk, e = std::min(n, i + kChunk); i < e; i++) {
+          s ^= s << 13;
+          s ^= s >> 17;
+          s ^= s << 5;
+          v[i] = (T)(s % bench::kOperandRange);
+        }
+      }
+    };
+    std::vector<std::thread> pool(
+        std::max(1u, std::thread::hardware_concurrency()));
+    for (auto &t : pool)
+      t = std::thread(work);
+    for (auto &t : pool)
+      t.join();
     return v;
   });
 }
@@ -89,7 +116,7 @@ struct LlamaDecode {
   };
 
   int32_t token = 0;
-#define MEMBER(name, ty, n) std::vector<ty> name;
+#define MEMBER(name, ty, n) Buffer<ty> name;
   LLAMA_ARGS(MEMBER)
 #undef MEMBER
   std::vector<DTY> out;
