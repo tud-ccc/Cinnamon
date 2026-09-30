@@ -156,7 +156,34 @@ CinmDialect::verifyOperationAttribute(::mlir::Operation *op,
              << CinmDialect::STATIC_ATTR_NAME << " must be a unit attribute";
     return success();
   }
+  if (attribute.getName() == CinmDialect::OUTLINED_NAME) {
+    // The prototype of an outlined host block; its arguments carry
+    // cinm.reads / cinm.writes (verifyRegionArgAttribute).
+    if (!op->hasTrait<FunctionOpInterface::Trait>() ||
+        !llvm::isa<UnitAttr>(attribute.getValue()))
+      return op->emitOpError("Attribute ")
+             << CinmDialect::OUTLINED_NAME
+             << " is a unit attribute on a function";
+    return success();
+  }
   return op->emitOpError("unknown attribute ") << attribute.getName();
+}
+
+LogicalResult CinmDialect::verifyRegionArgAttribute(Operation *op,
+                                                    unsigned regionIndex,
+                                                    unsigned argIndex,
+                                                    NamedAttribute attribute) {
+  if (attribute.getName() == CinmDialect::READS_NAME ||
+      attribute.getName() == CinmDialect::WRITES_NAME) {
+    if (!op->hasAttr(CinmDialect::OUTLINED_NAME) ||
+        !llvm::isa<UnitAttr>(attribute.getValue()))
+      return op->emitOpError("Attribute ")
+             << attribute.getName()
+             << " is a unit attribute on an argument of a cinm.outlined "
+                "function";
+    return success();
+  }
+  return success();
 }
 
 Attribute CinmDialect::parseAttribute(DialectAsmParser &parser,

@@ -26,6 +26,8 @@
 #include <mlir/IR/BuiltinOps.h>
 #include <mlir/IR/IRMapping.h>
 #include <mlir/IR/SymbolTable.h>
+#include <mlir/Interfaces/SideEffectInterfaces.h>
+#include <mlir/Interfaces/ViewLikeInterface.h>
 #include <mlir/Transforms/RegionUtils.h>
 
 namespace mlir::cinm {
@@ -244,6 +246,7 @@ private:
     builder.setInsertionPointToEnd(module.getBody());
     auto decl = func::FuncOp::create(builder, loc, name, type);
     decl.setPrivate();
+    decl->setAttr(CinmDialect::OUTLINED_NAME, builder.getUnitAttr());
 
     // The body is replaced by the call. Its ops only use each other forward,
     // so erasing from the back never leaves a dangling use.
@@ -257,6 +260,7 @@ private:
     llvm::json::Array params, results;
     if (unplaced && failed(callableAbi(fn, decl, call, params, results)))
       return failure();
+    markArgumentEffects(fn, decl);
     if (!manifestFile.empty()) {
       llvm::json::Object entry{{"name", name},
                                {"params", std::move(params)},
@@ -273,6 +277,53 @@ private:
       manifest.push_back(std::move(entry));
     }
     return success();
+  }
+
+  /// Records on `decl`'s memref arguments whether `fn`'s body reads or
+  /// writes them (cinm.reads, cinm.writes), through views included. An op
+  /// whose effects cannot be told makes every argument both.
+  static void markArgumentEffects(func::FuncOp fn, func::FuncOp decl) {
+    Block &entry = fn.getBody().front();
+    llvm::SmallDenseSet<unsigned> reads, writes;
+    bool unknown = false;
+    fn.walk([&](Operation *op) {
+      if (op == fn)
+        return;
+      auto iface = dyn_cast<MemoryEffectOpInterface>(op);
+      if (!iface) {
+        if (!op->hasTrait<OpTrait::HasRecursiveMemoryEffects>())
+          unknown = true;
+        return;
+      }
+      SmallVector<MemoryEffects::EffectInstance> effects;
+      iface.getEffects(effects);
+      for (const MemoryEffects::EffectInstance &effect : effects) {
+        Value v = effect.getValue();
+        if (!v || !isa<BaseMemRefType>(v.getType())) {
+          if (!v)
+            unknown = true;
+          continue;
+        }
+        while (auto view = v.getDefiningOp<ViewLikeOpInterface>())
+          v = view.getViewSource();
+        auto arg = dyn_cast<BlockArgument>(v);
+        if (!arg || arg.getOwner() != &entry)
+          continue; // a buffer of the body's own
+        if (isa<MemoryEffects::Read>(effect.getEffect()))
+          reads.insert(arg.getArgNumber());
+        else
+          writes.insert(arg.getArgNumber());
+      }
+    });
+    UnitAttr unit = UnitAttr::get(fn.getContext());
+    for (auto [i, type] : llvm::enumerate(decl.getArgumentTypes())) {
+      if (!isa<BaseMemRefType>(type))
+        continue;
+      if (unknown || reads.contains(i))
+        decl.setArgAttr(i, CinmDialect::READS_NAME, unit);
+      if (unknown || writes.contains(i))
+        decl.setArgAttr(i, CinmDialect::WRITES_NAME, unit);
+    }
   }
 
   static std::string typeString(Type type) {

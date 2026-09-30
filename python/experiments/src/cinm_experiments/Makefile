@@ -149,7 +149,9 @@ LDFLAGS = -lUpmemDialectRuntime -ldpu -ldpuverbose -lopenblas -lnuma -Wl,-s \
 # syncs each set only where the host reads what it produced
 # (--upmem-async-launches), so that sets run concurrently with each other and
 # with independent host code. The bench drivers pass every buffer separately,
-# which is what noalias-arguments assumes.
+# which is what noalias-arguments assumes. It runs while host memory is
+# still reached through memrefs, whose effects the pass reads; after the
+# vector lowering it would see raw pointers and have to sync before them.
 ASYNC_LAUNCHES ?= 0
 ASYNC_PASS = $(if $(filter-out 0,$(ASYNC_LAUNCHES)),--upmem-async-launches=noalias-arguments,)
 
@@ -172,10 +174,10 @@ LOWER_PASSES = \
     --one-shot-bufferize="bufferize-function-boundaries function-boundary-type-conversion=identity-layout-map" \
     --buffer-results-to-out-params="hoist-static-allocs modify-public-functions" \
     --cnm-promote-host-allocs \
+    $(ASYNC_PASS) \
     --convert-linalg-to-affine-loops \
 		--affine-scalrep $(SUPER_VECTORIZE) --affine-expand-index-ops-as-affine \
 		--convert-vector-to-amx --convert-vector-to-scf --convert-vector-to-llvm \
-    $(ASYNC_PASS) \
     --canonicalize --cse
 #     --cinm-unwrap-compute-blocks
 

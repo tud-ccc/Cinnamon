@@ -3,10 +3,12 @@
 ///
 /// @file
 
+#include <cinm-mlir/Dialect/Cinm/IR/CinmDialect.h>
 #include <cinm-mlir/Dialect/UPMEM/IR/UPMEMOps.h>
 #include <cinm-mlir/Dialect/UPMEM/Transforms/Passes.h>
 
 #include <mlir/Analysis/AliasAnalysis.h>
+#include <mlir/Dialect/Func/IR/FuncOps.h>
 #include <mlir/Dialect/MemRef/IR/MemRef.h>
 #include <mlir/IR/Builders.h>
 #include <mlir/IR/SymbolTable.h>
@@ -60,12 +62,36 @@ bool isAsync(Operation *op) {
   return op->hasAttr(upmem::UPMEMDialect::ASYNC_NAME);
 }
 
+/// An outlined host block's call touches host memory through its memref
+/// operands alone, each the way its prototype's argument attributes say
+/// (cinm.reads, cinm.writes: what the outlining found in the body).
+bool outlinedCallFootprint(Operation *op, Footprint &fp) {
+  auto call = dyn_cast<func::CallOp>(op);
+  if (!call)
+    return false;
+  auto callee = dyn_cast_or_null<func::FuncOp>(
+      SymbolTable::lookupNearestSymbolFrom(op, call.getCalleeAttr()));
+  if (!callee || !callee->hasAttr(cinm::CinmDialect::OUTLINED_NAME))
+    return false;
+  for (auto [i, v] : llvm::enumerate(call.getOperands())) {
+    if (!isa<BaseMemRefType>(v.getType()))
+      continue;
+    if (callee.getArgAttr(i, cinm::CinmDialect::READS_NAME))
+      fp.reads.push_back(v);
+    if (callee.getArgAttr(i, cinm::CinmDialect::WRITES_NAME))
+      fp.writes.push_back(v);
+  }
+  return true;
+}
+
 Footprint footprintOf(Operation *root) {
   Footprint fp;
   root->walk([&](Operation *op) {
     for (Value v : op->getOperands())
       if (isDpuSet(v))
         fp.sets.push_back(v);
+    if (outlinedCallFootprint(op, fp))
+      return;
     if (auto iface = dyn_cast<MemoryEffectOpInterface>(op)) {
       SmallVector<MemoryEffects::EffectInstance> effects;
       iface.getEffects(effects);
@@ -79,8 +105,11 @@ Footprint footprintOf(Operation *root) {
             fp.unknown = true;
           continue;
         }
-        if (!isa<BaseMemRefType>(v.getType()))
+        if (!isa<BaseMemRefType>(v.getType())) {
+          // Memory reached some other way (a raw pointer): anything at all.
+          fp.unknown = true;
           continue;
+        }
         if (isa<MemoryEffects::Read>(effect.getEffect()))
           fp.reads.push_back(v);
         else if (isa<MemoryEffects::Write, MemoryEffects::Free>(
@@ -135,11 +164,14 @@ private:
   bool mayAlias(Value a, Value b) {
     if (aliases.alias(a, b).isNo())
       return false;
-    // What local alias analysis does not see: two globals are distinct
-    // storage, and the storage of a module-private global never reaches the
-    // module's functions through their arguments, since no caller outside
-    // the module can name it.
+    // What local alias analysis does not see: an allocation and two globals
+    // are distinct storage, and the storage of a module-private global never
+    // reaches the module's functions through their arguments, since no
+    // caller outside the module can name it.
     Value ra = rootOf(a), rb = rootOf(b);
+    // Storage of its own: an allocation aliases nothing but its views.
+    if (ra != rb && (isAllocation(ra) || isAllocation(rb)))
+      return false;
     auto ga = ra.getDefiningOp<memref::GetGlobalOp>();
     auto gb = rb.getDefiningOp<memref::GetGlobalOp>();
     if (ga && gb && ga.getNameAttr() != gb.getNameAttr())
@@ -156,6 +188,11 @@ private:
     while (auto view = v.getDefiningOp<ViewLikeOpInterface>())
       v = view.getViewSource();
     return v;
+  }
+
+  static bool isAllocation(Value v) {
+    Operation *def = v.getDefiningOp();
+    return def && hasEffect<MemoryEffects::Allocate>(def, v);
   }
 
   static bool isFunctionArgument(Value v) {
@@ -276,7 +313,14 @@ private:
         Footprint fp = isa<upmem::SyncOp>(op)
                            ? syncFootprint(cast<upmem::SyncOp>(op))
                            : footprintOf(op);
-        if (usesAny(op, carriedOps) || conflict(fp, carried)) {
+        bool uses = usesAny(op, carriedOps);
+        if (uses || conflict(fp, carried)) {
+          LLVM_DEBUG(llvm::dbgs()
+                     << "[async] kept after sync: " << op->getName() << " ("
+                     << (uses ? "uses a carried op" : "conflicts")
+                     << "; unknown " << fp.unknown << ", reads "
+                     << fp.reads.size() << ", writes " << fp.writes.size()
+                     << ", sets " << fp.sets.size() << ")\n");
           carriedOps.insert(op);
           carried.append(fp);
           continue;

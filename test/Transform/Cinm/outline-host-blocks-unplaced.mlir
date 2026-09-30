@@ -35,7 +35,7 @@
 // CHECK:           %[[V:.*]] = memref.reinterpret_cast %[[A]] to offset: [%[[O]]], sizes: [8], strides: [1]
 // CHECK:           linalg.add ins(%[[V]], %[[B]] : {{.*}}) outs(%[[B]] : memref<8xi32>)
 // CHECK-NEXT:      return
-// CHECK:       func.func private @row_sum_host0(memref<8xi32, strided<[1]>>, index, memref<8xi32>)
+// CHECK:       func.func private @row_sum_host0(memref<8xi32, strided<[1]>> {cinm.reads}, index, memref<8xi32> {cinm.reads, cinm.writes}) attributes {cinm.outlined}
 
 // MANIFEST:      "class": 3
 // MANIFEST:      "name": "row_sum_host0"

@@ -23,6 +23,20 @@
 // LLVM-DAG: llvm.call @upmemrt_dpu_gather_async
 // LLVM-DAG: llvm.call @upmemrt_dpu_sync
 
+// In @calls the host reductions are calls. @reduce is an outlined host block
+// whose prototype says what it reads and writes, so the second block's issue
+// moves above the first block's sync as in @par; @opaque could touch
+// anything, so its set is synced right before it.
+// CHECK-LABEL: func.func @calls
+// CHECK: upmem.wait_for %0 {upmem.async}
+// CHECK: upmem.gather_from_array {{.*}} of %0 {upmem.async}
+// CHECK: upmem.wait_for %[[S1:.*]] {upmem.async}
+// CHECK: upmem.gather_from_array {{.*}} of %[[S1]] {upmem.async}
+// CHECK: upmem.sync %0
+// CHECK: call @reduce
+// CHECK: upmem.sync %[[S1]]
+// CHECK: call @opaque
+
 // In @seq the second block scatters what the first block's reduction wrote,
 // so it stays after the first block's sync and reduction.
 // CHECK-LABEL: func.func @seq
@@ -93,6 +107,39 @@ module {
     upmem.free_dpus %s1 : !upmem.hierarchy<2048x16>
     return
   }
+  func.func @calls(%arg0: memref<8x4096xi32>, %arg1: memref<4096x4096xi32> {cinm.static}, %arg2: memref<4096x4096xi32> {cinm.static}, %arg3: memref<8x4096xi32>, %arg4: memref<8x4096xi32>) {
+    %c1 = arith.constant 1 : index
+    %c0_i32 = arith.constant 0 : i32
+    %c0 = arith.constant 0 : index
+    %0 = upmem.alloc_dpus : !upmem.hierarchy<2048x16>
+    upmem.load_program @dpu_kernels::@program on %0 : !upmem.hierarchy<2048x16>
+    %s1 = upmem.alloc_dpus : !upmem.hierarchy<2048x16>
+    upmem.load_program @dpu_kernels::@program on %s1 : !upmem.hierarchy<2048x16>
+    %1 = memref.get_global @__cnm_scratch_0 : memref<4x8x4096xi32>
+    %expand_shape = memref.expand_shape %arg0 [[0], [1, 2, 3, 4, 5]] output_shape [8, 4, 64, 1, 1, 16] : memref<8x4096xi32> into memref<8x4x64x1x1x16xi32>
+    upmem.scatter_on_array %expand_shape[1024 elts, #map] onto @buf_1 of %0 : memref<8x4x64x1x1x16xi32> onto !upmem.hierarchy<2048x16>
+    %2 = memref.get_global @__cnm_repack_0 : memref<4x64x16x64x1x16x4xi32> {cinm.static}
+    cnm.compact_buffer %arg1 into %2[#map1] {cinm.static} : memref<4096x4096xi32> into memref<4x64x16x64x1x16x4xi32>
+    upmem.scatter_on_array %2[65536 elts, #map2] onto @buf_0 slot %c0 of %0 : memref<4x64x16x64x1x16x4xi32> onto !upmem.hierarchy<2048x16>
+    upmem.wait_for %0 : !upmem.hierarchy<2048x16>
+    %expand_shape_0 = memref.expand_shape %1 [[0], [1], [2, 3, 4, 5]] output_shape [4, 8, 1024, 1, 1, 4] : memref<4x8x4096xi32> into memref<4x8x1024x1x1x4xi32>
+    upmem.gather_from_array %expand_shape_0[64 elts, #map3] from @buf of %0 : memref<4x8x1024x1x1x4xi32> from !upmem.hierarchy<2048x16>
+    func.call @reduce(%1, %arg3) : (memref<4x8x4096xi32>, memref<8x4096xi32>) -> ()
+    %3 = memref.get_global @__cnm_scratch_1 : memref<4x8x4096xi32>
+    upmem.scatter_on_array %expand_shape[1024 elts, #map] onto @buf_1 of %s1 : memref<8x4x64x1x1x16xi32> onto !upmem.hierarchy<2048x16>
+    %4 = memref.get_global @__cnm_repack_1 : memref<4x64x16x64x1x16x4xi32> {cinm.static}
+    cnm.compact_buffer %arg2 into %4[#map1] {cinm.static} : memref<4096x4096xi32> into memref<4x64x16x64x1x16x4xi32>
+    upmem.scatter_on_array %4[65536 elts, #map2] onto @buf_0 slot %c1 of %s1 : memref<4x64x16x64x1x16x4xi32> onto !upmem.hierarchy<2048x16>
+    upmem.wait_for %s1 : !upmem.hierarchy<2048x16>
+    %expand_shape_1 = memref.expand_shape %3 [[0], [1], [2, 3, 4, 5]] output_shape [4, 8, 1024, 1, 1, 4] : memref<4x8x4096xi32> into memref<4x8x1024x1x1x4xi32>
+    upmem.gather_from_array %expand_shape_1[64 elts, #map3] from @buf of %s1 : memref<4x8x1024x1x1x4xi32> from !upmem.hierarchy<2048x16>
+    func.call @opaque(%3, %arg4) : (memref<4x8x4096xi32>, memref<8x4096xi32>) -> ()
+    upmem.free_dpus %0 : !upmem.hierarchy<2048x16>
+    upmem.free_dpus %s1 : !upmem.hierarchy<2048x16>
+    return
+  }
+  func.func private @reduce(memref<4x8x4096xi32> {cinm.reads}, memref<8x4096xi32> {cinm.writes}) attributes {cinm.outlined}
+  func.func private @opaque(memref<4x8x4096xi32>, memref<8x4096xi32>)
   func.func @seq(%arg0: memref<8x4096xi32>, %arg1: memref<4096x4096xi32> {cinm.static}, %arg2: memref<4096x4096xi32> {cinm.static}, %arg3: memref<8x4096xi32>, %arg4: memref<8x4096xi32>) {
     %c1 = arith.constant 1 : index
     %c0_i32 = arith.constant 0 : i32
