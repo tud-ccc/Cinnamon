@@ -49,6 +49,8 @@ ml-dtypes = ">=0.5.0, <=0.6.0"
 # one of their own because build-torch.sh installs the torch_mlir package into
 # a single environment, and they import it.
 notebook = "*"
+# The configuration picker in the DSE tutorial
+ipywidgets = "*"
 # The spiking networks of notebooks 08-11
 snntorch = "*"
 # tutorial/clean_notebooks.py

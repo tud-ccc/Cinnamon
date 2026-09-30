@@ -12,7 +12,9 @@ command -v ninja >/dev/null 2>&1 || { error "Ninja not found. Install it (e.g., 
 command -v cmake >/dev/null 2>&1 || { error "CMake not found. Install it."; exit 1; }
 
 # The C++ cost model predictor is built as part of this project.
-ensure_submodule third-party/cnm-cost-model
+if [[ "$conan_only" -eq 0 ]]; then
+  ensure_submodule third-party/cnm-cost-model
+fi
 
 cd "$cinnamon_path"
 
@@ -140,6 +142,10 @@ EOF
   status "Running conan install"
   verbose_cmd conan install . --output-folder="$cinnamon_build_dir" --build=missing \
     -s build_type="$BUILD_TYPE" -pr:h "$conan_profile" -pr:b "$conan_profile"
+  if [[ "$conan_only" -eq 1 ]]; then
+    status "Conan packages installed (-conan-only); not configuring Cinnamon"
+    exit 0
+  fi
 
   user_opts=()
   if [[ -n "$CINNAMON_CMAKE_OPTIONS" ]]; then

@@ -1,0 +1,28 @@
+# The context of docker/tutorial/Dockerfile. Everything the image builds for
+# itself, or fetches, stays out; the working tree is otherwise sent as is.
+.git
+# Local build settings: LLVM_BUILD_DIR, CC and the like point at this machine
+.env
+.pixi
+.venv
+.cache
+.ccache
+build
+build-*
+# Fetched or built by the scripts inside the image
+third-party/llvm
+third-party/llvm-prebuilt
+third-party/.llvm-prebuilt.*
+third-party/torch-mlir
+third-party/ALPINE
+third-party/alpine
+third-party/upmem
+third-party/upmem-src
+# Not part of the compiler
+experiments
+tutorial/artifacts
+testbench
+samples/transformers/llama2.c
+**/__pycache__
+*.tar.gz
+*.tar.zst

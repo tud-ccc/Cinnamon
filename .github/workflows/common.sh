@@ -65,8 +65,10 @@ ensure_submodule() {
   local shallow="${2:-0}"
   local abs="$project_root/$path"
   local revision url current
-  # Not `ls-tree --object-only`: that needs git 2.36.
-  revision="$(git -C "$project_root" ls-tree HEAD -- "$path" | awk '$2 == "commit" { print $3 }')"
+  # Not `ls-tree --object-only`: that needs git 2.36. Not fatal either: a tree
+  # without .git (the tutorial image's build context) still carries the
+  # submodules' files, which the content check below accepts.
+  revision="$(git -C "$project_root" ls-tree HEAD -- "$path" 2>/dev/null | awk '$2 == "commit" { print $3 }' || true)"
 
   # Presence is judged by content, not by a .git entry: CI restores these trees
   # from a cache that does not carry the corresponding .git/modules directory.
@@ -122,6 +124,9 @@ reconfigure=0
 setup_python_venv=1
 build_torch_mlir=1
 build_cinnamon_wheel=1
+# build-cinnamon.sh: stop once the conan packages are installed. The tutorial
+# image builds them in a layer of their own, before Cinnamon's sources are in.
+conan_only=0
 
 enable_cuda=0
 enable_roc=0
@@ -146,6 +151,10 @@ fi
 
 if echo "$@" | grep -q -- "-no-cinnamon-wheel"; then
   build_cinnamon_wheel=0
+fi
+
+if echo "$@" | grep -q -- "-conan-only"; then
+  conan_only=1
 fi
 
 if echo "$@" | grep -q -- "-enable-gpu"; then
@@ -280,7 +289,9 @@ llvm_prebuilt_dir="$project_root/third-party/llvm-prebuilt"
 llvm_prebuilt_base_url="${LLVM_PREBUILT_URL:-https://github.com/tud-ccc/cinnamon-llvm/releases/download}"
 # A file in the install tree holding the LLVM revision it was built from
 llvm_prebuilt_stamp="cinnamon-llvm-revision"
-llvm_revision="$(git -C "$project_root" ls-tree HEAD -- third-party/llvm 2>/dev/null | awk '$2 == "commit" { print $3 }' || true)"
+# LLVM_REVISION names it outright where there is no .git to read it from: the
+# tutorial image is built from a context without one.
+llvm_revision="${LLVM_REVISION:-$(git -C "$project_root" ls-tree HEAD -- third-party/llvm 2>/dev/null | awk '$2 == "commit" { print $3 }' || true)}"
 
 # File name (without extension) and download URL of the prebuilt LLVM for a
 # revision. The CI of tud-ccc/cinnamon-llvm publishes it under these; its

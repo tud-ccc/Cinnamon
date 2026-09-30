@@ -1,0 +1,98 @@
+name: Tutorial image
+run-name: 'Tutorial image: ${{ github.event.head_commit.message }}'
+on:
+  workflow_dispatch:
+  push:
+    branches: [tutorial2]
+    paths:
+      - docker/tutorial/**
+      - .dockerignore
+      - pixi.toml
+      - pixi.lock
+      - conanfile.txt
+      - third-party/conan-recipes/**
+      - .github/workflows/docker.yml
+      - .github/workflows/build-cinnamon.sh
+      - .github/workflows/build-llvm.sh
+      - .github/workflows/common.sh
+      - CMakeLists.txt
+      - 'include/**'
+      - 'lib/**'
+      - 'tools/**'
+      - 'runtime/**'
+      - third-party/llvm
+      - third-party/cnm-cost-model
+
+concurrency:
+  group: tutorial-image-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: Build and publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          # The image builds against the prebuilt LLVM and without Torch-MLIR,
+          # so of the submodules only the ones Cinnamon compiles are needed;
+          # the checkout brings them and the scripts judge them by content.
+          submodules: false
+
+      - name: Check out the submodules the image compiles
+        run: git submodule update --init --depth 1 -- third-party/cnm-cost-model
+
+      - name: Resolve the pinned LLVM revision
+        id: revs
+        run: echo "llvm=$(git ls-tree --object-only HEAD third-party/llvm)" >> "$GITHUB_OUTPUT"
+
+      # The same wait the build workflow does: a push moving the submodule
+      # usually follows the fork's own push closely.
+      - name: Wait for the prebuilt LLVM
+        timeout-minutes: 330
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LLVM_REVISION: ${{ steps.revs.outputs.llvm }}
+        run: |
+          url="$(bash -c 'source .github/workflows/common.sh >/dev/null && llvm_prebuilt_url "$LLVM_REVISION"')"
+          until curl -fsL -r 0-0 -o /dev/null "$url"; do
+            echo "Waiting for $url"; sleep 120
+          done
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/cinnamon-tutorial
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/tutorial/Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: LLVM_REVISION=${{ steps.revs.outputs.llvm }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # The environment and conan layers change rarely and cost the most;
+          # this keeps them between runs.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
