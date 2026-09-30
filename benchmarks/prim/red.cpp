@@ -10,7 +10,7 @@ struct Red {
   static constexpr bench::Size kSizes[] = {
       {"red_4MB", {524288}},
       {"red_64MB", {8388608}},
-      {"red_256MB", {34554432}},
+      {"red_256MB", {33554432}},
       {"red_512MB", {67108864}},
   };
 

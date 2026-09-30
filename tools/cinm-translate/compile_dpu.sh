@@ -24,6 +24,36 @@ OUTPATH=${2:?"Error: missing out directory argument"}
 
 dpuCompiler="${UPMEM_HOME:?"UPMEM_HOME is undefined"}"/bin/dpu-upmem-dpurte-clang
 
+# The stack size in the header is an estimate: the kernel's buffers plus a
+# fixed reserve for saved registers and spills (kStackReserveBytes in
+# UPMEMOccupancy.h). A DPU has no stack guard, so a frame that outgrows it
+# silently overwrites the next tasklet's stack and the program computes wrong
+# answers rather than crashing. So the SDK's stack analyzer measures every
+# linked binary's deepest frame -- 0.12s per binary, which even the search's
+# compile volume can afford -- and a binary that needs more than the estimate
+# is linked again with what it needs. The estimate is what the search
+# charged WRAM for, so a relinked binary whose stacks no longer fit is one
+# the DPU linker refuses, and the compile fails there. Set
+# CINM_DPU_STACK_CHECK=0 to skip the measurement.
+stack_need() {
+    local bin_path="$1"
+    local analyzer="$UPMEM_HOME/bin/dpu_stack_analyzer"
+    local report
+    report="$("$analyzer" --objdump "$UPMEM_HOME/bin/llvm-objdump" "$bin_path" 2>&1)" || {
+        echo "$bin_path: dpu_stack_analyzer failed:" >&2
+        echo "$report" >&2
+        exit 1
+    }
+    local need
+    need="$(echo "$report" | sed -n 's/^Max size: \([0-9]*\).*/\1/p' | head -n 1)"
+    if [ -z "$need" ]; then
+        echo "$bin_path: could not read 'Max size' from dpu_stack_analyzer:" >&2
+        echo "$report" >&2
+        exit 1
+    fi
+    echo "$need"
+}
+
 mkdir -p "$OUTPATH"
 header="$(head -n 1 "$PROG")"
 pat="// UPMEM-TRANSLATE: (.*)"
@@ -44,9 +74,28 @@ for word in $(echo "$rest" | tr ';' ' '); do
         bin_name="${BASH_REMATCH[4]}"
         bin_path=$(realpath "$OUTPATH/$bin_name")
 
-        command="'$dpuCompiler' -DSTACK_SIZE_DEFAULT=$stack_size -DNR_TASKLETS=$threads -D$var '$PROG' -o '$bin_path' -O3 -Wall -Wextra -Werror -Wno-unused-variable"
-        echo "$command"
-        eval "$command"
+        link() {
+            command="'$dpuCompiler' -DSTACK_SIZE_DEFAULT=$1 -DNR_TASKLETS=$threads -D$var '$PROG' -o '$bin_path' -O3 -Wall -Wextra -Werror -Wno-unused-variable"
+            echo "$command"
+            eval "$command"
+        }
+        link "$stack_size"
+        if [ "${CINM_DPU_STACK_CHECK:-1}" != "0" ]; then
+            need="$(stack_need "$bin_path")"
+            echo "$bin_path: stack need $need of $stack_size bytes declared"
+            if [ "$need" -gt "$stack_size" ]; then
+                # The SDK takes stack sizes in whole 8-byte units.
+                grown=$(( (need + 7) / 8 * 8 ))
+                echo "$bin_path: the deepest frame needs $need bytes; linking" \
+                     "again with a $grown-byte tasklet stack"
+                link "$grown" || {
+                    echo "$bin_path: the deepest frame needs $need bytes, and" \
+                         "$threads tasklet stacks of $grown bytes do not fit" \
+                         "WRAM; raise kStackReserveBytes or shrink the kernel" >&2
+                    exit 1
+                }
+            fi
+        fi
         compiled=$((compiled + 1))
     fi
 done

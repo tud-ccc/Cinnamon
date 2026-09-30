@@ -247,12 +247,63 @@ def CinmAssignPlatformsPass : Pass<"cinm-assign-platforms", "mlir::func::FuncOp"
     cinm.op.* operation, queries every listed platform via isOffloadingTarget.
     If at least one platform is interested, the operation is wrapped in a
     cinm.compute op annotated with the interested platforms.
+
+    `require-profitable` adds a second question. isOffloadingTarget asks only
+    whether a platform *can* run the op; with this on, a platform that can
+    must also say it *should*, through its roofline (evaluateOffload). The
+    host numbers the roofline compares against are the two options below.
+
+    It is off by default because it is a real filter: an op with no static
+    operand has nothing to amortize and is rejected, which for the PrIM
+    single-operator set means `va` and `red` stop being offloaded. That is
+    the model working -- neither has a resident operand, so neither can beat
+    the host -- but it is not what those benchmarks are for. Writing a
+    `cinm.compute` around an op by hand overrides the gate: an op that is
+    already inside one is taken as a deliberate instruction to offload and
+    is never asked about profitability.
+
+    `dump-decisions=<path>` writes one JSON object per line for every
+    (op, capable platform) pair: the op's location, name, operand types and
+    `cinm.debug_tag`, how many times it runs per call (the product of the
+    static trip counts around it; null if one is dynamic, so a rolled layer
+    loop still counts every layer), whether it was offloaded, and every term of the
+    verdict (work, resident and per-call bytes, predicted host and device
+    seconds, the device's compute rate and transfer time, the host's two
+    roofs). The verdict is computed for the dump even when the gate is off,
+    so an ungated run records what the gate would have said.
   }];
+
+  let options = [
+    Option<"requireProfitable", "require-profitable", "bool", "false",
+           "Also require the platform's roofline to predict a win over the host">,
+    Option<"hostOpsPerSecond", "host-ops-per-second", "double", "0",
+           "Override the host platform's ops_per_second (0: take it from the #cinm.host_platform in scope)">,
+    Option<"hostDramBytesPerSecond", "host-dram-bytes-per-second", "double", "0",
+           "Override the host platform's dram_bytes_per_second (0: take it from the #cinm.host_platform in scope)">,
+    Option<"dumpDecisions", "dump-decisions", "std::string", "\"\"",
+           "Write every offload decision, with the roofline terms behind it, to this file as JSON lines (one object per op and capable platform)">
+  ];
 
   let dependentDialects = [
     "mlir::cinm::CinmDialect",
     "mlir::func::FuncDialect"
   ];
+}
+
+def CinmAbsorbStaticSlicesPass : Pass<"cinm-absorb-static-slices"> {
+  let summary = "Move a compute op's run-time-indexed slice of a static tensor into its compute region";
+  let description = [{
+    A `cinm.compute` whose body reads one slice of a static tensor selected
+    by a run-time index along its leading dimension (the layer's weight,
+    `weights[layer]`, inside the layer loop -- see resolveStaticSlice) takes
+    the slice from outside, so isolating it would hand the block the slice
+    and hide both the tensor and the index. This pass clones the slicing op
+    into the region, so that the isolated block's signature is the whole
+    static tensor plus the index: what the graph allocation needs to keep
+    every slice resident, and what the lowering needs to select the slot
+    at run time. Slices at constant offsets stay outside: they are the
+    unrolled case, where identical blocks must keep identical signatures.
+  }];
 }
 
 def CinmExpandComputeScopePass : Pass<"cinm-expand-compute-scope"> {
@@ -393,6 +444,94 @@ def CinmCompleteComputeGraphPass : Pass<"cinm-complete-compute-graph"> {
 
   let dependentDialects = [
     "mlir::cinm::CinmDialect"
+  ];
+}
+
+def CinmMergeHostBlocksPass : Pass<"cinm-merge-host-blocks"> {
+  let summary = "Fuse runs of host compute blocks that only view ops separate";
+  let description = [{
+    --cinm-complete-compute-graph cuts the host code at every slicing,
+    reshaping or destination-pinning op, because for the graph solver those
+    are edges between nodes. A host compiler only pays for the cuts: every
+    host block becomes a function of its own and a call of its own, with
+    nothing on the device in between. This pass fuses each run of host
+    blocks that is separated only by such view ops into one host block,
+    placed where the last block of the run was, before
+    --cinm-outline-host-blocks hands them over.
+
+    Walking a block in order, a run is broken by anything that is not a
+    host block, a view op, a constant or an operand-free `tensor.empty`:
+    a device compute op, any other op, the terminator. The views between
+    the host blocks of a run move into the merged block; constants and
+    `tensor.empty` stay above it. A view that writes into a block argument
+    -- `tensor.insert_slice` or `bufferization.materialize_in_destination`
+    whose destination, followed through inserts, is a function argument or
+    a loop-carried value -- also breaks the run: it updates state that
+    outlives the call or the iteration (a KV cache), and inside a host
+    function it would become a copy of the whole of it.
+
+    The merged block yields every value of the run that is used outside
+    it. Host blocks inside control flow are merged within their own block;
+    the bodies of compute ops are left alone.
+  }];
+
+  let dependentDialects = [
+    "mlir::cinm::CinmDialect"
+  ];
+}
+
+def CinmOutlineHostBlocksPass : Pass<"cinm-outline-host-blocks", "mlir::ModuleOp"> {
+  let summary = "Move the bodies of host compute blocks into functions of a separate module";
+  let description = [{
+    Hands the host side of a program to another compiler. Every compute op
+    pinned to the host alone (`cinm.available_platforms` holding only
+    `#cinm.host_platform`), as --cinm-complete-compute-graph leaves them, has
+    its body moved into a function of a nested `builtin.module` named by
+    `module-name`. The compute op stays where it is, and its body becomes a
+    `func.call` of that function followed by the `cinm.yield` of its results.
+    Each function is also declared, as a private prototype, in the enclosing
+    module, so that module still verifies and links against the outlined one
+    once they are compiled separately.
+
+    The function takes the values the body used from above (for a
+    `cinm.compute_block`, its region arguments), and returns what the body
+    yielded. Constants and operand-free `tensor.empty` are cloned into the
+    function instead of passed: they are free, and the compiler on the other
+    side can only fold what it sees. A function the body calls is copied
+    into the outlined module along with the functions it calls in turn.
+    `bufferization.materialize_in_destination` on tensors is replaced by its
+    source in the outlined copy: it is advice to this compiler's
+    bufferization, which the host compiler neither runs nor accepts.
+
+    With `outlined-file`, the outlined module is written to that path and
+    removed from the IR, which splits the program in one invocation.
+
+    With `unplaced`, the ops outlined are every compute op the lowering left
+    without an accelerator, outermost only: on a lowered module, whatever
+    runs on the host, the blocks the allocation placed there included.
+    Their boundary is also made callable from C under the bare-pointer
+    memref convention, so that another compiler's kernels can stand in for
+    them: a memref with a dynamic offset is passed as its view at offset 0
+    followed by the offset as an index, and a memref result, an argument
+    written in place, is dropped in favour of that argument. A block with
+    no such form (a result it allocates, a dynamic shape) stays in place.
+  }];
+
+  let options = [
+    Option<"moduleName", "module-name", "std::string", "\"outlined\"",
+           "Symbol name of the module that receives the outlined functions">,
+    Option<"outlinedFile", "outlined-file", "std::string", "\"\"",
+           "Write the outlined module to this path and remove it from the IR (empty: keep it nested)">,
+    Option<"unplaced", "unplaced", "bool", "false",
+           "Outline every compute op without an accelerator instead: after "
+           "allocation and lowering, the host's share of the program">,
+    Option<"manifestFile", "manifest-file", "std::string", "\"\"",
+           "With unplaced: write, per outlined function, its parameters and "
+           "results and its block's graph-allocation class, as JSON">
+  ];
+
+  let dependentDialects = [
+    "mlir::func::FuncDialect"
   ];
 }
 

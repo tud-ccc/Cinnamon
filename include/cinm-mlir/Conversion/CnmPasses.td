@@ -119,7 +119,13 @@ def ConvertCnmToUPMEMPass : Pass<"convert-cnm-to-upmem"> {
              [{"dpu_kernels"}],
              "Name of the submodule to create DPU kernels in">,
       Option<"cinm1Codegen", "cinm1-codegen", "bool", "false",
-             "Whether to match CINM 1 code generation (no barriers, tasklets don't share buffers)">
+             "Whether to match CINM 1 code generation (no barriers, tasklets don't share buffers)">,
+      Option<"launchCounterSlots", "launch-counter-slots", "bool", "true",
+             "Let a program whose launches on its set are fixed by the "
+             "program text derive its residency slots from a device-side "
+             "count of its launches, instead of the host broadcasting the "
+             "slot index before every launch. Requires the program to be "
+             "loaded once per set (--upmem-hoist-load-programs).">
     ];
     let dependentDialects = [
         "mlir::affine::AffineDialect",

@@ -34,6 +34,11 @@ struct DpuSetResource : public SideEffects::Resource::Base<DpuSetResource> {
   DpuSetResource() = default;
   StringRef getName() const override { return "<DPU set>"; }
 };
+
+/// Unit attribute on a loop in a DPU program that the DPU compiler must not
+/// unroll: --upmem-register-tile-loops has already shaped it, and the C
+/// translator emits `#pragma clang loop unroll(disable)` before it.
+constexpr llvm::StringLiteral kNoUnrollAttr = "upmem.nounroll";
 } // namespace mlir::upmem
 
 #define GET_OP_CLASSES

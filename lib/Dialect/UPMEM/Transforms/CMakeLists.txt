@@ -1,13 +1,16 @@
 add_mlir_dialect_library(UPMEMTransforms
     DedupKernels.cpp
     HoistLoadPrograms.cpp
+    UpmemAsyncLaunches.cpp
     UpmemLegalizeForTranslation.cpp
+    UpmemAlignLocalTransfers.cpp
     UpmemAnnotateCosts.cpp
     UpmemCheckOccupancy.cpp
     UpmemCoalesceLocalTransfers.cpp
     UpmemInferAccelerator.cpp
     UpmemOpCountSimulator.cpp
     UpmemPythonSimulator.cpp
+    UpmemRegisterTileLoops.cpp
     UpmemTileMRAMBuffers.cpp
     SpecializeTransfers.cpp
 
@@ -17,6 +20,8 @@ DEPENDS
 
 LINK_LIBS PUBLIC
     MLIRIR
+    MLIRAnalysis
+    MLIRMemRefDialect
     MLIRTransformUtils
     MLIRPass
     UPMEMIR
@@ -35,6 +40,8 @@ LINK_LIBS PUBLIC
     MLIRBufferizationTransforms
     MLIRBufferizationPipelines
     MLIRAffineTransforms
+    MLIRAffineAnalysis
+    MLIRAffineUtils
     MLIRMemRefTransforms
     MLIRAffineToStandard
     MLIRLinalgToStandard

@@ -1,8 +1,13 @@
 /// Main entry point for the cinm-mlir optimizer driver.
 ///
+/// `cinm-opt --serve <socket>` runs it as a fork server for cinm-opt-client
+/// instead; see OptServer.h.
+///
 /// @file
 /// @author      Karl F. A. Friebel (karl.friebel@tu-dresden.de)
 /// @author      Clément Fournier (clement.fournier@tu-dresden.de)
+
+#include "OptServer.h"
 
 #include "cinm-mlir/Conversion/AlpinePasses.h"
 #include "cinm-mlir/Conversion/CimPasses.h"
@@ -94,6 +99,15 @@ int main(int argc, char *argv[]) {
 
   bufferization::registerBufferizationPasses();
 
-  return asMainReturnCode(
-      MlirOptMain(argc, argv, "cinm-mlir optimizer driver\n", registry));
+  constexpr const char *toolName = "cinm-mlir optimizer driver\n";
+  auto runOpt = [&](int argc, char **argv) {
+    return asMainReturnCode(MlirOptMain(argc, argv, toolName, registry));
+  };
+  if (argc >= 2 && StringRef(argv[1]) == "--serve") {
+    // Build the option tables now so workers don't each redo it. Registering
+    // again in MlirOptMain is a no-op.
+    registerCLIOptions(toolName, registry);
+    return cinm_opt::runServer(argc, argv, runOpt);
+  }
+  return runOpt(argc, argv);
 }

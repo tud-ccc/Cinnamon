@@ -23,6 +23,7 @@ def Cinm_Dialect : Dialect {
     let useDefaultAttributePrinterParser = 0;
 //    let useDefaultTypePrinterParser = 1;
     let hasOperationAttrVerify = 1;
+    let hasRegionArgAttrVerify = 1;
 
 
     code extraClassDeclaration = [{
@@ -51,6 +52,12 @@ def Cinm_Dialect : Dialect {
     /// landed on). Pure provenance -- nothing reads it back -- but it is
     /// what lets the solve's CSV dumps be read against the IR they describe.
     constexpr static StringRef GRAPH_ALLOC_NAME = "cinm.graph_alloc";
+    /// On the prototype of an outlined host block: the function touches
+    /// host memory through its memref arguments alone, each as its
+    /// argument attributes say.
+    constexpr static StringRef OUTLINED_NAME = "cinm.outlined";
+    constexpr static StringRef READS_NAME = "cinm.reads";
+    constexpr static StringRef WRITES_NAME = "cinm.writes";
     private:
         void registerOps();
         void registerTypes();

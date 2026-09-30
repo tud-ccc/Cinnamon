@@ -5,6 +5,7 @@
 #include "cinm-mlir/Dialect/Cinm/AcceleratorInference/SpaceBuilder.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmBase.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmOffloadModel.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmUtils.h"
 #include "cinm-mlir/Utils/Permutation.h"
@@ -23,6 +24,7 @@
 #include <llvm/Support/CommandLine.h>
 #include <llvm/Support/Debug.h>
 #include <llvm/Support/Format.h>
+#include <llvm/Support/FormatVariadic.h>
 #include <llvm/Support/LogicalResult.h>
 #include <llvm/Support/raw_ostream.h>
 #include <mlir/Dialect/Bufferization/IR/Bufferization.h>
@@ -77,14 +79,7 @@ namespace mlir::cinm {
 // Core framework
 // ===----------------------------------------------------------------------===//
 
-// Build a minimal trial module: module { func @host(arg0, arg1, ...) -> (r0,
-// r1, ...) {
-//   %r = cinm.compute_block(arg0, arg1, ...) { <clone of computeOp body> }
-//   return %r
-// } }
-// Returns the module and the cloned compute block (the refClone).
-static std::pair<mlir::OwningOpRef<mlir::ModuleOp>, cinm::ComputeBlockOp>
-buildRefModule(cinm::ComputeBlockOp computeOp) {
+ReferenceModule buildReferenceModule(cinm::ComputeBlockOp computeOp) {
   mlir::MLIRContext *ctx = computeOp->getContext();
   mlir::Location loc = computeOp->getLoc();
   mlir::OpBuilder b(ctx);
@@ -96,6 +91,11 @@ buildRefModule(cinm::ComputeBlockOp computeOp) {
           ctx, llvm::SmallVector<mlir::Type>(computeOp->getOperandTypes()),
           llvm::SmallVector<mlir::Type>(computeOp->getResultTypes())));
   module->getBody()->push_back(hostFunc);
+  // The host the original is priced against, which the enclosing scopes the
+  // clone leaves behind would otherwise have supplied: the cost model prices
+  // the host code around the block against it.
+  hostFunc->setAttr(CinmDialect::AVAILABLE_PLATFORMS_NAME,
+                    b.getArrayAttr({HostPlatformAttr::getInScope(computeOp)}));
   mlir::Block *entry = hostFunc.addEntryBlock();
   b.setInsertionPointToStart(entry);
 
@@ -114,6 +114,27 @@ buildRefModule(cinm::ComputeBlockOp computeOp) {
   mlir::func::ReturnOp::create(b, loc, cloned->getResults());
 
   return {std::move(module), llvm::cast<cinm::ComputeBlockOp>(cloned)};
+}
+
+/// The compute block of a reference module: the only one it holds.
+static cinm::ComputeBlockOp findReferenceBlock(ModuleOp module) {
+  cinm::ComputeBlockOp block;
+  module.walk([&](cinm::ComputeBlockOp op) { block = op; });
+  return block;
+}
+
+FailureOr<ReferenceModule> prepareReferenceModule(cinm::ComputeBlockOp original,
+                                                  InferencePlugin &plugin) {
+  ReferenceModule reference = buildReferenceModule(original);
+  if (failed(plugin.prepareReference(*reference.module)))
+    return failure();
+  // Not the handle built above: the rewrite may have replaced the compute
+  // block op (canonicalization rebuilds it to drop an unused block argument).
+  reference.block = findReferenceBlock(*reference.module);
+  if (!reference.block)
+    return original.emitError(
+        "preparing the reference module removed its compute block");
+  return reference;
 }
 
 LogicalResult buildConfigSpace(cinm::ComputeBlockOp refClone,
@@ -325,8 +346,12 @@ struct InferenceTask {
   /// run method then refuses to search.
   bool spaceValid = true;
 
+  /// `prepared`, when given, is `original`'s prepared reference module
+  /// (prepareReferenceModule), which the task clones instead of preparing a
+  /// reference of its own; it is only read.
   InferenceTask(const InferenceOptions &options, InferencePlugin &plugin,
-                cinm::ComputeBlockOp original)
+                cinm::ComputeBlockOp original,
+                const ReferenceModule *prepared = nullptr)
       : options(options), plugin(plugin), original(original),
         rng(options.rngSeed) {
 
@@ -336,28 +361,33 @@ struct InferenceTask {
       // it) inherits them, so the winning configuration can be resolved back
       // onto the original at commit time without any op correspondence
       // maintained on the side. The module is already in the plugin's
-      // converted form -- the pass ran the conversion once, up front -- so
-      // initializeSpace rewrites nothing and `original` stays valid.
+      // prepared form -- the pass ran the conversion once, up front -- so
+      // the reference is cloned as it is, and only after the space build,
+      // which is what stamps the names it has to inherit.
       spaceValid =
           succeeded(buildConfigSpace(original, plugin, space, options));
-      auto [refModule, refClone] = buildRefModule(original);
+      auto [refModule, refClone] = buildReferenceModule(original);
       this->refClone = refClone;
       this->refModule = std::move(refModule);
       return;
     }
 
-    auto [refModule, refClone] = buildRefModule(original);
-    this->refClone = refClone;
-    this->refModule = std::move(refModule);
+    if (prepared) {
+      ModuleOp source = prepared->module.get();
+      this->refModule =
+          OwningOpRef<ModuleOp>(llvm::cast<ModuleOp>(source->clone()));
+      this->refClone = findReferenceBlock(*this->refModule);
+    } else {
+      FailureOr<ReferenceModule> reference =
+          prepareReferenceModule(original, plugin);
+      if (failed(reference)) {
+        spaceValid = false;
+        return;
+      }
+      this->refModule = std::move(reference->module);
+      this->refClone = reference->block;
+    }
     spaceValid = succeeded(buildConfigSpace(refClone, plugin, space, options));
-    // initializeSpace is allowed to rewrite the reference in place (the UPMEM
-    // plugin lowers it to linalg, so that every trial starts from the form the
-    // space was read off), and a rewrite can replace the compute block op
-    // itself -- canonicalization rebuilds it to drop an unused block argument.
-    // Find it again rather than keeping a handle that may have been erased.
-    this->refClone = nullptr;
-    this->refModule->walk([&](ComputeBlockOp op) { this->refClone = op; });
-    assert(this->refClone && "initializeSpace erased the reference block");
   }
 
   // Clone refModule to produce a fresh isolated trial module per evaluation.
@@ -1305,23 +1335,132 @@ inferAcceleratorConfig(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
 }
 
 // ===----------------------------------------------------------------------===//
+// The menu screen
+// ===----------------------------------------------------------------------===//
+
+MenuScreen screenMenu(cinm::ComputeBlockOp block, InferencePlugin &plugin,
+                      SmallVectorImpl<int64_t> &menu,
+                      double hostAchievedFraction) {
+  MenuScreen screen;
+  cinm::OffloadFootprint footprint = cinm::measureOffloadFootprint(block);
+  if (!footprint.known)
+    return screen;
+  auto hostPlatform = cinm::HostPlatformAttr::getInScope(block);
+  if (!hostPlatform)
+    return screen;
+  const double hostMs = cinm::hostSeconds(footprint, hostPlatform.getModel(),
+                                          hostAchievedFraction) *
+                        1e3;
+  if (hostMs <= 0.0)
+    return screen;
+
+  screen.verdicts.reserve(menu.size());
+  for (int64_t resource : menu) {
+    std::optional<DeviceRoofline> roof = plugin.deviceRoofline(block, resource);
+    if (!roof)
+      // No device model: the screen does not run at all rather than running
+      // on part of the menu, which would keep values for the wrong reason.
+      return MenuScreen{};
+    screen.verdicts.push_back(
+        {resource, roof->ms, roof->transferMs, roof->opsPerSecond,
+         roof->transferMsIfNothingResident, roof->ms < hostMs});
+  }
+  screen.hostMs = hostMs;
+
+  llvm::erase_if(menu, [&](int64_t resource) {
+    return !llvm::find_if(screen.verdicts, [&](const MenuVerdict &v) {
+              return v.resource == resource;
+            })->kept;
+  });
+  return screen;
+}
+
+void thinMenu(SmallVectorImpl<int64_t> &menu, int64_t maxPoints) {
+  if (maxPoints <= 1 || static_cast<int64_t>(menu.size()) <= maxPoints)
+    return;
+  SmallVector<int64_t> thinned;
+  for (int64_t i = 0; i < maxPoints; ++i) {
+    size_t idx = static_cast<size_t>(i) * (menu.size() - 1) / (maxPoints - 1);
+    if (thinned.empty() || thinned.back() != menu[idx])
+      thinned.push_back(menu[idx]);
+  }
+  menu.assign(thinned.begin(), thinned.end());
+}
+
+// ===----------------------------------------------------------------------===//
 // profileComputeBlock
 // ===----------------------------------------------------------------------===//
 
+ProfileTrace planProfile(cinm::ComputeBlockOp computeOp,
+                         cinm::ComputeBlockOp reference,
+                         InferencePlugin &plugin,
+                         const InferenceOptions &opts) {
+  ProfileTrace trace;
+  SmallVector<int64_t> survivors = plugin.sharedResourceMenu(reference);
+  for (int64_t resource : survivors)
+    trace.menu.emplace_back().resource = resource;
+  if (opts.screenMenuAgainstHost) {
+    MenuScreen screen =
+        screenMenu(computeOp, plugin, survivors, opts.hostAchievedFraction);
+    trace.screenHostMs = screen.hostMs;
+    for (const MenuVerdict &verdict : screen.verdicts)
+      trace.find(verdict.resource)->verdict = verdict;
+  }
+  thinMenu(survivors, opts.maxMenuPoints);
+  for (int64_t resource : survivors)
+    trace.find(resource)->profiled = true;
+  return trace;
+}
+
 Maybe<SmallVector<ProfilePoint>>
 profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
-                    const InferenceOptions &opts,
-                    SmallVectorImpl<ProfileSample> *samples,
-                    ProfileGate *gate) {
+                    const InferenceOptions &opts, ProfileTrace *trace,
+                    ProfileGate *gate, const ReferenceModule *reference) {
   StringRef param = plugin.sharedResourceParam();
   if (param.empty())
     return emitDefiniteFailure(
         computeOp.getLoc(),
         "this target declares no shared resource to profile over");
-  SmallVector<int64_t> menu = plugin.sharedResourceMenu(computeOp);
-  if (menu.empty())
+  std::optional<ReferenceModule> ownReference;
+  if (!reference) {
+    FailureOr<ReferenceModule> prepared =
+        prepareReferenceModule(computeOp, plugin);
+    if (failed(prepared))
+      return emitDefiniteFailure(computeOp.getLoc(),
+                                 "no reference module to profile");
+    ownReference = std::move(*prepared);
+    reference = &*ownReference;
+  }
+  ProfileTrace ownTrace;
+  if (!trace)
+    trace = &ownTrace;
+  *trace = planProfile(computeOp, reference->block, plugin, opts);
+  if (trace->menu.empty())
     return emitSilenceableFailure(computeOp.getLoc())
            << "no profiling menu could be derived for this block";
+
+  SmallVector<int64_t> menu;
+  for (const MenuPointTrace &point : trace->menu)
+    if (point.profiled)
+      menu.push_back(point.resource);
+  if (menu.empty()) {
+    // Only the screen empties a menu -- thinMenu keeps both endpoints -- so
+    // every value has a verdict, and none of them beat the host.
+    const MenuVerdict *best = nullptr;
+    for (const MenuPointTrace &point : trace->menu)
+      if (!best || point.verdict->deviceMs < best->deviceMs)
+        best = &*point.verdict;
+    return emitSilenceableFailure(computeOp.getLoc())
+           << llvm::formatv("no resource value beats the host on this "
+                            "block: its best, {0} device(s), is priced at "
+                            "{1:F3} ms against the host's {2:F3} ms",
+                            best->resource, best->deviceMs, trace->screenHostMs)
+                  .str();
+  }
+  LLVM_DEBUG(if (trace->screenHostMs > 0.0) llvm::dbgs()
+             << "[cinm-inference] menu screen: " << menu.size() << " of "
+             << trace->menu.size() << " value(s) profiled against the host's "
+             << trace->screenHostMs << " ms\n");
 
   // The menu points are independent searches, so they run concurrently. Each
   // point gets its own plugin clone (initializeSpace mutates the plugin) and
@@ -1393,6 +1532,8 @@ profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
   struct Slot {
     std::optional<ProfilePoint> point;
     std::optional<DiagnosedSilenceableFailure> fail;
+    int rngSeed = 0;
+    std::string dumpDir;
   };
   std::vector<Slot> slots(nJobs);
 
@@ -1428,7 +1569,9 @@ profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
         pointOpts.dumpDir += "/seed_" + std::to_string(pointOpts.rngSeed);
     }
 
-    InferenceTask task(pointOpts, *pointPlugin, computeOp);
+    slots[job].rngSeed = pointOpts.rngSeed;
+    slots[job].dumpDir = pointOpts.dumpDir;
+    InferenceTask task(pointOpts, *pointPlugin, computeOp, reference);
     Maybe<TrialInfo> result = task.runDispatch();
     if (auto *fail = std::get_if<DiagnosedSilenceableFailure>(&result)) {
       slots[job].fail = std::move(*fail);
@@ -1447,8 +1590,8 @@ profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
       TrialInfo probe = task.makeTrialInfo(best.config);
       point.residency = pointPlugin->measureResidency(probe);
       // The search only kept the incumbent's total; the transfer-bound gate
-      // and profiles.csv want its breakdown, so price it once more (the
-      // simulator is deterministic, so this reproduces costMs). A fresh
+      // and the allocation report want its breakdown, so price it once more
+      // (the simulator is deterministic, so this reproduces costMs). A fresh
       // trial module: evaluate() lowers what it is given.
       TrialInfo breakdownProbe = task.makeTrialInfo(best.config);
       auto priced = pointPlugin->evaluate(breakdownProbe);
@@ -1492,26 +1635,33 @@ profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
   SmallVector<ProfilePoint> points;
   for (auto [job, slot] : llvm::enumerate(slots)) {
     const size_t i = job / nSeeds, seed = job % nSeeds;
+    MenuPointTrace &traced = *trace->find(menu[i]);
+    SearchOutcome &outcome = traced.searches.emplace_back();
+    outcome.repeat = static_cast<unsigned>(seed);
+    outcome.rngSeed = slot.rngSeed;
+    if (seed == 0)
+      traced.dumpDir = slot.dumpDir;
     if (slot.fail) {
       if (slot.fail->isDefiniteFailure() && !definite) {
         definite = std::move(*slot.fail);
         continue;
       }
+      outcome.failure = StringRef(slot.fail->getMessage()).trim().str();
       LLVM_DEBUG(llvm::dbgs()
                  << "[cinm-inference]   no point at " << param << "=" << menu[i]
-                 << ": " << slot.fail->getMessage() << "\n");
+                 << ": " << outcome.failure << "\n");
       (void)slot.fail->silence();
       continue;
     }
     if (!slot.point)
       continue;
-    if (samples)
-      samples->push_back(
-          {menu[i], static_cast<unsigned>(seed), slot.point->costMs});
+    outcome.costMs = slot.point->costMs;
     // Only the first repeat reaches the profile, so what the allocator solves
     // over is exactly what a single-seed run would have handed it.
-    if (seed == 0)
+    if (seed == 0) {
+      traced.point = *slot.point;
       points.push_back(std::move(*slot.point));
+    }
   }
   if (definite)
     return std::move(*definite);
@@ -1521,30 +1671,23 @@ profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
            << "no value of '" << param
            << "' in the allocation menu is feasible for this block";
 
-  // Lower-envelope repair (see InferenceOptions::profileRepair). Points are
-  // in menu order, i.e. ascending resource; a running argmin over the
-  // measured costs replaces any point a stalled seed left above the envelope
-  // with the best smaller point's incumbent. The residency travels with the
-  // configuration -- it describes what actually runs -- and rawCostMs keeps
-  // the measurement.
-  for (ProfilePoint &p : points)
-    p.rawCostMs = p.costMs;
+  // Lower envelope (see InferenceOptions::profileRepair). Points are in menu
+  // order, i.e. ascending resource; a point that measured no better than
+  // the best smaller one is a hole, like an infeasible menu value.
   if (opts.profileRepair) {
-    const ProfilePoint *best = nullptr;
+    decltype(points) envelope;
     for (ProfilePoint &p : points) {
-      if (best && best->costMs < p.costMs) {
-        p.costMs = best->costMs;
-        p.config = best->config;
-        p.residency = best->residency;
-        p.repairedFrom = best->resource;
-        LLVM_DEBUG(llvm::dbgs()
-                   << "[cinm-inference]   repaired L(" << p.resource
-                   << ") = " << p.rawCostMs << " -> " << p.costMs << " (from "
-                   << param << "=" << best->resource << ")\n");
-      } else {
-        best = &p;
+      if (!envelope.empty() && envelope.back().costMs <= p.costMs) {
+        trace->find(p.resource)->dominatedBy = envelope.back().resource;
+        LLVM_DEBUG(llvm::dbgs() << "[cinm-inference]   dropped L(" << p.resource
+                                << ") = " << p.costMs << ": no better than "
+                                << param << "=" << envelope.back().resource
+                                << " at " << envelope.back().costMs << "\n");
+        continue;
       }
+      envelope.push_back(std::move(p));
     }
+    points = std::move(envelope);
   }
   return points;
 }

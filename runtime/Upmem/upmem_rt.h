@@ -24,17 +24,46 @@
 /// originating op's `upmem.timing_tag` attribute) recorded alongside the
 /// transfer's stats, or NULL if the op carried no tag. Ignored unless built
 /// with -DUPMEM_RT_STATS.
+/// `symbol_offset`, on every transfer below, is where in the MRAM symbol the
+/// payload sits: `slot * slot size` for a slotted buffer (upmem.static_alloc
+/// ... slots N), 0 otherwise. The residency cache keys on it, so the members
+/// of a group can hold their weights side by side in one symbol.
 void upmemrt_dpu_scatter(struct dpu_set_t *dpu_set, void *host_buffer,
                          size_t element_size, size_t num_elements,
                          size_t num_elements_per_tasklet, size_t copy_bytes,
-                         const char *buffer_id, size_t (*base_offset)(size_t),
-                         const char *tag);
+                         const char *buffer_id, size_t symbol_offset,
+                         size_t (*base_offset)(size_t), const char *tag);
 
 void upmemrt_dpu_gather(struct dpu_set_t *dpu_set, void *host_buffer,
                         size_t element_size, size_t num_elements,
                         size_t num_elements_per_tasklet, size_t copy_bytes,
-                        const char *buffer_id, size_t (*base_offset)(size_t),
-                        const char *tag);
+                        const char *buffer_id, size_t symbol_offset,
+                        size_t (*base_offset)(size_t), const char *tag);
+
+/// The `_async` variants of the transfers and of the launch (upmem.async)
+/// only issue the operation on the set's queue and return. The set runs its
+/// operations in issue order; the host buffer a transfer reads may be
+/// reused, and the one it writes read, only after upmemrt_dpu_sync on the
+/// set. They record no timer rows, since the time they take is not the
+/// operation's. A gather of under 8 bytes, which is unpadded on the host,
+/// waits for the set and gathers synchronously.
+///
+/// UPMEM_RT_ASYNC=0 makes them their synchronous counterparts, timer rows
+/// included, and upmemrt_dpu_sync a no-op: the same binary then runs in
+/// program order, which is how its time splits into transfers, kernels and
+/// host code.
+void upmemrt_dpu_scatter_async(struct dpu_set_t *dpu_set, void *host_buffer,
+                               size_t element_size, size_t num_elements,
+                               size_t num_elements_per_tasklet,
+                               size_t copy_bytes, const char *buffer_id,
+                               size_t symbol_offset,
+                               size_t (*base_offset)(size_t), const char *tag);
+void upmemrt_dpu_gather_async(struct dpu_set_t *dpu_set, void *host_buffer,
+                              size_t element_size, size_t num_elements,
+                              size_t num_elements_per_tasklet,
+                              size_t copy_bytes, const char *buffer_id,
+                              size_t symbol_offset,
+                              size_t (*base_offset)(size_t), const char *tag);
 
 /// Transfer several blocks per DPU using the UPMEM SDK's scatter/gather
 /// transfer API (dpu_push_sg_xfer), so that a DPU's blocks may come from
@@ -66,15 +95,34 @@ void upmemrt_dpu_gather(struct dpu_set_t *dpu_set, void *host_buffer,
 void upmemrt_dpu_scatter_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
                                 size_t element_size, size_t num_blocks,
                                 size_t block_num_elements,
-                                const char *buffer_id,
+                                const char *buffer_id, size_t symbol_offset,
                                 size_t (*base_offset)(size_t, size_t),
                                 const char *tag);
 
 void upmemrt_dpu_gather_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
                                size_t element_size, size_t num_blocks,
                                size_t block_num_elements, const char *buffer_id,
+                               size_t symbol_offset,
                                size_t (*base_offset)(size_t, size_t),
                                const char *tag);
+
+/// The same transfers over padded slots: on the DPU, every `blocks_per_slot`
+/// consecutive blocks are followed by `slot_padding_bytes` that belong to no
+/// host block, so block `b` sits at MRAM byte offset
+/// `b * block_bytes + (b / blocks_per_slot) * slot_padding_bytes`. That is
+/// the layout of an output whose per-tasklet tile is shorter than a DMA
+/// granule, padded so that each tasklet can write its slot back on its own.
+void upmemrt_dpu_scatter_blocks_padded(
+    struct dpu_set_t *dpu_set, void *host_buffer, size_t element_size,
+    size_t num_blocks, size_t block_num_elements, const char *buffer_id,
+    size_t symbol_offset, size_t (*base_offset)(size_t, size_t),
+    const char *tag, size_t blocks_per_slot, size_t slot_padding_bytes);
+
+void upmemrt_dpu_gather_blocks_padded(
+    struct dpu_set_t *dpu_set, void *host_buffer, size_t element_size,
+    size_t num_blocks, size_t block_num_elements, const char *buffer_id,
+    size_t symbol_offset, size_t (*base_offset)(size_t, size_t),
+    const char *tag, size_t blocks_per_slot, size_t slot_padding_bytes);
 
 /// Broadcast a buffer to the MRAM of every DPU in the set, identically.
 ///
@@ -88,7 +136,10 @@ void upmemrt_dpu_gather_blocks(struct dpu_set_t *dpu_set, void *host_buffer,
 /// NULL if the op carried no tag. Ignored unless built with -DUPMEM_RT_STATS.
 void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
                            size_t copy_bytes, const char *buffer_id,
-                           const char *tag);
+                           size_t symbol_offset, const char *tag);
+void upmemrt_dpu_broadcast_async(struct dpu_set_t *dpu_set, void *host_buffer,
+                                 size_t copy_bytes, const char *buffer_id,
+                                 size_t symbol_offset, const char *tag);
 
 /// Allocates and loads a DPU set.
 ///
@@ -141,8 +192,12 @@ struct dpu_set_t *upmemrt_dpu_alloc_cached(void **slot, int32_t num_dpus,
 int upmemrt_cache_enabled(void);
 
 /// Load the DPU program at @p dpu_binary_path onto every DPU of @p dpu_set
-/// (the SDK's dpu_load), replacing whatever ran there before. Recorded under
-/// the "load" timer category.
+/// (the SDK's dpu_load), replacing whatever ran there before, after whatever
+/// was issued on the set. Recorded under the "load" timer category.
 void upmemrt_dpu_load(struct dpu_set_t *dpu_set, const char *dpu_binary_path);
 
 void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set);
+void upmemrt_dpu_launch_async(struct dpu_set_t *void_dpu_set);
+
+/// Wait until every operation issued on the set has completed.
+void upmemrt_dpu_sync(struct dpu_set_t *void_dpu_set);

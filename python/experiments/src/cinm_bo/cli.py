@@ -192,10 +192,10 @@ def cmd_diag(args: argparse.Namespace) -> int:
 def cmd_profiles(args: argparse.Namespace) -> int:
     """Per-class cost profiles and what the allocator did with them
     (cinm_bo.plot_profiles)."""
-    if not any(args.dump.rglob("profiles.csv")):
+    if not any(args.dump.rglob("allocation.json")):
         print(
-            f"[profiles] no profiles.csv under {args.dump} -- these are the "
-            "graph allocator's dumps, written with graph-allocation=true",
+            f"[profiles] no allocation.json under {args.dump} -- these are the "
+            "graph allocator's reports, written with graph-allocation=true",
             file=sys.stderr,
         )
         return 1

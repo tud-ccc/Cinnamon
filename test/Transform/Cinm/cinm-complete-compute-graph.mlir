@@ -7,7 +7,7 @@
 
 // CHECK-LABEL: func @bridge
 // CHECK:       %[[V:.*]] = cinm.compute -> tensor<8xf32>
-// CHECK:       %[[H:.*]]:2 = cinm.compute -> f32, tensor<8xf32> attributes {cinm.available_platforms = [#cinm.host_platform]}
+// CHECK:       %[[H:.*]]:2 = cinm.compute -> f32, tensor<8xf32> attributes {cinm.available_platforms = [#cinm.host_platform<{{[^>]*}}>]}
 // CHECK:         %[[E:.*]] = tensor.extract %[[V]]
 // CHECK:         %[[Y:.*]] = arith.mulf %[[E]], %[[E]]
 // CHECK:         %[[SP:.*]] = tensor.splat %[[Y]]
@@ -66,7 +66,7 @@ func.func @views_are_edges(%a: tensor<8x8xf32>, %x: tensor<8xf32>, %d: tensor<64
 // CHECK-LABEL: func @absorb_loop
 // CHECK:       arith.constant
 // CHECK:       %[[V:.*]] = cinm.compute -> tensor<8xf32>
-// CHECK:       %[[H:.*]] = cinm.compute -> tensor<8xf32> attributes {cinm.available_platforms = [#cinm.host_platform]}
+// CHECK:       %[[H:.*]] = cinm.compute -> tensor<8xf32> attributes {cinm.available_platforms = [#cinm.host_platform<{{[^>]*}}>]}
 // CHECK-NOT:     arith.constant
 // CHECK:         %[[L:.*]] = scf.for {{.*}} iter_args(%[[ACC:.*]] = %[[V]])
 // CHECK:         cinm.yield %[[L]]
@@ -91,9 +91,11 @@ func.func @absorb_loop(%t: tensor<8xf32>) -> tensor<8xf32> {
 
 // -----
 
-// A control flow op with a compute op inside cannot be wrapped: by default it
-// is left in place with a warning, with demote-nested-compute the nested
-// compute op is dissolved and the loop becomes a single host block.
+// A control flow op with a compute op inside cannot be wrapped itself: by
+// default it stays in place and its body is completed like the function's
+// (nothing to wrap here, the body holds only the compute op), with
+// demote-nested-compute the nested compute op is dissolved and the loop
+// becomes a single host block.
 
 // CHECK-LABEL: func @barrier
 // CHECK-NOT:   #cinm.host_platform
@@ -102,7 +104,7 @@ func.func @absorb_loop(%t: tensor<8xf32>) -> tensor<8xf32> {
 // CHECK:       return
 
 // DEMOTE-LABEL: func @barrier
-// DEMOTE:       cinm.compute -> tensor<8xf32> attributes {cinm.available_platforms = [#cinm.host_platform]}
+// DEMOTE:       cinm.compute -> tensor<8xf32> attributes {cinm.available_platforms = [#cinm.host_platform<{{[^>]*}}>]}
 // DEMOTE:         scf.for
 // DEMOTE-NOT:       cinm.compute
 // DEMOTE:           cinm.op.elementwise add
@@ -112,7 +114,6 @@ func.func @barrier(%t: tensor<8xf32>) -> tensor<8xf32> {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %c8 = arith.constant 8 : index
-  // expected-warning @below {{op contains compute ops and cannot be wrapped}}
   %r = scf.for %i = %c0 to %c8 step %c1 iter_args(%acc = %t) -> tensor<8xf32> {
     %w = cinm.compute -> tensor<8xf32> {
       %m = cinm.op.elementwise add %acc, %acc : tensor<8xf32>

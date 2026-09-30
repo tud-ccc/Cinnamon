@@ -90,22 +90,53 @@ struct ResidencyInfo {
 // Plugin interface
 // ===----------------------------------------------------------------------===//
 
+/// One resource value's device roofline, as the menu screen reads it: the
+/// price, and the two terms it is the greater of.
+struct DeviceRoofline {
+  /// max(arithmetic, traffic), in ms -- what the screen compares to the host.
+  double ms = 0.0;
+  /// The traffic term alone, in ms: the scatter in and the gather out at
+  /// this resource value, whose fixed cost grows with it.
+  double transferMs = 0.0;
+  /// The arithmetic term's rate, in ops/s across the whole resource value,
+  /// for this block's element types. The arithmetic term is work / this.
+  double opsPerSecond = 0.0;
+  /// The traffic term the same block would pay with nothing held resident,
+  /// in ms: every static operand sent on every call, as the host reads them
+  /// from DRAM on every call. Nothing decides anything by it -- residency is
+  /// the offload argument, and this is what the argument is worth. Recorded
+  /// because it cannot be recovered downstream: it prices a byte count that
+  /// no row of the dump has, and the transfer model's fixed cost is large
+  /// enough at these sizes that extrapolating to it is out by several times.
+  double transferMsIfNothingResident = 0.0;
+};
+
 /// Abstract plugin, one implementation per target.
 /// Responsible for populating the config space and evaluating configurations.
 /// The core framework calls these methods; target-specific logic lives here.
 struct InferencePlugin {
   virtual ~InferencePlugin() = default;
 
-  /// Populate the configuration space from the reference clone.
+  /// Rewrite a reference module (buildReferenceModule) into the form the
+  /// search space is stated over: a plugin whose space is read off some
+  /// lowered form of the block lowers it here, once per reference, instead
+  /// of once per trial. Every trial is a clone of what this leaves, and so is
+  /// every block sharedResourceMenu is asked about. The rewrite may replace
+  /// the compute block op itself; the framework re-finds it afterwards. The
+  /// result must not depend on the configuration. The default leaves the
+  /// reference as it is.
+  virtual LogicalResult prepareReference(ModuleOp reference) {
+    (void)reference;
+    return success();
+  }
+
+  /// Populate the configuration space from the reference clone, which
+  /// prepareReference has already rewritten -- or, under
+  /// InferenceOptions::stampConfigs, the original block itself, which the
+  /// pass has put in that form up front.
   /// The plugin decides what to add and how to explore the IR — it may walk
   /// the compute body, inspect op shapes, attach attributes to nodes, etc.
   /// Annotations left on the clone are inherited by every per-evaluation clone.
-  ///
-  /// The reference may also be *rewritten* here, and every trial then starts
-  /// from the rewritten form: a plugin whose space is stated over some lowered
-  /// form of the block can lower it once here instead of once per trial. The
-  /// framework re-finds the compute block afterwards, so `refClone` itself
-  /// need not survive.
   virtual void initializeSpace(cinm::ComputeBlockOp refClone,
                                cinm::SpaceBuilder &space) = 0;
 
@@ -165,7 +196,9 @@ struct InferencePlugin {
   /// allocation.
   virtual llvm::StringRef sharedResourceParam() const { return {}; }
 
-  /// The resource values worth profiling `block` at. The plugin derives them
+  /// The resource values worth profiling `reference` at: a compute block
+  /// inside a reference module that prepareReference has rewritten, i.e. in
+  /// the form the search space is read off. The plugin derives them
   /// from the block itself -- for UPMEM, divisors of the iteration-space
   /// size, since the workgroup must be filled exactly, quantized by
   /// InferenceOptions::allocationGranularity -- so different blocks get
@@ -173,9 +206,32 @@ struct InferencePlugin {
   /// the pinned search finds infeasible (capacity, say) becomes a hole in
   /// the profile. Only meaningful when sharedResourceParam() is non-empty.
   virtual SmallVector<int64_t>
-  sharedResourceMenu(cinm::ComputeBlockOp block) const {
-    (void)block;
+  sharedResourceMenu(cinm::ComputeBlockOp reference) const {
+    (void)reference;
     return {};
+  }
+
+  /// What this target's cost model says one invocation of `block` would take
+  /// with the shared resource pinned to `resource`: a roofline, the greater
+  /// of the device's arithmetic and its traffic. Nothing when the target has
+  /// no such model, which turns the menu screen off (profileComputeBlock).
+  ///
+  /// It is a lower bound, so the screen drops a resource value only when an
+  /// idealized device at that value loses to the host (cinm::hostSeconds).
+  /// What makes that worth doing is that both terms move with `resource` --
+  /// arithmetic down, the transfer's fixed cost up -- so the screen answers
+  /// "at which sizes could this ever pay", which no single-valued gate can.
+  ///
+  /// The screen itself only needs `ms`. The terms it was taken from come
+  /// back with it because the two of them are the roof this resource value
+  /// was judged against -- its ceiling and its slope -- and a report of the
+  /// screen that carries only their maximum cannot be read back as one
+  /// (MenuPointTrace::verdict).
+  virtual std::optional<DeviceRoofline>
+  deviceRoofline(cinm::ComputeBlockOp block, int64_t resource) {
+    (void)block;
+    (void)resource;
+    return std::nullopt;
   }
 
   /// The most of the shared resource the device has at all: the total DPU
@@ -231,6 +287,26 @@ struct InferencePlugin {
   }
 };
 
+/// A compute block on its own, in a module of its own:
+/// `module { func @host(args) -> results { %r = <clone>; return %r } }`,
+/// with the original operands' staticness forwarded onto the function's
+/// arguments, so that isStaticValue resolves inside it exactly as it does on
+/// the original. Every search clones its trials from one of these.
+struct ReferenceModule {
+  OwningOpRef<ModuleOp> module;
+  cinm::ComputeBlockOp block;
+};
+
+/// Wrap a clone of `original` into a reference module, as it is before the
+/// plugin has rewritten anything.
+ReferenceModule buildReferenceModule(cinm::ComputeBlockOp original);
+
+/// The reference module of `original` in the form the plugin states its
+/// space over (InferencePlugin::prepareReference). Fails, with an error
+/// emitted, when the plugin cannot rewrite it.
+FailureOr<ReferenceModule> prepareReferenceModule(cinm::ComputeBlockOp original,
+                                                  InferencePlugin &plugin);
+
 // ===----------------------------------------------------------------------===//
 // Core framework API
 // ===----------------------------------------------------------------------===//
@@ -265,16 +341,16 @@ struct InferenceOptions {
   /// out-parameter and cost a full search each.
   int profileSeeds = 1;
 
-  /// Graph profiling only: lower-envelope repair of each class's profile.
-  /// A point whose pinned search measured worse than a smaller menu point's
-  /// incumbent takes that incumbent instead (configuration, cost, residency):
-  /// allocating R devices can always run the best configuration found at any
-  /// R' <= R and idle the rest, so the repaired profile is achievable by
-  /// construction and non-increasing in the resource. This is what removes
-  /// the upward cliffs a stalled search seed cuts into a profile -- the
-  /// allocator's greedy optimality argument reads the profile as the
-  /// achievable envelope, not as one seed's luck. ProfilePoint::rawCostMs
-  /// keeps the measurement for diagnostics.
+  /// Graph profiling only: keep each class's profile to its lower envelope.
+  /// A menu point whose pinned search measured no better than a smaller
+  /// point is dropped, leaving a hole like an infeasible menu value:
+  /// allocating R devices can always run the best configuration found at
+  /// any R' < R and idle the rest, so such a point offers nothing the
+  /// smaller one does not, and an allocation that picked it would pin
+  /// devices for a program that runs on fewer. What remains is strictly
+  /// decreasing in the resource, which is what the allocator's greedy
+  /// optimality argument reads it as -- the achievable envelope, whether the
+  /// measured cliff was a stalled search seed or a real scaling limit.
   bool profileRepair = true;
 
   /// Graph profiling only: when > 0, a class whose *best* profile point
@@ -283,8 +359,8 @@ struct InferenceOptions {
   /// the allocation -- transfer-bound work gains little from the device and
   /// occupies budget the compute-bound classes could use. Heuristic, not a
   /// comparison: there is no host cost model yet, so 0 (off, the default)
-  /// only surfaces the shares in profiles.csv and leaves the decision to
-  /// the reader.
+  /// only surfaces the shares in the allocation report and leaves the
+  /// decision to the reader.
   double hostTransferBoundShare = 0;
 
   /// Which algorithm drives the post-init search phase. Every strategy shares
@@ -513,6 +589,63 @@ struct InferenceOptions {
   /// no such multiple, the menu falls back to what divides the problem.
   int64_t allocationGranularity = 64;
 
+  /// Graph profiling only: drop a menu value whose device roofline
+  /// (InferencePlugin::deviceRoofline) is no better than the host's for
+  /// the same block, before profiling it. The search then only sweeps
+  /// resource values that could pay, and a block whose every value is
+  /// dropped never enters a space at all -- which is the same decision the
+  /// per-op offload gate makes, taken where the feasible resource values
+  /// are known instead of at the whole array.
+  ///
+  /// `gateDryRun` reports what it decides, per candidate value, without
+  /// running a search or changing a program.
+  bool screenMenuAgainstHost = true;
+
+  /// The share of its roofline the host is taken to achieve. Every host cost
+  /// the graph allocation uses -- the menu screen, the host profile point and
+  /// the screen after profiling -- is the roofline divided by it
+  /// (cinm::hostSeconds).
+  double hostAchievedFraction = 0.64;
+
+  /// Graph allocation only, latency objective only: offer every class the
+  /// option of staying on the host, as a profile point costed by the host
+  /// roofline, and let the allocation choose it. Placement then falls out of
+  /// the same solve that sizes the device sets -- a block stays on the host
+  /// when the devices it would take are worth more to another block, which
+  /// no screen in front of the solve can know. The screens remain: they
+  /// decide which device sizes are worth profiling, not where a block runs.
+  bool allowHostPlacement = true;
+
+  /// Graph profiling only: the most menu values to profile per block, after
+  /// the screen above. 0 leaves the menu as the plugin (and the screen) left
+  /// it; a positive value thins what remains geometrically, which bounds the
+  /// sweep when the screen keeps most of a large menu.
+  int64_t maxMenuPoints = 16;
+
+  /// Graph allocation only: a directory to write each graph's allocation
+  /// report to, as `<dir>/<graph>.json` -- everything the allocation did,
+  /// from the menu screen's verdicts to the groups it carved out. The report
+  /// is written as `<dumpDir>/<graph>/allocation.json` anyway when there is a
+  /// dumpDir; this is for wanting the report without the per-search dumps
+  /// dumpDir also turns on.
+  std::string allocationReportDir;
+
+  /// Graph allocation only: a directory holding the allocation to commit for
+  /// each graph, as `<dir>/<graph>.json` (the layout allocationReportDir
+  /// writes), in place of profiling and solving. Per class, its groups:
+  /// `members` (member indices), and either `"on_host": true` or the
+  /// `resource` of the point the group runs, the `config` to run there (in
+  /// evalSingleSolution currency) and optionally `"timeshared": true` and
+  /// `cost_ms`. Every class of the graph must be listed, and every member
+  /// placed exactly once.
+  std::string allocationIn;
+
+  /// Graph profiling only: stop after the screen, profiling nothing. The
+  /// surviving menu of each block is the sweep that would have run, so the
+  /// allocation report of such a run says what the screen decides and what
+  /// it saves, and the program that comes out of it is all host.
+  bool gateDryRun = false;
+
   /// Render terminal progress bars for this search. Progress is already
   /// self-suppressing when stdout is not a terminal; this turns it off even
   /// on one -- what a caller running many searches concurrently does, since
@@ -533,10 +666,10 @@ struct InferenceOptions {
 struct ProfilePoint {
   /// The shared-resource value (sharedResourceParam) this point measured.
   int64_t resource;
-  /// Total cost of the best configuration this point offers, in ms. After
-  /// lower-envelope repair (InferenceOptions::profileRepair) this may be a
-  /// smaller point's cost: allocating `resource` devices can always run the
-  /// best configuration found at any smaller value and idle the rest.
+  /// Total cost of the best configuration this point offers, in ms. Within
+  /// a profile these strictly decrease as the resource grows: a point that
+  /// does no better than a smaller one is dropped
+  /// (InferenceOptions::profileRepair).
   double costMs;
   /// The argmin configuration, keyed by space dimension name in the same
   /// currency as InferenceOptions::evalSingleSolution, so it can be replayed
@@ -545,19 +678,59 @@ struct ProfilePoint {
   /// The argmin's residency summary (plugin-measured); consumed by the
   /// graph-level co-residency packing and timeshare pricing.
   ResidencyInfo residency;
-  /// What this point's own pinned search measured, before repair. Equal to
-  /// costMs on an unrepaired point.
-  double rawCostMs = 0;
-  /// The resource whose incumbent this point carries after repair; 0 when
-  /// the point kept its own search's configuration.
-  int64_t repairedFrom = 0;
   /// Share of the incumbent's per-inference cost spent moving data
   /// (Transfer + TransferBack over the non-excluded total, so amortized
   /// weight scatters do not count). A class whose best point is mostly
   /// transfer gains little from the device; see
   /// InferenceOptions::hostTransferBoundShare. Negative when not measured.
   double transferShare = -1;
+  /// Whether this point is the block staying where it is: `costMs` is then
+  /// what the host would take for it (cinm::hostSeconds), it holds
+  /// no device and pins nothing. A profile carries at most one, first, so
+  /// that the allocation starts from everything on the host and spends the
+  /// device where it buys the most -- which is what makes placement part of
+  /// the allocation rather than a screen in front of it. Latency only: the
+  /// throughput objective takes the busiest device set's load, and host work
+  /// loads no set (see allocateGraph).
+  bool onHost = false;
 };
+
+/// What the menu screen made of one resource value: the device roofline it
+/// was priced at, and whether that beat the host (see
+/// InferencePlugin::deviceRoofline).
+struct MenuVerdict {
+  int64_t resource = 0;
+  double deviceMs = 0.0;
+  /// The two terms deviceMs is the greater of, kept so that a dump of the
+  /// screen describes the roof and not only its height, plus the traffic the
+  /// same block would pay with nothing resident (DeviceRoofline).
+  double transferMs = 0.0;
+  double deviceOpsPerSecond = 0.0;
+  double transferMsIfNothingResident = 0.0;
+  bool kept = false;
+};
+
+/// The screen's reading of a whole menu. `hostMs` is 0 when the screen could
+/// not run -- no device model, or a block the footprint reader cannot
+/// measure -- and the menu is then left alone, since a screen that cannot
+/// see is not evidence of unprofitability.
+struct MenuScreen {
+  double hostMs = 0.0;
+  SmallVector<MenuVerdict> verdicts;
+};
+
+/// Price every value of `menu` against the host cost of `block`
+/// (cinm::hostSeconds at `hostAchievedFraction`) and erase, in place, the
+/// ones whose device roofline cannot beat it.
+MenuScreen screenMenu(cinm::ComputeBlockOp block, InferencePlugin &plugin,
+                      SmallVectorImpl<int64_t> &menu,
+                      double hostAchievedFraction = 1.0);
+
+/// Keep at most `maxPoints` values of `menu`, geometrically spaced, both
+/// endpoints included. A no-op when `maxPoints` is 0 or the menu is already
+/// short enough. Sorted divisor menus are distributed roughly
+/// geometrically, so index spacing approximates log spacing.
+void thinMenu(SmallVectorImpl<int64_t> &menu, int64_t maxPoints);
 
 /// Caps how many profiling searches run at once across all the sweeps sharing
 /// it. Several classes of one graph are profiled concurrently, and their costs
@@ -597,12 +770,66 @@ private:
 /// One search's outcome at one menu point. Several of these share a resource
 /// when `InferenceOptions::profileSeeds` asks for repeats; the spread between
 /// them is what separates a profile's real shape from its search noise.
-struct ProfileSample {
-  int64_t resource;
+struct SearchOutcome {
   /// Index of the repeat, 0 being the seed whose result the profile keeps.
-  unsigned seed;
-  double costMs;
+  unsigned repeat = 0;
+  /// The rngSeed the search ran with.
+  int rngSeed = 0;
+  /// The best cost it found; none when the pinned space had no feasible
+  /// configuration, and `failure` then says why.
+  std::optional<double> costMs;
+  std::string failure;
 };
+
+/// What became of one value of a block's resource menu, from the screen to
+/// the profile.
+struct MenuPointTrace {
+  int64_t resource = 0;
+  /// The menu screen's reading of it; none when the screen did not run
+  /// (InferenceOptions::screenMenuAgainstHost off, or a block it cannot
+  /// price).
+  std::optional<MenuVerdict> verdict;
+  /// Whether a search ran at it: kept by the screen and by thinMenu.
+  bool profiled = false;
+  /// One per repeat, in repeat order; empty when it was not profiled.
+  SmallVector<SearchOutcome> searches;
+  /// Repeat 0's result, when it found one.
+  std::optional<ProfilePoint> point;
+  /// The smaller resource value whose point was no worse, which drops this
+  /// one from the profile (InferenceOptions::profileRepair); 0 when nothing
+  /// dominates it.
+  int64_t dominatedBy = 0;
+  /// Where repeat 0's search dumped its data (InferenceOptions::dumpDir);
+  /// empty when it dumped nothing.
+  std::string dumpDir;
+};
+
+/// Everything profileComputeBlock did to one block, including the menu values
+/// that never reached the profile and why.
+struct ProfileTrace {
+  /// The host time the menu screen compared against (cinm::hostSeconds); 0
+  /// when the screen did not run.
+  double screenHostMs = 0.0;
+  /// Every value sharedResourceMenu offered, in menu order.
+  std::vector<MenuPointTrace> menu;
+
+  MenuPointTrace *find(int64_t resource) {
+    for (MenuPointTrace &point : menu)
+      if (point.resource == resource)
+        return &point;
+    return nullptr;
+  }
+};
+
+/// The part of profiling that runs no search: `reference`'s menu
+/// (sharedResourceMenu), the screen's verdict on every value of it, and which
+/// values survive the screen and thinMenu to be profiled. `computeOp` is the
+/// original block, which the screen prices. The returned trace is what
+/// profileComputeBlock starts from, so a caller that stops here
+/// (InferenceOptions::gateDryRun) sees the same menu a run would have swept.
+ProfileTrace planProfile(cinm::ComputeBlockOp computeOp,
+                         cinm::ComputeBlockOp reference,
+                         InferencePlugin &plugin, const InferenceOptions &opts);
 
 /// Measure `computeOp`'s cost profile over the plugin's shared-resource menu
 /// by running one search per menu value with the resource pinned. The menu
@@ -617,21 +844,28 @@ struct ProfileSample {
 /// pointwise and the allocation copes with holes. Fails only when every menu
 /// value is infeasible or a search fails definitively.
 ///
-/// `samples`, when given, collects every search this ran, including the
-/// `opts.profileSeeds` repeats per menu point. The returned profile is
-/// unaffected by the repeats -- it is always seed 0's -- so the samples are
-/// a measurement of the search, not an input to anything.
+/// `trace`, when given, records what became of every menu value, including
+/// every search this ran with the `opts.profileSeeds` repeats per menu point.
+/// The returned profile is unaffected by the repeats -- it is always seed
+/// 0's -- so they are a measurement of the search, not an input to anything.
+/// It is filled even when profiling fails silenceably, so that a caller can
+/// say why.
 ///
 /// `gate`, when given, is a concurrency budget shared with the other sweeps
 /// running alongside this one: the sweep then offers every point it has and
 /// each search runs single-threaded, so the permits land wherever work
 /// remains instead of being divided up front. Without it the sweep sizes its
 /// own fan-out out of `opts.numWorkers` and owns the machine.
+///
+/// `reference`, when given, is `computeOp`'s prepared reference module
+/// (prepareReferenceModule): the menu is read off it, and every search
+/// clones its trials from it instead of preparing a reference of its own.
+/// Without it the sweep prepares one itself.
 utils::Maybe<SmallVector<ProfilePoint>>
 profileComputeBlock(cinm::ComputeBlockOp computeOp, InferencePlugin &plugin,
-                    const InferenceOptions &opts,
-                    SmallVectorImpl<ProfileSample> *samples = nullptr,
-                    ProfileGate *gate = nullptr);
+                    const InferenceOptions &opts, ProfileTrace *trace = nullptr,
+                    ProfileGate *gate = nullptr,
+                    const ReferenceModule *reference = nullptr);
 
 /// Entry point for Bayesian inference.
 DiagnosedSilenceableFailure

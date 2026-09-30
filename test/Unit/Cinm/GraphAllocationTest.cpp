@@ -397,4 +397,24 @@ TEST(LatencyAllocation, DiamondSerializesTheBranches) {
   EXPECT_EQ(result->perClass[0].groups.size(), 1u);
 }
 
+TEST(LatencyAllocation, ExecutionsScaleTheNode) {
+  // A rolled layer loop: one block that runs four times per inference. Its
+  // time on the path is four of its cost, and so is the set's load, while
+  // it holds one member's worth of residency.
+  SmallVector<ClassProfile> classes;
+  classes.push_back({1, {point(512, 2.0), point(1024, 1.5)}});
+  SmallVector<GraphNode> nodes{node(0, 0)};
+  nodes[0].executions = 4;
+  AllocationOptions opts;
+  opts.resourceBudget = 1024;
+
+  auto result = cinm::allocateGraphForLatency(classes, nodes, opts);
+  ASSERT_TRUE(result);
+  EXPECT_DOUBLE_EQ(result->objectiveMs, 4 * 1.5);
+  ASSERT_EQ(result->perClass[0].groups.size(), 1u);
+  EXPECT_EQ(result->perClass[0].groups[0].resource, 1024);
+  EXPECT_DOUBLE_EQ(result->perClass[0].groups[0].loadMs, 4 * 1.5);
+  EXPECT_EQ(result->perClass[0].groups[0].size, 1u);
+}
+
 } // namespace

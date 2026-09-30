@@ -483,3 +483,21 @@ module {
     }
   }
 }
+
+// -----
+
+#map = affine_map<(d, b) -> (d, b)>
+func.func @padding_without_slot(%out: memref<8x3xi32>, %set: !upmem.hierarchy<8x3>) {
+  // expected-error @below {{slot padding needs the number of blocks per slot}}
+  upmem.gather_blocks %out[1 elts, #map, 3 blocks] from @partials of %set {slotPadding = 1 : i64} : memref<8x3xi32> from !upmem.hierarchy<8x3>
+  return
+}
+
+// -----
+
+#map = affine_map<(d, b) -> (d, b)>
+func.func @slot_does_not_divide(%out: memref<8x3xi32>, %set: !upmem.hierarchy<8x3>) {
+  // expected-error @below {{blocks per slot (2) must divide the blocks per DPU (3)}}
+  upmem.gather_blocks %out[1 elts, #map, 3 blocks] from @partials of %set {blocksPerSlot = 2 : i64, slotPadding = 1 : i64} : memref<8x3xi32> from !upmem.hierarchy<8x3>
+  return
+}

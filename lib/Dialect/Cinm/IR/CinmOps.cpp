@@ -64,7 +64,8 @@ using linalg::UnaryFn;
 
 template <typename Self>
 static void buildGemmLikeOp(OpBuilder &, OperationState &result, Value lhs,
-                            Value rhs, Value bias, Value out) {
+                            Value rhs, Value bias, Value out,
+                            Type accElementType) {
   result.addOperands({lhs, rhs});
   int biasInt = 0, outInt = 0;
   if (bias) {
@@ -88,6 +89,13 @@ static void buildGemmLikeOp(OpBuilder &, OperationState &result, Value lhs,
             result.getRawProperties(), result.regions, inferredReturnTypes))) {
       assert(inferredReturnTypes.size() == 1u &&
              "mismatched number of return types");
+      // Inference can only see the operands, so a wider accumulator has to be
+      // asked for. Widening here rather than in inferReturnTypes keeps the
+      // inferred type the one isCompatibleReturnTypes checks against.
+      if (accElementType) {
+        auto shaped = cast<ShapedType>(inferredReturnTypes[0]);
+        inferredReturnTypes[0] = shaped.cloneWith(std::nullopt, accElementType);
+      }
       result.addTypes(inferredReturnTypes);
     } else {
       ::llvm::report_fatal_error("Failed to infer result type(s).");
@@ -548,6 +556,72 @@ void ElementwiseOp::build(OpBuilder &builder, OperationState &state,
   return success();
 }
 
+/// True when `acc` can hold the accumulation of products of `operand`-typed
+/// values: the same type, or a wider one of the same domain. This is what
+/// lets a gemm-like op take i8 operands and yield the i32 accumulator an
+/// int8 checkpoint needs, and it matches what `linalg.matmul` -- what these
+/// ops lower to -- already accepts when its `outs` is wider than its `ins`.
+static bool isLegalAccumulatorType(Type operand, Type acc) {
+  if (operand == acc)
+    return true;
+  if (auto io = dyn_cast<IntegerType>(operand))
+    if (auto ia = dyn_cast<IntegerType>(acc))
+      return io.getSignedness() == ia.getSignedness() &&
+             io.getWidth() <= ia.getWidth();
+  if (auto fo = dyn_cast<FloatType>(operand))
+    if (auto fa = dyn_cast<FloatType>(acc))
+      return fo.getWidth() <= fa.getWidth();
+  return false;
+}
+
+/// The element type a gemm-like op accumulates into. `out` and `bias` carry
+/// it when present; otherwise only the operands are known and the operand
+/// type is inferred, leaving a wider explicit result to be accepted by
+/// isCompatibleReturnTypes.
+static Type inferAccElementType(Value bias, Value out, Type operandElemTy) {
+  for (Value v : {out, bias})
+    if (v)
+      if (auto shaped = dyn_cast<ShapedType>(v.getType()))
+        return shaped.getElementType();
+  return operandElemTy;
+}
+
+/// Shared body of every gemm-like `isCompatibleReturnTypes`: everything but
+/// the element type must match exactly, and the element type must be a legal
+/// accumulator for the inferred one.
+static bool gemmlikeReturnTypesCompatible(TypeRange inferred,
+                                          TypeRange actual) {
+  if (inferred.size() != actual.size())
+    return false;
+  for (auto [inf, act] : llvm::zip_equal(inferred, actual)) {
+    auto infShaped = dyn_cast<ShapedType>(inf);
+    auto actShaped = dyn_cast<ShapedType>(act);
+    if (!infShaped || !actShaped)
+      return inf == act;
+    if (!isLegalAccumulatorType(infShaped.getElementType(),
+                                actShaped.getElementType()))
+      return false;
+    // Compare everything else by rebuilding the inferred type around the
+    // actual element type: shape, type kind and encoding all have to match.
+    if (infShaped.cloneWith(std::nullopt, actShaped.getElementType()) != act)
+      return false;
+  }
+  return true;
+}
+
+bool GemmOp::isCompatibleReturnTypes(TypeRange l, TypeRange r) {
+  return gemmlikeReturnTypesCompatible(l, r);
+}
+bool GemvOp::isCompatibleReturnTypes(TypeRange l, TypeRange r) {
+  return gemmlikeReturnTypesCompatible(l, r);
+}
+bool BatchGemmOp::isCompatibleReturnTypes(TypeRange l, TypeRange r) {
+  return gemmlikeReturnTypesCompatible(l, r);
+}
+bool BatchGemvOp::isCompatibleReturnTypes(TypeRange l, TypeRange r) {
+  return gemmlikeReturnTypesCompatible(l, r);
+}
+
 ::mlir::LogicalResult GemmOp::inferReturnTypeComponents(
     ::mlir::MLIRContext *, ::std::optional<::mlir::Location> loc,
     GemmOp::Adaptor adaptor,
@@ -568,8 +642,14 @@ void ElementwiseOp::build(OpBuilder &builder, OperationState &state,
     outShape.push_back(lhsShape.getDimSize(0));
     outShape.push_back(rhsShape.getDimSize(1));
 
-    inferredReturnShapes.push_back(
-        ShapedTypeComponents(outShape, lhsShape.getElementType()));
+    Type accElemTy = inferAccElementType(adaptor.getBias(), adaptor.getOut(),
+                                         lhsShape.getElementType());
+    if (!isLegalAccumulatorType(lhsShape.getElementType(), accElemTy))
+      return mlir::emitError(*loc, "accumulator element type ")
+             << accElemTy << " cannot accumulate products of "
+             << lhsShape.getElementType();
+
+    inferredReturnShapes.push_back(ShapedTypeComponents(outShape, accElemTy));
     return success();
   }
   return mlir::emitError(*loc, "operand types are not compatible: ")
@@ -595,8 +675,14 @@ void ElementwiseOp::build(OpBuilder &builder, OperationState &state,
     SmallVector<int64_t, 2> outShape;
     outShape.push_back(lhsShape.getDimSize(0));
 
-    inferredReturnShapes.push_back(
-        ShapedTypeComponents(outShape, lhsShape.getElementType()));
+    Type accElemTy = inferAccElementType(adaptor.getBias(), adaptor.getOut(),
+                                         lhsShape.getElementType());
+    if (!isLegalAccumulatorType(lhsShape.getElementType(), accElemTy))
+      return mlir::emitError(*loc, "accumulator element type ")
+             << accElemTy << " cannot accumulate products of "
+             << lhsShape.getElementType();
+
+    inferredReturnShapes.push_back(ShapedTypeComponents(outShape, accElemTy));
     return success();
   }
   return mlir::emitError(*loc, "operand types are not compatible: ")
@@ -630,17 +716,23 @@ void ElementwiseOp::build(OpBuilder &builder, OperationState &state,
   SmallVector<int64_t, 3> outShape = {
       lhsShape.getDimSize(0), lhsShape.getDimSize(1), rhsShape.getDimSize(2)};
 
+  Type accElemTy =
+      inferAccElementType(adaptor.getBias(), adaptor.getOut(), elementType);
+  if (!isLegalAccumulatorType(elementType, accElemTy))
+    return failure();
+
   if (Value bias = adaptor.getBias()) {
     ShapeAdaptor biasShape(bias.getType());
+    // The bias is the accumulator, so it carries the accumulator type.
     if (biasShape.getRank() != 3 ||
         !dimsCompatible(biasShape.getDimSize(0), outShape[0]) ||
         !dimsCompatible(biasShape.getDimSize(1), outShape[1]) ||
         !dimsCompatible(biasShape.getDimSize(2), outShape[2]) ||
-        biasShape.getElementType() != elementType)
+        biasShape.getElementType() != accElemTy)
       return failure();
   }
 
-  inferredReturnShapes.push_back(ShapedTypeComponents(outShape, elementType));
+  inferredReturnShapes.push_back(ShapedTypeComponents(outShape, accElemTy));
   return success();
 }
 
@@ -671,16 +763,22 @@ void ElementwiseOp::build(OpBuilder &builder, OperationState &state,
   SmallVector<int64_t, 2> outShape = {lhsShape.getDimSize(0),
                                       lhsShape.getDimSize(1)};
 
+  Type accElemTy =
+      inferAccElementType(adaptor.getBias(), adaptor.getOut(), elementType);
+  if (!isLegalAccumulatorType(elementType, accElemTy))
+    return failure();
+
   if (Value bias = adaptor.getBias()) {
     ShapeAdaptor biasShape(bias.getType());
+    // The bias is the accumulator, so it carries the accumulator type.
     if (biasShape.getRank() != 2 ||
         !dimsCompatible(biasShape.getDimSize(0), outShape[0]) ||
         !dimsCompatible(biasShape.getDimSize(1), outShape[1]) ||
-        biasShape.getElementType() != elementType)
+        biasShape.getElementType() != accElemTy)
       return failure();
   }
 
-  inferredReturnShapes.push_back(ShapedTypeComponents(outShape, elementType));
+  inferredReturnShapes.push_back(ShapedTypeComponents(outShape, accElemTy));
   return success();
 }
 

@@ -300,3 +300,44 @@ jobs:
       # a restore that brought back no tests must not read as a passing suite.
       - name: Run the unit tests
         run: ctest --test-dir build/test --output-on-failure --no-tests=error -j "$(nproc)"
+
+  # The ccache and conan entries are keyed per commit and per run on purpose
+  # -- see their restore steps -- so every run of every branch leaves one more
+  # behind, and the pixi cache leaves one per lockfile it has ever seen. None
+  # of them is ever read again: a restore takes the newest entry of the ref.
+  # GitHub keeps them anyway, for seven days or until the repository is over
+  # its 10 GB, and then evicts by last use -- which takes the caches still
+  # wanted just as readily as these. So each run drops what it superseded,
+  # leaving one entry per kind per ref.
+  #
+  # A job of its own so that `actions: write` is granted to this and nothing
+  # else. It runs after a failed build too, which saves caches just the same.
+  prune-caches:
+    name: Prune superseded caches
+    needs: build
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+    steps:
+      - name: Delete all but the newest entry of each kind on this ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          # What the cache steps wrote under: refs/heads/<branch> for a push,
+          # refs/pull/<number>/merge for a pull request.
+          REF: ${{ github.ref }}
+          # Not the torch-mlir cache: it is keyed on the revisions it was
+          # built from, so an entry stays useful until the submodule moves,
+          # and every branch on the same revision shares the one entry.
+          PREFIXES: cinnamon-ccache-${{ runner.os }}- cinnamon-conan-${{ runner.os }}- pixi-linux-64-
+        run: |
+          for prefix in $PREFIXES; do
+            gh cache list --ref "$REF" --key "$prefix" --sort created_at \
+              --order desc --limit 100 --json id,key,sizeInBytes \
+              --jq '.[1:][] | "\(.id) \(.sizeInBytes) \(.key)"' |
+            while read -r id size key; do
+              echo "Deleting $key ($((size / 1024 / 1024)) MiB)"
+              gh cache delete "$id"
+            done
+          done

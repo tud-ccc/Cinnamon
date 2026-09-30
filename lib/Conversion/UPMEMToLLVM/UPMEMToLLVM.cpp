@@ -68,6 +68,14 @@ static LLVM::LLVMPointerType functionPtrTy(Type resultTy, ArrayRef<Type>) {
   return untypedPtrType(resultTy.getContext());
 }
 
+/// The runtime entry point for `op`: `base`, or its `_async` variant when the
+/// op only issues (upmem.async).
+static std::string runtimeEntry(Operation *op, StringRef base) {
+  if (op->hasAttr(upmem::UPMEMDialect::ASYNC_NAME))
+    return (base + "_async").str();
+  return base.str();
+}
+
 static Value reifyAsIndex(ImplicitLocOpBuilder &builder,
                           LLVMTypeConverter const *converter, int64_t value) {
   return LLVM::ConstantOp::create(builder, converter->getIndexType(), value);
@@ -234,10 +242,10 @@ getScatterOrGatherFunc(OpBuilder &rewriter, ModuleOp moduleOp,
   auto ptrTy = untypedPtrType(ctx);
   auto sizeTy = tyConverter->getIndexType();
   auto funPtrTy = functionPtrTy(sizeTy, {sizeTy});
-  return LLVM::lookupOrCreateFn(
-      rewriter, moduleOp, name,
-      {ptrTy, ptrTy, sizeTy, sizeTy, sizeTy, sizeTy, ptrTy, funPtrTy, ptrTy},
-      LLVM::LLVMVoidType::get(ctx));
+  return LLVM::lookupOrCreateFn(rewriter, moduleOp, name,
+                                {ptrTy, ptrTy, sizeTy, sizeTy, sizeTy, sizeTy,
+                                 ptrTy, sizeTy, funPtrTy, ptrTy},
+                                LLVM::LLVMVoidType::get(ctx));
 }
 
 /*
@@ -252,31 +260,59 @@ void upmemrt_dpu_scatter_blocks(struct dpu_set_t *dpu_set,
 */
 static FailureOr<LLVM::LLVMFuncOp>
 getBlockTransferFunc(OpBuilder &rewriter, ModuleOp moduleOp,
-                     LLVMTypeConverter const *tyConverter, StringRef name) {
+                     LLVMTypeConverter const *tyConverter, StringRef name,
+                     bool padded) {
   auto ctx = moduleOp->getContext();
   auto ptrTy = untypedPtrType(ctx);
   auto sizeTy = tyConverter->getIndexType();
   auto funPtrTy = functionPtrTy(sizeTy, {sizeTy, sizeTy});
-  return LLVM::lookupOrCreateFn(
-      rewriter, moduleOp, name,
-      {ptrTy, ptrTy, sizeTy, sizeTy, sizeTy, ptrTy, funPtrTy, ptrTy},
-      LLVM::LLVMVoidType::get(ctx));
+  SmallVector<Type> params{ptrTy, ptrTy,  sizeTy,   sizeTy, sizeTy,
+                           ptrTy, sizeTy, funPtrTy, ptrTy};
+  // The padded forms take the slot's block count and its padding in bytes.
+  if (padded)
+    params.append({sizeTy, sizeTy});
+  return LLVM::lookupOrCreateFn(rewriter, moduleOp, name, params,
+                                LLVM::LLVMVoidType::get(ctx));
 }
 
 /*
 void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
                            size_t copy_bytes, const char *buffer_id,
-                           const char *tag);
+                           size_t symbol_offset, const char *tag);
 */
 static FailureOr<LLVM::LLVMFuncOp>
 getBroadcastFunc(OpBuilder &rewriter, ModuleOp moduleOp,
-                 LLVMTypeConverter const *tyConverter) {
+                 LLVMTypeConverter const *tyConverter, StringRef name) {
   auto ctx = moduleOp->getContext();
   auto ptrTy = untypedPtrType(ctx);
   auto sizeTy = tyConverter->getIndexType();
-  return LLVM::lookupOrCreateFn(rewriter, moduleOp, "upmemrt_dpu_broadcast",
-                                {ptrTy, ptrTy, sizeTy, ptrTy, ptrTy},
+  return LLVM::lookupOrCreateFn(rewriter, moduleOp, name,
+                                {ptrTy, ptrTy, sizeTy, ptrTy, sizeTy, ptrTy},
                                 LLVM::LLVMVoidType::get(ctx));
+}
+
+/// Where in its MRAM symbol a transfer's payload sits, in bytes: `slot` slot
+/// sizes past the symbol's start for a transfer into a slotted buffer
+/// (upmem.static_alloc ... slots N), zero otherwise. The runtime hands it to
+/// the SDK as the symbol offset and keys residency on it.
+template <class Op>
+static FailureOr<Value> symbolOffsetOf(Op op, typename Op::Adaptor adaptor,
+                                       ImplicitLocOpBuilder &rewriter,
+                                       LLVMTypeConverter const *tyConverter) {
+  if (!adaptor.getSlot())
+    return reifyAsIndex(rewriter, tyConverter, 0);
+  upmem::StaticAllocOp buffer = op.getDpuBuffer();
+  if (!buffer)
+    return op.emitOpError("transfers into a slot of ")
+           << op.getDpuBufRefAttr()
+           << ", which does not resolve to a upmem.static_alloc";
+  if (buffer.getNumSlots() <= 1)
+    return op.emitOpError("transfers into a slot of ")
+           << op.getDpuBufRefAttr() << ", which is not slotted";
+  Value slotBytes =
+      reifyAsIndex(rewriter, tyConverter, buffer.getSlotSizeInBytes());
+  return LLVM::MulOp::create(rewriter, adaptor.getSlot(), slotBytes)
+      .getResult();
 }
 
 static FailureOr<LLVM::LLVMFuncOp>
@@ -457,8 +493,13 @@ public:
                                  rewriter.getI64IntegerAttr(elemOffset)));
     srcPtr = LLVM::GEPOp::create(rewriter, loc, ptrTy, srcTy.getElementType(),
                                  srcPtr, ValueRange{elemOffsetVal});
+    // The target is contiguous, but need not start at its allocation: a
+    // slot of a stacked staging buffer is a subview at a run-time offset.
+    MemRefDescriptor dstDesc(adaptor.getTarget());
     Value dstPtr =
-        MemRefDescriptor(adaptor.getTarget()).alignedPtr(rewriter, loc);
+        LLVM::GEPOp::create(rewriter, loc, ptrTy, dstTy.getElementType(),
+                            dstDesc.alignedPtr(rewriter, loc),
+                            ValueRange{dstDesc.offset(rewriter, loc)});
 
     auto konst = [&](Type ty, int64_t v) {
       return LLVM::ConstantOp::create(rewriter, loc, ty,
@@ -531,8 +572,13 @@ public:
                                  rewriter.getI64IntegerAttr(elemOffset)));
     dstPtr = LLVM::GEPOp::create(rewriter, loc, ptrTy, dstTy.getElementType(),
                                  dstPtr, ValueRange{elemOffsetVal});
+    // The packed source is contiguous but, like a compact's target, may be
+    // a slot of a larger buffer at a run-time offset.
+    MemRefDescriptor srcDesc(adaptor.getSource());
     Value srcPtr =
-        MemRefDescriptor(adaptor.getSource()).alignedPtr(rewriter, loc);
+        LLVM::GEPOp::create(rewriter, loc, ptrTy, srcTy.getElementType(),
+                            srcDesc.alignedPtr(rewriter, loc),
+                            ValueRange{srcDesc.offset(rewriter, loc)});
 
     auto konst = [&](Type ty, int64_t v) {
       return LLVM::ConstantOp::create(rewriter, loc, ty,
@@ -845,9 +891,15 @@ static LogicalResult lowerBlockTransfer(Op op, typename Op::Adaptor adaptor,
   if (failed(affineMapFunOpt))
     return emitError(loc, "Cannot emit affine map");
 
-  auto runtimeFun = getBlockTransferFunc(
-      rewriter, moduleOp, tyConverter,
-      isGather ? "upmemrt_dpu_gather_blocks" : "upmemrt_dpu_scatter_blocks");
+  // Padded slots go through their own entry points, so a binary built
+  // before them keeps calling the functions it was linked against.
+  const bool padded = op.getSlotPaddingElements() > 0;
+  std::string runtimeName =
+      isGather ? "upmemrt_dpu_gather_blocks" : "upmemrt_dpu_scatter_blocks";
+  if (padded)
+    runtimeName += "_padded";
+  auto runtimeFun = getBlockTransferFunc(rewriter, moduleOp, tyConverter,
+                                         runtimeName, padded);
   if (llvm::failed(runtimeFun))
     return failure();
   auto funPtrOp = LLVM::AddressOfOp::create(rewriter0, loc, *affineMapFunOpt);
@@ -873,16 +925,29 @@ static LogicalResult lowerBlockTransfer(Op op, typename Op::Adaptor adaptor,
                                   size_t num_blocks,
                                   size_t block_num_elements,
                                   const char *buffer_id,
+                                  size_t symbol_offset,
                                   size_t (*base_offset)(size_t, size_t),
                                   const char *tag)
   */
-  LLVM::CallOp::create(
-      rewriter0, loc, *runtimeFun,
-      ValueRange{adaptor.getHierarchy(), bareHostBuf,
-                 reifyAsIndex(rewriter, tyConverter, elementSize),
-                 reifyAsIndex(rewriter, tyConverter, numBlocksPerDpu),
-                 reifyAsIndex(rewriter, tyConverter, blockNumElements),
-                 bufferId, funPtrOp.getRes(), tag});
+  FailureOr<Value> symbolOffset =
+      symbolOffsetOf(op, adaptor, rewriter, tyConverter);
+  if (failed(symbolOffset))
+    return failure();
+  SmallVector<Value> args{adaptor.getHierarchy(),
+                          bareHostBuf,
+                          reifyAsIndex(rewriter, tyConverter, elementSize),
+                          reifyAsIndex(rewriter, tyConverter, numBlocksPerDpu),
+                          reifyAsIndex(rewriter, tyConverter, blockNumElements),
+                          bufferId,
+                          *symbolOffset,
+                          funPtrOp.getRes(),
+                          tag};
+  if (padded) {
+    args.push_back(reifyAsIndex(rewriter, tyConverter, *op.getBlocksPerSlot()));
+    args.push_back(reifyAsIndex(rewriter, tyConverter,
+                                op.getSlotPaddingElements() * elementSize));
+  }
+  LLVM::CallOp::create(rewriter0, loc, *runtimeFun, args);
 
   rewriter0.eraseOp(op);
   return success();
@@ -904,7 +969,8 @@ static LogicalResult lowerBroadcast(upmem::BroadcastOp op,
     return failure();
   auto [bareHostBuf, bufferId] = *bufsOrFailure;
 
-  auto runtimeFun = getBroadcastFunc(rewriter, moduleOp, tyConverter);
+  auto runtimeFun = getBroadcastFunc(rewriter, moduleOp, tyConverter,
+                                     runtimeEntry(op, "upmemrt_dpu_broadcast"));
   if (llvm::failed(runtimeFun))
     return failure();
   Value tag = reifyTimingTag(rewriter, moduleOp, op);
@@ -914,16 +980,21 @@ static LogicalResult lowerBroadcast(upmem::BroadcastOp op,
   auto numBytesCopied = op.getDpuBufferSizeInBytes();
   numBytesCopied = llvm::alignTo(numBytesCopied, 8);
 
+  FailureOr<Value> symbolOffset =
+      symbolOffsetOf(op, adaptor, rewriter, tyConverter);
+  if (failed(symbolOffset))
+    return failure();
+
   /*
   void upmemrt_dpu_broadcast(struct dpu_set_t *dpu_set, void *host_buffer,
                              size_t copy_bytes, const char *buffer_id,
-                             const char *tag)
+                             size_t symbol_offset, const char *tag)
   */
   LLVM::CallOp::create(
       rewriter0, loc, *runtimeFun,
       ValueRange{adaptor.getHierarchy(), bareHostBuf,
                  reifyAsIndex(rewriter, tyConverter, numBytesCopied), bufferId,
-                 tag});
+                 *symbolOffset, tag});
 
   rewriter0.eraseOp(op);
   return success();
@@ -963,7 +1034,8 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
 
   auto runtimeScatterFun = getScatterOrGatherFunc(
       rewriter, moduleOp, tyConverter,
-      isGather ? "upmemrt_dpu_gather" : "upmemrt_dpu_scatter");
+      runtimeEntry(op,
+                   isGather ? "upmemrt_dpu_gather" : "upmemrt_dpu_scatter"));
 
   if (llvm::failed(runtimeScatterFun))
     return failure();
@@ -992,9 +1064,14 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
                             size_t num_elements_per_tasklet,
                             size_t copy_bytes,
                             const char *bufId,
+                            size_t symbol_offset,
                             size_t (*base_offset)(size_t),
                             const char *tag)
   */
+  FailureOr<Value> symbolOffset =
+      symbolOffsetOf(op, adaptor, rewriter, tyConverter);
+  if (failed(symbolOffset))
+    return failure();
   LLVM::CallOp::create(
       rewriter0, loc, *runtimeScatterFun,
       ValueRange{adaptor.getHierarchy(), bareHostBuf,
@@ -1002,7 +1079,7 @@ static LogicalResult lowerScatterOrGather(Op op, typename Op::Adaptor adaptor,
                  reifyAsIndex(rewriter, tyConverter, numElements),
                  reifyAsIndex(rewriter, tyConverter, numElementsPerTasklet),
                  reifyAsIndex(rewriter, tyConverter, numBytesCopied), bufferId,
-                 funPtrOp.getRes(), tag});
+                 *symbolOffset, funPtrOp.getRes(), tag});
 
   rewriter0.eraseOp(op);
   return success();
@@ -1094,9 +1171,27 @@ struct WaitForOpToFuncCallLowering
 
     // void upmemrt_dpu_launch(struct dpu_set_t *void_dpu_set) {
     auto funcOp = appendOrGetFuncOp(
-        rewriter, "upmemrt_dpu_launch", resultType,
+        rewriter, runtimeEntry(op, "upmemrt_dpu_launch"), resultType,
         {getTypeConverter()->convertType(op.getDpuSet().getType())}, op);
 
+    if (llvm::failed(funcOp))
+      return failure();
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, *funcOp, adaptor.getDpuSet());
+    return success();
+  }
+};
+
+struct SyncOpToFuncCallLowering : public ConvertOpToLLVMPattern<upmem::SyncOp> {
+  using ConvertOpToLLVMPattern<upmem::SyncOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(upmem::SyncOp op, typename upmem::SyncOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // void upmemrt_dpu_sync(struct dpu_set_t *void_dpu_set)
+    auto funcOp = appendOrGetFuncOp(
+        rewriter, "upmemrt_dpu_sync",
+        LLVM::LLVMVoidType::get(rewriter.getContext()),
+        {getTypeConverter()->convertType(op.getDpuSet().getType())}, op);
     if (llvm::failed(funcOp))
       return failure();
     rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, *funcOp, adaptor.getDpuSet());
@@ -1137,6 +1232,7 @@ void populateUPMEMToLLVMConversionPatterns(LLVMTypeConverter &typeConverter,
   patterns.add<BroadcastOpToFuncCallLowering>(typeConverter);
   patterns.add<GatherFromArrayOpToFuncCallLowering>(typeConverter);
   patterns.add<GatherBlocksOpToFuncCallLowering>(typeConverter);
+  patterns.add<SyncOpToFuncCallLowering>(typeConverter);
   patterns.add<WaitForOpToFuncCallLowering>(typeConverter);
   patterns.add<FreeDPUsOpToFuncCallLowering>(typeConverter);
   patterns.add<CompactBufferOpToFuncCallLowering>(typeConverter);
@@ -1160,7 +1256,14 @@ struct ConvertUPMEMToLLVMPass
         maxBlocks = std::max(
             maxBlocks, llvm::TypeSwitch<Operation *, uint64_t>(user)
                            .Case<upmem::ScatterBlocksOp, upmem::GatherBlocksOp>(
-                               [](auto op) { return op.getNumBlocksPerDpu(); })
+                               [](auto op) -> uint64_t {
+                                 // A padded transfer's list has one more
+                                 // entry per slot: its padding.
+                                 uint64_t blocks = op.getNumBlocksPerDpu();
+                                 if (op.getSlotPaddingElements() > 0)
+                                   blocks += blocks / *op.getBlocksPerSlot();
+                                 return blocks;
+                               })
                            .Default(uint64_t{0}));
       if (maxBlocks > 0)
         allocOp->setAttr(

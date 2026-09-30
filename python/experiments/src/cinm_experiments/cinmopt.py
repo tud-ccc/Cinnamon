@@ -224,11 +224,11 @@ def graph_allocation(
     dataflow between compute blocks, named infer_<fn> by the pass's own
     NameInventor) into {out_dir}/infer_<fn>/:
 
-      profiles.csv    one row per (class, menu point) -- the solver's input
-      allocation.csv  one summary row -- classes, groups, host/device split,
-                      objective
-      groups.csv      one row per device set the solve carved out
-      class_<i>/      the per-class search dumps (pool.csv, ...)
+      allocation.json  the allocation report: per class its operator, every
+                       menu point with how it was priced and what became of
+                       it, and the groups the solve gave it
+                       (cinm_experiments.profiles reads it)
+      class_<i>/       the per-class search dumps (pool.csv, ...)
 
     Unlike the per-block stacks this searches a whole module rather than a
     split function: the classes of one program are what the device is
@@ -556,6 +556,7 @@ def stamped_lowerer(
     *,
     infer_opts: dict,
     cinm_opt: pathlib.Path | None = None,
+    pre_passes: list | None = None,
 ):
     """A (fn_module, out_file, log_file) -> CompletedProcess callable for
     compile_run.Config.lower that SEARCHES rather than replays: run
@@ -567,9 +568,16 @@ def stamped_lowerer(
     with graph-allocation (+ latency-objective) the allocation stage
     partitions the device and merges classes first; without it every
     compute block is tuned independently -- the per-operator paradigm.
-    The graph solver's dumps (profiles.csv, allocation.csv, ...) land in
+    The graph solver's dumps (allocation.json, class_<i>/) land in
     a dump/ directory beside the lowered module, so the objective side
-    table can be assembled from the same artifact that was measured."""
+    table can be assembled from the same artifact that was measured.
+
+    `pre_passes` replaces the default --cinm-assign-platforms
+    --cinm-isolate-compute-blocks prefix. A module that has already been
+    through a front end which decided what to offload (the whole-program
+    models, whose makefile runs the roofline gate) must not have that
+    decision remade here: the default assign-platforms is ungated and would
+    wrap every op the gate had just left on the host."""
 
     def _lower(
         fn_module: pathlib.Path,
@@ -588,6 +596,7 @@ def stamped_lowerer(
             cinm_opt=cinm_opt,
             log_file=log_file,
             extra_opts=["--upmem-lower-stamped"],
+            pre_passes=PRE_PASSES if pre_passes is None else pre_passes,
         )
 
     return _lower

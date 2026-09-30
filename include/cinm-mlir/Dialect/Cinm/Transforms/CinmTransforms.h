@@ -13,4 +13,9 @@ void unwrapComputeBlockOp(cinm::ComputeBlockOp, RewriterBase &rewriter);
 void unwrapComputeBlockOp(cinm::ComputeOp, RewriterBase &rewriter);
 cinm::ComputeOp wrapOperationInCompute(Operation *op, RewriterBase &rewriter);
 
+/// Whether `op` is a compute op (isolated or not) that only the host may run:
+/// no accelerator, and a `cinm.available_platforms` of host platforms only,
+/// which is how --cinm-complete-compute-graph marks the blocks it creates.
+bool isHostComputeOp(Operation *op);
+
 } // namespace mlir::cinm

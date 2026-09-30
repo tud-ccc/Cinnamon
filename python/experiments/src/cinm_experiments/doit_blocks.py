@@ -20,6 +20,7 @@ doit connects stages.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import os
 import pathlib
 import shutil
@@ -88,8 +89,26 @@ class MeasureRoots:
     def bench_marker_of(self, c: compile_run.Config) -> pathlib.Path:
         return self.bench_marker(*self._id(c))
 
+    def __div__(self, suffix):
+        return MeasureRoots(self.compile_root / suffix, self.run_root / suffix)
+
 
 # ── compile actions (fallible per config, never raise) ──────────────────────
+
+
+def _digest(paths) -> str:
+    """A checksum over the contents of `paths` (missing ones skipped), in
+    order: what a marker records, so that doit's checksum of the marker moves
+    exactly when what it stands for does."""
+    h = hashlib.sha256()
+    for path in paths:
+        path = pathlib.Path(path)
+        if path.is_file():
+            h.update(path.name.encode())
+            with path.open("rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+    return h.hexdigest()
 
 
 def compile_one(
@@ -106,12 +125,25 @@ def compile_one(
     downstream stages tolerate this fine."""
     marker = marker or roots.compile_marker_of(config)
     compiled = compile_run.compile_config(config, compile_root=roots.compile_root)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    error_file = config.dir(roots.compile_root) / "compile_error.txt"
     if not compiled.ok:
         print(
             f"  FAIL compile: {config.system} {config.fn_name} {config.label}: {compiled.error}"
         )
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.touch()
+        # A binary left by an earlier, successful compile of this config
+        # would pass for this one's: the bench would time stale code, and the
+        # retry task would see nothing to retry.
+        roots.bench_bin_of(config).unlink(missing_ok=True)
+        error_file.write_text(f"{compiled.error}\n")
+        # The error, so that a retry that fails differently, or succeeds,
+        # reads as a change to the bench depending on this marker.
+        marker.write_text(f"failed {_digest([error_file])}\n")
+    else:
+        error_file.unlink(missing_ok=True)
+        # The binary itself: a recompile that changes the code invalidates
+        # the bench, one that reproduces it does not.
+        marker.write_text(f"ok {_digest([roots.bench_bin_of(config)])}\n")
     return True
 
 
@@ -146,6 +178,8 @@ def bench_one_config(
     roots: MeasureRoots,
     *,
     iters: int,
+    processes: int = 1,
+    warmups: int = 1,
     bench_marker: pathlib.Path | None = None,
     env: dict[str, str] | None = None,
 ) -> bool:
@@ -165,7 +199,14 @@ def bench_one_config(
         saved[k] = os.environ.get(k)
         os.environ[k] = v
     try:
-        return _bench_one_config(config, roots, iters=iters, bench_marker=bench_marker)
+        return _bench_one_config(
+            config,
+            roots,
+            iters=iters,
+            processes=processes,
+            warmups=warmups,
+            bench_marker=bench_marker,
+        )
     finally:
         for k, v in saved.items():
             if v is None:
@@ -179,6 +220,8 @@ def _bench_one_config(
     roots: MeasureRoots,
     *,
     iters: int,
+    processes: int = 1,
+    warmups: int = 1,
     bench_marker: pathlib.Path | None = None,
 ) -> bool:
     bench_marker = bench_marker or roots.bench_marker_of(config)
@@ -190,16 +233,31 @@ def _bench_one_config(
             f"  SKIP bench (not compiled): {config.system} {config.fn_name} {config.label}"
         )
     else:
-        r = compile_run.run_config(compiled, run_root=roots.run_root, iters=iters)
+        r = compile_run.run_config(
+            compiled,
+            run_root=roots.run_root,
+            iters=iters,
+            processes=processes,
+            warmups=warmups,
+        )
         if not r.ok and compile_run.is_dpu_allocation_error(r.error):
             # retry once: allocation races with whatever else holds ranks
-            r = compile_run.run_config(compiled, run_root=roots.run_root, iters=iters)
+            r = compile_run.run_config(
+                compiled,
+                run_root=roots.run_root,
+                iters=iters,
+                processes=processes,
+                warmups=warmups,
+            )
         if not r.ok:
             print(
                 f"  FAIL run: {config.system} {config.fn_name} {config.label}: {r.error[:200]}"
             )
     bench_marker.parent.mkdir(parents=True, exist_ok=True)
-    bench_marker.touch()
+    # What the run left, so that whatever reads it downstream sees a re-bench.
+    output = roots.run_output_dir_of(config)
+    timings = sorted(output.rglob("*.csv")) if output.exists() else []
+    bench_marker.write_text(f"{_digest(timings)}\n")
     return True
 
 
@@ -217,6 +275,8 @@ def clear_failed_compiles(configs, roots: MeasureRoots) -> int:
     for c in configs:
         marker = roots.compile_marker_of(c)
         bench_bin = roots.bench_bin_of(c)
+        if not marker.exists():
+            continue  # never compiled: nothing to retry, the next run does it
         if (
             c.dir(roots.compile_root) / "compile_error.txt"
         ).exists() or not bench_bin.exists():

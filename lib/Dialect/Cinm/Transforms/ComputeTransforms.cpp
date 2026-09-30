@@ -1,3 +1,5 @@
+#include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmDialect.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include <cinm-mlir/Dialect/Cinm/Transforms/CinmTransforms.h>
 #include <cinm-mlir/Dialect/Cinm/Transforms/Passes.h>
@@ -104,6 +106,15 @@ cinm::ComputeOp cinm::wrapOperationInCompute(Operation *op,
   rewriter.insert(op);
   cinm::YieldOp::create(rewriter, op->getLoc(), op->getResults());
   return compute;
+}
+
+bool cinm::isHostComputeOp(Operation *op) {
+  if (!isa<ComputeOp, ComputeBlockOp>(op) || op->getAttr("accelerator"))
+    return false;
+  auto platforms =
+      op->getAttrOfType<ArrayAttr>(CinmDialect::AVAILABLE_PLATFORMS_NAME);
+  return platforms && !platforms.empty() &&
+         llvm::all_of(platforms, llvm::IsaPred<HostPlatformAttr>);
 }
 
 using namespace mlir;

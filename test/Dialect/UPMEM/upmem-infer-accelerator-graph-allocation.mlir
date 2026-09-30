@@ -1,5 +1,9 @@
-// RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=4 n-init=4 fixed-tasklets=4 graph-allocation=1 allocation-granularity=4" | FileCheck %s --check-prefixes=CHECK,TPUT
-// RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=4 n-init=4 fixed-tasklets=4 graph-allocation=1 allocation-granularity=4 latency-objective=1" | FileCheck %s --check-prefixes=CHECK,LAT
+// RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=4 n-init=4 fixed-tasklets=4 graph-allocation=1 screen-menu=0 allocation-granularity=4" | FileCheck %s --check-prefixes=CHECK,TPUT
+// RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=4 n-init=4 fixed-tasklets=4 graph-allocation=1 screen-menu=0 allocation-granularity=4 latency-objective=1" | FileCheck %s --check-prefixes=CHECK,LAT
+// The screen that decides whether a block is worth a device at all is off
+// here (screen-menu=0): these toy blocks are far too small to beat the host
+// on any DPU count, and what this test pins is what the allocation does with
+// blocks that are offloaded, not whether they should be.
 
 // The graph-level two-level solve: profile each program-identity class over
 // its menu (divisors of the iteration-space size, quantized to the
@@ -57,14 +61,31 @@ func.func @qk(%Wq: tensor<256x256xi32> {cinm.static}, %Wk: tensor<256x256xi32> {
     -> (tensor<256xi32>, tensor<256xi32>)
     attributes {cinm.available_platforms = [#upmem]} {
   // CHECK: cinm.compute_block on accelerator #upmem.array<[[SHAPE:[0-9x]+]],
+  // Under latency the two members share one set, so their weights sit side
+  // by side in one slotted buffer: each member scatters its weight into its
+  // own slot. Both sit in the function body, so their launches alternate and
+  // the program tells them apart by counting: no slot index is transferred.
+  // LAT-SAME: slot = 0 : i64, slots = 2 : i64
+  // LAT-NOT: onto @slot
+  // LAT: upmem.scatter_on_array %{{.*}} onto @[[BUF:buf_[0-9]+]] slot %c0 of
   %q = cinm.compute -> tensor<256xi32> {
     %g = cinm.op.gemv %Wq, %x : tensor<256x256xi32>, tensor<256xi32> -> tensor<256xi32>
     cinm.yield %g : tensor<256xi32>
   }
   // CHECK: cinm.compute_block on accelerator #upmem.array<[[SHAPE]],
+  // LAT-SAME: slot = 1 : i64, slots = 2 : i64
+  // LAT-NOT: onto @slot
+  // LAT: upmem.scatter_on_array %{{.*}} onto @[[BUF]] slot %c1 of
   %k = cinm.compute -> tensor<256xi32> {
     %g = cinm.op.gemv %Wk, %x : tensor<256x256xi32>, tensor<256xi32> -> tensor<256xi32>
     cinm.yield %g : tensor<256xi32>
   }
   return %q, %k : tensor<256xi32>, tensor<256xi32>
 }
+
+// The program the two members share declares the weight buffer with a slot
+// per member, and takes its slot from its launch count modulo the two.
+// LAT: upmem.static_alloc @[[BUF]](mram) noinit slots 2 : memref<2x
+// LAT: upmem.static_alloc @launch_count(wram) zeroinit : memref<4xi32, #upmem.wram>
+// LAT: arith.remui %{{.*}}, %c2
+// LAT-NOT: @slot(wram)

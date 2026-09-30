@@ -104,11 +104,19 @@ def StaticAllocOp : Upmem_Op<"static_alloc", [//Symbol,
 
     Non-static (tasklet-local) allocations can be done in WRAM with `memref.alloca`.
 
+    A buffer declared with `slots N` holds N resident copies of its payload
+    side by side: its leading dimension has extent N, and a host transfer
+    into it names the slot it lands in (`slot %i` on `upmem.scatter_*` and
+    `upmem.broadcast`). This is how the members of a graph-allocation group
+    keep their static operands resident together on one set while sharing
+    one program: the kernel selects the slot at run time.
+
     Example 1:
 
     ```mlir
     %buf = upmem.static_alloc(wram) : memref<100x100xf32, "wram">
     %buf = upmem.static_alloc @bufname(mram) : memref<100x100xf32, "mram">
+    %w = upmem.static_alloc @weights(mram) slots 32 : memref<32x16x64xi8, "mram">
     ```
   }];
 
@@ -116,7 +124,8 @@ def StaticAllocOp : Upmem_Op<"static_alloc", [//Symbol,
         UPMEM_DpuMemSpaceAttr:$memSpace,
         DefaultValuedAttr<UnitAttr, "false">:$noinit,
         DefaultValuedAttr<UnitAttr, "false">:$zeroinit,
-        OptionalAttr<SymbolNameAttr>:$sym_name);
+        OptionalAttr<SymbolNameAttr>:$sym_name,
+        OptionalAttr<I64Attr>:$slots);
 
   // Effects are hand-written (see UPMEMOps.cpp): a named allocation is one the
   // host addresses through its symbol, which no SSA use records, so it needs
@@ -134,7 +143,7 @@ def StaticAllocOp : Upmem_Op<"static_alloc", [//Symbol,
       CArg<"bool", "false">:$zeroinit
     )>
   ];
-  let assemblyFormat = "($sym_name^)? `(` $memSpace `)` (`noinit` $noinit^)? (`zeroinit` $zeroinit^)? attr-dict `:` type($buffer)";
+  let assemblyFormat = "($sym_name^)? `(` $memSpace `)` (`noinit` $noinit^)? (`zeroinit` $zeroinit^)? (`slots` $slots^)? attr-dict `:` type($buffer)";
 
   let extraClassDeclaration = [{
 
@@ -146,6 +155,16 @@ def StaticAllocOp : Upmem_Op<"static_alloc", [//Symbol,
 
     bool isWram() {
       return getMemSpace() == DpuMemSpace::WRAM;
+    }
+
+    /// Number of resident slots the buffer holds, 1 when it is not slotted.
+    int64_t getNumSlots() { return getSlots().value_or(1); }
+
+    /// Bytes of one slot on one DPU: the whole buffer when it is not slotted.
+    int64_t getSlotSizeInBytes() {
+      auto type = getBuffer().getType();
+      return type.getNumElements() * type.getElementTypeBitWidth() / 8 /
+             getNumSlots();
     }
 
   }];
@@ -206,15 +225,19 @@ def DpuResource : Resource<"DpuSetResource">;
 // thing that changes going down the family is how many blocks there are and
 // where they may sit. --upmem-specialize-transfers narrows an op to a lower
 // level when its map permits.
+// The host-side effect sits on the host buffer operand, not on the op: a
+// value-less effect would read as "some memory", and nothing could be
+// ordered against it.
 class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect, MemoryEffect dpuEffect>
-  : Upmem_Op<mnemonic, [MemoryEffects<[effect, dpuEffect]>,
+  : Upmem_Op<mnemonic, [MemoryEffects<[dpuEffect]>,
                         DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
 
   let arguments = (ins Arg<AnyMemRef, "", [effect]>:$hostBuffer,
                   FlatSymbolRefAttr:$dpuBufRef,
                   I64Attr:$transferCount,
                   AffineMapAttr:$scatterMap,
-                  DeviceHierarchyType:$hierarchy);
+                  DeviceHierarchyType:$hierarchy,
+                  Optional<Index>:$slot);
 
   let results = (outs);
 
@@ -225,6 +248,10 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
     `dpuBufRef` is the symbol name of a `upmem.static_alloc` declared inside the
     body of the `upmem.dpu_program` loaded by the `hierarchy`. The verifier checks
     that the symbol exists and refers to a `upmem.static_alloc`.
+
+    `slot`, when given, selects which resident copy of a slotted buffer
+    (`upmem.static_alloc ... slots N`) the transfer addresses: the block lands
+    `slot` slot-sizes past the symbol's start on every DPU.
 
     `transferCount` is the number of elements (not bytes) to copy per DPU.
 
@@ -250,12 +277,15 @@ class ScatterGatherLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
 
     /// Return the DpuProgramOp loaded on this hierarchy, or null.
     DpuProgramOp getDpuProgram();
+
+    /// The `upmem.static_alloc` the symbol names in that program, or null.
+    StaticAllocOp getDpuBuffer();
   }];
 
   let hasVerifier = 1;
   let hasCanonicalizer = 1;
   let assemblyFormat =
-     "$hostBuffer `[` $transferCount `elts` `,` $scatterMap `]` `" # kw # "` $dpuBufRef `of` $hierarchy attr-dict"
+     "$hostBuffer `[` $transferCount `elts` `,` $scatterMap `]` `" # kw # "` $dpuBufRef (`slot` $slot^)? `of` $hierarchy attr-dict"
      # "`:` type($hostBuffer) `" # kw # "` qualified(type($hierarchy))";
 }
 
@@ -304,7 +334,7 @@ def GatherFromArrayOp: ScatterGatherLike<"gather_from_array", "from", MemWrite, 
 }
 
 class BlockTransferLike<string mnemonic, string kw, MemoryEffect effect, MemoryEffect dpuEffect>
-  : Upmem_Op<mnemonic, [MemoryEffects<[effect, dpuEffect]>,
+  : Upmem_Op<mnemonic, [MemoryEffects<[dpuEffect]>,
                         DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let description = [{
     Transfers `numBlocksPerDpu` blocks of `transferCount` elements each between
@@ -328,6 +358,13 @@ class BlockTransferLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
     extent of the `block` dimension. This is independent of the number of
     tasklets declared by `hierarchy`: blocks are units of transfer, and a
     single tasklet's data may well arrive as several of them.
+
+    On the DPU side the blocks are packed back to back, unless `slotPadding`
+    is set: then every `blocksPerSlot` consecutive blocks form a slot, which
+    is followed in MRAM by `slotPadding` elements the transfer skips. That is
+    the layout of an output whose per-tasklet tile is shorter than a DMA
+    granule: each tasklet's slot is padded to a whole granule so that it can
+    write it back on its own.
   }];
 
   let arguments = (ins Arg<AnyMemRef, "", [effect]>:$hostBuffer,
@@ -335,7 +372,10 @@ class BlockTransferLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
                   I64Attr:$transferCount,
                   AffineMapAttr:$scatterMap,
                   DeviceHierarchyType:$hierarchy,
-                  I64Attr:$numBlocksPerDpu);
+                  I64Attr:$numBlocksPerDpu,
+                  Optional<Index>:$slot,
+                  OptionalAttr<I64Attr>:$blocksPerSlot,
+                  OptionalAttr<I64Attr>:$slotPadding);
 
   let results = (outs);
 
@@ -348,14 +388,34 @@ class BlockTransferLike<string mnemonic, string kw, MemoryEffect effect, MemoryE
       return getDpuBufferSizeInBits() / 8;
     }
 
+    /// The padding elements that follow each slot on the DPU side, 0 when
+    /// the blocks are packed.
+    int64_t getSlotPaddingElements() {
+      return getSlotPadding().value_or(0);
+    }
+
+    /// Elements the transfer spans in one DPU's MRAM: the blocks, and the
+    /// padding after each slot of them.
+    int64_t getDpuSpanInElements() {
+      int64_t blocks = getNumBlocksPerDpu();
+      int64_t span = blocks * getTransferCount();
+      if (getSlotPaddingElements() > 0)
+        span += blocks / getBlocksPerSlot().value_or(1) *
+                getSlotPaddingElements();
+      return span;
+    }
+
     /// Return the DpuProgramOp loaded on this hierarchy, or null.
     DpuProgramOp getDpuProgram();
+
+    /// The `upmem.static_alloc` the symbol names in that program, or null.
+    StaticAllocOp getDpuBuffer();
   }];
 
   let hasVerifier = 1;
   let hasCanonicalizer = 1;
   let assemblyFormat =
-    "$hostBuffer `[` $transferCount `elts` `,` $scatterMap `,` $numBlocksPerDpu `blocks` `]` `" # kw # "` $dpuBufRef `of` $hierarchy attr-dict"
+    "$hostBuffer `[` $transferCount `elts` `,` $scatterMap `,` $numBlocksPerDpu `blocks` `]` `" # kw # "` $dpuBufRef (`slot` $slot^)? `of` $hierarchy attr-dict"
     # "`:` type($hostBuffer) `" # kw # "` qualified(type($hierarchy))";
 }
 
@@ -392,7 +452,7 @@ def GatherBlocksOp: BlockTransferLike<"gather_blocks", "from", MemWrite, MemRead
 }
 
 def BroadcastOp: Upmem_Op<"broadcast", [
-      MemoryEffects<[MemRead, MemWrite<DpuResource>]>,
+      MemoryEffects<[MemWrite<DpuResource>]>,
       DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary = "copy a host buffer into the MRAM of every DPU, identically";
   let description = [{
@@ -421,7 +481,8 @@ def BroadcastOp: Upmem_Op<"broadcast", [
 
   let arguments = (ins Arg<AnyMemRef, "", [MemRead]>:$hostBuffer,
                   FlatSymbolRefAttr:$dpuBufRef,
-                  DeviceHierarchyType:$hierarchy);
+                  DeviceHierarchyType:$hierarchy,
+                  Optional<Index>:$slot);
 
   let results = (outs);
 
@@ -440,11 +501,14 @@ def BroadcastOp: Upmem_Op<"broadcast", [
 
     /// Return the DpuProgramOp loaded on this hierarchy, or null.
     DpuProgramOp getDpuProgram();
+
+    /// The `upmem.static_alloc` the symbol names in that program, or null.
+    StaticAllocOp getDpuBuffer();
   }];
 
   let hasVerifier = 1;
   let assemblyFormat = [{
-    $hostBuffer `onto` $dpuBufRef `of` $hierarchy attr-dict
+    $hostBuffer `onto` $dpuBufRef (`slot` $slot^)? `of` $hierarchy attr-dict
     `:` type($hostBuffer) `onto` qualified(type($hierarchy))
   }];
 }
@@ -570,7 +634,8 @@ def WaitForOp : Upmem_Op<"wait_for", [MemoryEffects<[MemRead<DpuResource>, MemWr
   let description = [{
     Triggers execution of the DPU program previously loaded by
     `upmem.load_program` on all DPUs in the hierarchy. Blocks the host until
-    every DPU finishes.
+    every DPU finishes, unless the op carries `upmem.async`: it then only
+    issues the launch, and `upmem.sync` waits for it.
     After this op, the results can be retrieved with `upmem.gather_from_array`.
 
     ```mlir
@@ -586,6 +651,24 @@ def WaitForOp : Upmem_Op<"wait_for", [MemoryEffects<[MemRead<DpuResource>, MemWr
     /// Return the DpuProgramOp running on this hierarchy, or null.
     DpuProgramOp getDpuProgram();
   }];
+}
+
+def SyncOp : Upmem_Op<"sync", [MemoryEffects<[MemRead<DpuResource>, MemWrite<DpuResource>]>]> {
+  let summary = "block until every operation issued on a DPU set completed";
+  let description = [{
+    Waits for the operations issued on the hierarchy's DPU set with the
+    `upmem.async` attribute (launches and transfers): after it, the host
+    buffers those transfers read may be reused and the ones they write may
+    be read. A no-op on a set with nothing in flight.
+
+    ```mlir
+    upmem.sync %dpus : !upmem.hierarchy<64x16>
+    ```
+  }];
+
+  let arguments = (ins DeviceHierarchyType:$dpuSet);
+
+  let assemblyFormat = " $dpuSet attr-dict `:` qualified(type($dpuSet))";
 }
 
 def ReturnOp : Upmem_Op<"return", [ParentOneOf<["DpuProgramOp"]>, Pure, Terminator]>,

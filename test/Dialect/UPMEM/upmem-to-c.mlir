@@ -5,7 +5,7 @@
 // the transfers/synchronization of the kernel survive as mram_read/mram_write
 // and barrier_wait with the right addresses and byte counts.
 
-// CHECK: UPMEM-TRANSLATE: COMPILE_gemv:1:1024:gemv;
+// CHECK: UPMEM-TRANSLATE: COMPILE_gemv:1:256:gemv;
 // CHECK: BARRIER_INIT(my_barrier, NR_TASKLETS)
 // CHECK: char __mram __dma_aligned bufa[262144]; // int64_t[32][1024]
 // CHECK: char __mram __dma_aligned bufx[8192]; // int64_t[1024]

@@ -2,14 +2,17 @@
 (scatter/gather/alloc/free/total/... one file per measurement type in an
 output/ dir) into net compute+transfer time, matching the definition used
 throughout the paper pipeline (paperplots/plot_best_configs.py): total
-elapsed time minus alloc/free overhead, averaged over iterations."""
+elapsed time minus alloc/free overhead, the median over iterations (see
+_over_iterations)."""
 
 from __future__ import annotations
 
 from typing import Union
+import functools
 import pathlib
 
 from math import isnan
+import numpy as np
 import pandas as pd
 
 from .compile_run import RunResult
@@ -19,9 +22,44 @@ def _iter_col(df: pd.DataFrame) -> str:
     return "iter" if "iter" in df.columns else "iteration"
 
 
-def _read_iters(csv_path, drop_first: bool) -> pd.DataFrame:
-    """One measurement CSV with its iteration column normalised, minus
-    iteration 0 when `drop_first` asks for steady state. Under the runtime
+def _tables(
+    output_dir: Union[pathlib.Path, RunResult],
+) -> tuple[tuple[str, pd.DataFrame], ...]:
+    """(csv type, frame) for every measurement CSV in output_dir, in the order
+    the directory lists them, each frame with its iteration column named
+    `iteration`.
+
+    Every reader below asks for the same few files, and a caller computing
+    several measurements of one run -- the assemble layer takes eight --
+    would otherwise parse each of them once per measurement. The files are
+    parsed once per version of the directory: the cache key is every file's
+    name, mtime and size, so a run that rewrites its output is read afresh.
+    The frames are shared between callers, so nothing here may modify one in
+    place."""
+    directory = _output_dir(output_dir)
+    listing = tuple(
+        (path.name, stat.st_mtime_ns, stat.st_size)
+        for path in directory.glob("*.csv")
+        for stat in [path.stat()]
+    )
+    return _parse_tables(str(directory), listing)
+
+
+@functools.lru_cache(maxsize=64)
+def _parse_tables(
+    directory: str, listing: tuple[tuple[str, int, int], ...]
+) -> tuple[tuple[str, pd.DataFrame], ...]:
+    tables = []
+    for name, _, _ in listing:
+        df = pd.read_csv(pathlib.Path(directory, name))
+        df = df.rename(columns={_iter_col(df): "iteration"})
+        tables.append((_csv_type(pathlib.Path(name)), df))
+    return tuple(tables)
+
+
+def _iters(df: pd.DataFrame, drop_first: bool) -> pd.DataFrame:
+    """One measurement table minus iteration 0 when `drop_first` asks for
+    steady state. Under the runtime
     residency cache (UPMEM_RT_CACHE=1) the first inference pays the one-time
     alloc / program-load / static-scatter costs that later inferences keep
     resident, so steady-state numbers start at iteration 1 -- and a cost
@@ -29,12 +67,35 @@ def _read_iters(csv_path, drop_first: bool) -> pd.DataFrame:
     exactly what must drop to zero, so the drop is unconditional. A run with
     a single recorded iteration therefore has no steady state: its total
     comes back empty and net_time_ms reports None rather than passing the
-    warmup off as the answer."""
-    df = pd.read_csv(csv_path)
-    df = df.rename(columns={_iter_col(df): "iteration"})
+    warmup off as the answer.
+
+    A run over several processes (compile_run.run_config) marks each one's
+    first iteration in a `warmup` column, and those are what is dropped."""
     if drop_first:
-        df = df[df["iteration"] > 0]
+        if "warmup" in df.columns:
+            df = df[df["warmup"] == 0]
+        else:
+            df = df[df["iteration"] > 0]
     return df
+
+
+def _over_iterations(per_iteration: pd.Series) -> float:
+    """The statistic every per-iteration series in this module is reduced
+    by: the median.
+
+    A run is six iterations, and about three launches, scatters or gathers
+    in a thousand take several times longer than their siblings -- a cold
+    first launch, a scatter that stalls -- by milliseconds, in any
+    iteration, not only the first (over the bench sample, 222 of the 338
+    such outliers were past iteration 0). Under a mean, one such call adds a sixth of its excess to the
+    result, which on a 1 ms config is several times the config's own time and
+    enough to move it across a ranking. The median of six ignores up to two.
+
+    Medians do not add: the buckets of net_breakdown_ms are each the median of
+    their own series, so they sum to the median net only approximately, and
+    its `unaccounted` bucket, the difference, absorbs the gap. NaN for an
+    empty series, as the mean was."""
+    return float(per_iteration.median())
 
 
 def _csv_type(path: pathlib.Path) -> str:
@@ -67,8 +128,8 @@ def _amortizable_index(df: pd.DataFrame) -> pd.Index:
     static = df[tag.notna() & tag.str.startswith("static:")]
     if static.empty:
         return df.index[[]]
-    once = static.groupby(["iteration", "tag"]).filter(lambda g: len(g) == 1)
-    return once.index
+    once = static.groupby(["iteration", "tag"])["tag"].transform("size") == 1
+    return static.index[once.to_numpy()]
 
 
 def amortizable_ns(df: pd.DataFrame) -> pd.Series:
@@ -88,7 +149,7 @@ def net_time_ms(
     discount_static_compact: bool = True,
     drop_first: bool = False,
 ) -> float | None:
-    """Mean net time in ms over all iterations recorded in output_dir, or
+    """Median net time in ms over all iterations recorded in output_dir, or
     None if no total.csv-type file is present.
 
     Alloc and free are always subtracted (harness overhead). DPU program
@@ -108,15 +169,37 @@ def net_time_ms(
     point of declaring it static, and a scatter of one is paid at load time
     rather than per inference (see amortizable_ns). Pass
     discount_static_compact=False to price the un-amortized case."""
+    net = net_series_ms(
+        output_dir,
+        discount_load=discount_load,
+        discount_static_compact=discount_static_compact,
+        drop_first=drop_first,
+    )
+    if net is None:
+        return None
+    # Per iteration first, then the median: the net of one real iteration,
+    # not a total and a set of deductions each taken from a different one.
+    return _over_iterations(net["ms"])
+
+
+def net_series_ms(
+    output_dir: Union[pathlib.Path, RunResult],
+    *,
+    discount_load: bool = True,
+    discount_static_compact: bool = True,
+    drop_first: bool = False,
+) -> pd.DataFrame | None:
+    """net_time_ms's per-iteration values: one row per iteration with its
+    `process` (0 for a single-process run) and the net `ms`, or None when
+    there is no total.csv-type file. See net_time_ms for what is deducted."""
     total_df = None
     alloc_ns = pd.Series(dtype=float)
     free_ns = pd.Series(dtype=float)
     load_ns = pd.Series(dtype=float)
     static_ns: list[pd.Series] = []
 
-    for csv_path in _output_dir(output_dir).glob("*.csv"):
-        t = _csv_type(csv_path)
-        df = _read_iters(csv_path, drop_first)
+    for t, df in _tables(output_dir):
+        df = _iters(df, drop_first)
         if t == "total":
             total_df = df
         elif t == "alloc":
@@ -142,7 +225,20 @@ def net_time_ms(
     )
     for series in static_ns:
         net = net - total_df["iteration"].map(series).fillna(0)
-    return float(net.mean()) / 1e6
+    return pd.DataFrame(
+        {
+            "iteration": total_df["iteration"].to_numpy(),
+            "process": _process_of(total_df).to_numpy(),
+            "ms": (net / 1e6).to_numpy(),
+        }
+    )
+
+
+def _process_of(df: pd.DataFrame) -> pd.Series:
+    """Each row's process, 0 throughout for a run of one process."""
+    if "process" in df.columns:
+        return df["process"]
+    return pd.Series(0, index=df.index)
 
 
 def _sum_time_ms(
@@ -150,18 +246,88 @@ def _sum_time_ms(
     csv_type: str,
     drop_first: bool = False,
 ) -> float | None:
-    """Mean per-iteration total time in ms spent in the given csv_type
+    """Median per-iteration total time in ms spent in the given csv_type
     (summed over however many calls of that type happen within an
     iteration), or None if no matching csv-type file is present."""
-    for csv_path in _output_dir(output_dir).glob("*.csv"):
-        if _csv_type(csv_path) != csv_type:
+    series = series_ms(output_dir, csv_type, drop_first=drop_first)
+    if series is None:
+        return None
+    ms = _over_iterations(series["ms"])
+    return None if isnan(ms) else ms
+
+
+def series_ms(
+    output_dir: Union[pathlib.Path, RunResult],
+    csv_type: str,
+    drop_first: bool = False,
+) -> pd.DataFrame | None:
+    """_sum_time_ms's per-iteration values: one row per iteration with its
+    `process` and the `ms` spent in `csv_type` calls, or None if no such
+    csv-type file is present."""
+    for t, df in _tables(output_dir):
+        if t != csv_type:
             continue
-        df = _read_iters(csv_path, drop_first)
-        mean = float(df.groupby("iteration")["elapsed_ns"].sum().mean())
-        if isnan(mean):
-            return None
-        return float(mean) / 1e6
+        df = _iters(df, drop_first).assign(process=lambda d: _process_of(d))
+        grouped = df.groupby("iteration").agg(
+            process=("process", "first"), ns=("elapsed_ns", "sum")
+        )
+        return pd.DataFrame(
+            {
+                "iteration": grouped.index.to_numpy(),
+                "process": grouped["process"].to_numpy(),
+                "ms": (grouped["ns"] / 1e6).to_numpy(),
+            }
+        )
     return None
+
+
+def noise(series: pd.DataFrame | None) -> tuple[float, float, float]:
+    """(within, between, se) for one measured series, all relative to its
+    median.
+
+    `within` is the median over processes of each one's coefficient of
+    variation -- how much a call's time moves from one iteration to the next.
+    `between` is the range of the processes' medians -- how much a whole run
+    moves -- and NaN for a run of one process. Both describe the measurement;
+    neither is the error of the number this run reports.
+
+    That is `se`: the standard error of the median itself, bootstrapped over
+    the samples (processes resampled whole, so a process's offset counts as
+    one draw and not as three). It is what two configs have to differ by
+    before the difference is the machine's and not the noise's: the error of
+    a ratio of two of them is the two added in quadrature. NaN for a series
+    too short to say."""
+    if series is None or len(series) < 2:
+        return float("nan"), float("nan"), float("nan")
+    median = float(series["ms"].median())
+    if not median:
+        return float("nan"), float("nan"), float("nan")
+    by_process = series.groupby("process")["ms"]
+    cv = by_process.std() / by_process.mean()
+    within = float(cv.median())
+    medians = by_process.median()
+    between = (
+        float((medians.max() - medians.min()) / median)
+        if len(medians) > 1
+        else float("nan")
+    )
+    return within, between, _median_se(series) / median
+
+
+def _median_se(series: pd.DataFrame, draws: int = 1000) -> float:
+    """The standard error of `series`' median, by bootstrap. Processes are
+    resampled whole and iterations within the processes drawn, which keeps
+    the two scales of the noise (see noise): resampling all the samples
+    together would treat a process's offset as independent of its own
+    iterations and report an error too small by the offset's share."""
+    groups = [g["ms"].to_numpy() for _, g in series.groupby("process")]
+    rng = np.random.default_rng(0)  # a reported number does not move per run
+    medians = np.empty(draws)
+    for i in range(draws):
+        picked = [groups[j] for j in rng.integers(len(groups), size=len(groups))]
+        sample = np.concatenate([g[rng.integers(len(g), size=len(g))] for g in picked])
+        medians[i] = np.median(sample)
+    return float(medians.std())
 
 
 def launch_time_ms(
@@ -221,20 +387,20 @@ def amortizable_time_ms(
     csv_type: str,
     drop_first: bool = False,
 ) -> float:
-    """Mean per-iteration time in ms that amortizable_ns identifies in the
+    """Median per-iteration time in ms that amortizable_ns identifies in the
     given csv_type. 0.0 when there is nothing to amortize."""
-    for csv_path in _output_dir(output_dir).glob("*.csv"):
-        if _csv_type(csv_path) != csv_type:
+    for t, df in _tables(output_dir):
+        if t != csv_type:
             continue
-        df = _read_iters(csv_path, drop_first)
+        df = _iters(df, drop_first)
         series = amortizable_ns(df)
         if series.empty:
             return 0.0
         # Iterations with nothing amortizable contribute zero, not nothing:
-        # reindexing over every iteration in the file keeps the mean per
+        # reindexing over every iteration in the file keeps the statistic per
         # iteration rather than per iteration that happened to have one.
         iterations = df["iteration"].unique()
-        return float(series.reindex(iterations).fillna(0).mean()) / 1e6
+        return _over_iterations(series.reindex(iterations).fillna(0)) / 1e6
     return 0.0
 
 
@@ -256,21 +422,19 @@ def amortizable_bytes(df: pd.DataFrame) -> pd.Series:
 def amortizable_transfer_bytes(
     output_dir: Union[pathlib.Path, RunResult], csv_type: str
 ) -> float:
-    """Mean per-iteration bytes that amortizable_bytes identifies in the given
-    csv_type. 0.0 when there is nothing to amortize.
+    """Median per-iteration bytes that amortizable_bytes identifies in the
+    given csv_type. 0.0 when there is nothing to amortize.
 
-    The counterpart of amortizable_time_ms, and averaged the same way for the
+    The counterpart of amortizable_time_ms, and reduced the same way for the
     same reason, so that the two divide into a bandwidth."""
-    for csv_path in _output_dir(output_dir).glob("*.csv"):
-        if _csv_type(csv_path) != csv_type:
+    for t, df in _tables(output_dir):
+        if t != csv_type:
             continue
-        df = pd.read_csv(csv_path)
-        df = df.rename(columns={_iter_col(df): "iteration"})
         series = amortizable_bytes(df)
         if series.empty:
             return 0.0
         iterations = df["iteration"].unique()
-        return float(series.reindex(iterations).fillna(0).mean())
+        return _over_iterations(series.reindex(iterations).fillna(0))
     return 0.0
 
 
@@ -287,40 +451,36 @@ def _charged_array_scatter(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def charged_array_scatter_ms(output_dir: Union[pathlib.Path, RunResult]) -> float:
-    """Mean per-iteration ms of _charged_array_scatter in scatter.csv, 0.0
+    """Median per-iteration ms of _charged_array_scatter in scatter.csv, 0.0
     when every array scatter is already amortized. This is the term the
     assemble layer moves between the two timing conventions on the
     benchmarks where they disagree."""
-    for csv_path in _output_dir(output_dir).glob("*.csv"):
-        if _csv_type(csv_path) != "scatter":
+    for t, df in _tables(output_dir):
+        if t != "scatter":
             continue
-        df = pd.read_csv(csv_path)
-        df = df.rename(columns={_iter_col(df): "iteration"})
         rows = _charged_array_scatter(df)
         if rows.empty:
             return 0.0
         series = rows.groupby("iteration")["elapsed_ns"].sum()
         iterations = df["iteration"].unique()
-        return float(series.reindex(iterations).fillna(0).mean()) / 1e6
+        return _over_iterations(series.reindex(iterations).fillna(0)) / 1e6
     return 0.0
 
 
 def charged_array_scatter_bytes(output_dir: Union[pathlib.Path, RunResult]) -> float:
-    """Mean per-iteration wire bytes of _charged_array_scatter in
+    """Median per-iteration wire bytes of _charged_array_scatter in
     scatter.csv, counted like amortizable_bytes (per DPU reached), so the
     two compose into one excluded-bytes figure."""
-    for csv_path in _output_dir(output_dir).glob("*.csv"):
-        if _csv_type(csv_path) != "scatter":
+    for t, df in _tables(output_dir):
+        if t != "scatter":
             continue
-        df = pd.read_csv(csv_path)
-        df = df.rename(columns={_iter_col(df): "iteration"})
         rows = _charged_array_scatter(df)
         if rows.empty:
             return 0.0
         wire = rows["bytes_per_dpu"] * rows["num_dpus"] * rows["num_blocks"]
         series = wire.groupby(rows["iteration"]).sum()
         iterations = df["iteration"].unique()
-        return float(series.reindex(iterations).fillna(0).mean())
+        return _over_iterations(series.reindex(iterations).fillna(0))
     return 0.0
 
 
@@ -337,10 +497,10 @@ def _sum_time_ms_by_kind(
 
     With drop_amortizable, the rows net_time_ms has already taken out of the
     total are left out here too, so the buckets still sum to net."""
-    for csv_path in _output_dir(output_dir).glob("*.csv"):
-        if _csv_type(csv_path) != csv_type:
+    for t, df in _tables(output_dir):
+        if t != csv_type:
             continue
-        df = _read_iters(csv_path, drop_first)
+        df = _iters(df, drop_first)
         if "kind" not in df.columns:
             return {}
         iterations = df["iteration"].unique()
@@ -349,9 +509,9 @@ def _sum_time_ms_by_kind(
         result = {}
         for kind, group in df.groupby("kind"):
             per_iter = group.groupby("iteration")["elapsed_ns"].sum()
-            mean = float(per_iter.reindex(iterations).fillna(0).mean())
-            if not isnan(mean):
-                result[str(kind)] = mean / 1e6
+            ns = _over_iterations(per_iter.reindex(iterations).fillna(0))
+            if not isnan(ns):
+                result[str(kind)] = ns / 1e6
         return result
     return {}
 
@@ -562,6 +722,9 @@ PREDICTED_TO_MEASURED = {
     ("transfer_back", "array"): "gather:array",
     ("transfer_back", "blocks"): "gather:blocks",
     ("cpu", "other"): "unaccounted",
+    # The runtime times cnm.expand_buffer in compact.csv, with the kind of a
+    # per-inference repack: it writes a gathered result, so it is never static.
+    ("cpu", "expand"): "compact:dyn",
 }
 
 

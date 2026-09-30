@@ -1,5 +1,6 @@
 add_mlir_dialect_library(CinmAcceleratorInference
     AcceleratorInference.cpp
+    AllocationReport.cpp
     BananasSearch.cpp
     Progress.cpp
     ConfigSpace.cpp
@@ -8,6 +9,7 @@ add_mlir_dialect_library(CinmAcceleratorInference
     FusionEdges.cpp
     GraphAllocation.cpp
     GraphInference.cpp
+    OperatorDescription.cpp
     SpaceBuilder.cpp
 
 DEPENDS

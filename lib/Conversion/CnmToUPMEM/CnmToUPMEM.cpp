@@ -1,5 +1,6 @@
 #include "cinm-mlir/Conversion/CnmToUPMEM/CnmToUPMEM.h"
 #include "cinm-mlir/Conversion/CommonPatterns.h"
+#include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmWorkgroupTypeInterface.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmOps.h"
 #include "cinm-mlir/Dialect/Cnm/IR/CnmScatterMap.h"
@@ -40,6 +41,7 @@
 #include <mlir/IR/PatternMatch.h>
 #include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/ValueRange.h>
+#include <mlir/Interfaces/LoopLikeInterface.h>
 #include <mlir/Support/LLVM.h>
 #include <mlir/Transforms/DialectConversion.h>
 
@@ -53,6 +55,7 @@ namespace {
 struct Opts {
   bool cinm1codegen = false;
   bool useMramNoInit = true;
+  bool launchCounterSlots = true;
 };
 
 template <typename T> T reduceMul(ArrayRef<T> arr) {
@@ -140,10 +143,23 @@ static void labelTransfer(Operation *op, Value hostValue, unsigned id) {
               StringAttr::get(op->getContext(), tag));
 }
 
+/// A tasklet's slot is `blocksPerSlot` blocks, followed on the DPU by
+/// `slotPadding` elements the transfer skips (see paddedWriteback in the
+/// launch conversion). Nothing is recorded for packed slots.
+template <class Op>
+static void setSlotPadding(Op op, int64_t blocksPerSlot, int64_t slotPadding) {
+  if (slotPadding <= 0)
+    return;
+  Builder b(op.getContext());
+  op.setBlocksPerSlotAttr(b.getI64IntegerAttr(blocksPerSlot));
+  op.setSlotPaddingAttr(b.getI64IntegerAttr(slotPadding));
+}
+
 static LogicalResult
 convertCnmGatherToUpmem(RewriterBase &rewriter, cnm::GatherOp op,
                         TypedValue<upmem::DeviceHierarchyType> hierarchy,
-                        StringAttr refToBuffer, unsigned id) {
+                        StringAttr refToBuffer, unsigned id,
+                        int64_t slotPadding) {
 
   rewriter.setInsertionPoint(op);
   Value outputBuf = op.getOutputBuf();
@@ -170,7 +186,10 @@ convertCnmGatherToUpmem(RewriterBase &rewriter, cnm::GatherOp op,
       op.getTransferCountInItems() / perLeaf,
       keepTaskletDimAffineMapCnmToUpmem(map, bufferTy), hierarchy,
       blocksPerDpu(map, bufferTy, numTasklets,
-                   /*sharedAcrossTasklets=*/false));
+                   /*sharedAcrossTasklets=*/false),
+      /*slot=*/Value(), /*blocksPerSlot=*/IntegerAttr(),
+      /*slotPadding=*/IntegerAttr());
+  setSlotPadding(gather, perLeaf, slotPadding);
   labelTransfer(gather, op.getHostValue(), id);
 
   if (!isBufferized) {
@@ -183,11 +202,12 @@ convertCnmGatherToUpmem(RewriterBase &rewriter, cnm::GatherOp op,
   return success();
 }
 
-static LogicalResult
-convertCnmScatterToUpmem(RewriterBase &rewriter, cnm::ScatterOp op,
-                         bool sharedAcrossTasklets,
-                         TypedValue<upmem::DeviceHierarchyType> hierarchy,
-                         StringAttr refToBuffer, unsigned id) {
+/// `slot` is the member's slot of a slotted resident buffer (see
+/// residencySlotOf), null when the buffer is not slotted.
+static LogicalResult convertCnmScatterToUpmem(
+    RewriterBase &rewriter, cnm::ScatterOp op, bool sharedAcrossTasklets,
+    TypedValue<upmem::DeviceHierarchyType> hierarchy, StringAttr refToBuffer,
+    unsigned id, Value slot, int64_t slotPadding) {
 
   rewriter.setInsertionPoint(op);
   const Value tensor = op.getInput();
@@ -210,7 +230,9 @@ convertCnmScatterToUpmem(RewriterBase &rewriter, cnm::ScatterOp op,
       rewriter, op->getLoc(), inputAsMemref, refToBuffer,
       op.getTransferCountInItems() / perLeaf,
       keepTaskletDimAffineMapCnmToUpmem(map, bufferTy), hierarchy,
-      blocksPerDpu(map, bufferTy, numTasklets, sharedAcrossTasklets));
+      blocksPerDpu(map, bufferTy, numTasklets, sharedAcrossTasklets), slot,
+      /*blocksPerSlot=*/IntegerAttr(), /*slotPadding=*/IntegerAttr());
+  setSlotPadding(scatter, perLeaf, slotPadding);
   // The host value, not the cast of it: a cast is not one of the definitions
   // the staticness derivation walks through.
   labelTransfer(scatter, op.getHostValue(), id);
@@ -233,25 +255,42 @@ static bool isWramShared(TypedValue<MemRefType> wramBuffer) {
   return isa_and_nonnull<upmem::StaticAllocOp>(wramBuffer.getDefiningOp());
 }
 
-// The slice of `mramBuf` belonging to the calling tasklet, shaped like
-// `tileTy`. When the MRAM buffer carries a leading tasklet dimension (i.e. it
-// is not broadcast over threads, see isMramBroadcastOverThreads) that is a
-// subview indexed by the tasklet id; otherwise every tasklet sees the whole
-// buffer and there is nothing to slice.
-static Value getTaskletSlice(RewriterBase &rewriter, Location loc,
-                             upmem::StaticAllocOp mramBuf, MemRefType tileTy) {
-  auto mramBufTy = mramBuf.getBuffer().getType();
-  if (mramBufTy.getRank() != tileTy.getRank() + 1)
-    return mramBuf.getBuffer();
+// The number of leading dimensions of a slotted buffer that hold the group's
+// resident copies: one, or none for an unslotted buffer.
+static int64_t slotDimsOf(upmem::StaticAllocOp mramBuf) {
+  return mramBuf.getNumSlots() > 1 ? 1 : 0;
+}
 
-  auto taskletId = upmem::TaskletDimOp::create(rewriter, loc);
+// The slice of `mramBuf` belonging to the calling tasklet, shaped like
+// `tileTy`. The MRAM buffer may carry two leading dimensions on top of the
+// tile's: the member's slot when the buffer holds a group's resident copies
+// (see residencySlotOf), and the tasklet when the buffer is not broadcast
+// over threads (see isMramBroadcastOverThreads). Each one present is indexed
+// away -- the slot by `slot`, the tasklet by its id; with neither, every
+// tasklet sees the whole buffer and there is nothing to slice.
+static Value getTaskletSlice(RewriterBase &rewriter, Location loc,
+                             upmem::StaticAllocOp mramBuf, MemRefType tileTy,
+                             Value slot) {
+  auto mramBufTy = mramBuf.getBuffer().getType();
+  const int64_t slotDims = slotDimsOf(mramBuf);
+  const int64_t taskletDims = mramBufTy.getRank() - slotDims - tileTy.getRank();
+  assert((taskletDims == 0 || taskletDims == 1) &&
+         "an MRAM buffer is its tile plus at most a slot and a tasklet dim");
+  assert((slotDims == 0 || slot) && "a slotted buffer needs the slot index");
+  if (slotDims == 0 && taskletDims == 0)
+    return mramBuf.getBuffer();
 
   SmallVector<OpFoldResult, 4> offsets(mramBufTy.getRank(),
                                        rewriter.getIndexAttr(0));
-  offsets[0] = taskletId.getResult();
-
   SmallVector<OpFoldResult, 4> sizes;
-  sizes.push_back(rewriter.getIndexAttr(1));
+  if (slotDims) {
+    offsets[0] = slot;
+    sizes.push_back(rewriter.getIndexAttr(1));
+  }
+  if (taskletDims) {
+    offsets[slotDims] = upmem::TaskletDimOp::create(rewriter, loc).getResult();
+    sizes.push_back(rewriter.getIndexAttr(1));
+  }
   for (auto size : tileTy.getShape())
     sizes.push_back(rewriter.getIndexAttr(size));
 
@@ -265,7 +304,8 @@ static Value getTaskletSlice(RewriterBase &rewriter, Location loc,
   MemRefType viewType = MemRefType::get(
       tileTy.getShape(), tileTy.getElementType(),
       rewriter.getAttr<StridedLayoutAttr>(
-          ShapedType::kDynamic, ArrayRef<long>(baseStrides).drop_front()),
+          ShapedType::kDynamic,
+          ArrayRef<long>(baseStrides).drop_front(slotDims + taskletDims)),
       mramBufTy.getMemorySpace());
 
   return memref::SubViewOp::create(rewriter, loc, viewType, mramBuf.getBuffer(),
@@ -285,23 +325,32 @@ static int64_t dmaGranuleBits(cnm::CnmAcceleratorAttrInterface accelerator,
 
 static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
                            upmem::StaticAllocOp mramBuf,
-                           TypedValue<MemRefType> wramBuffer) {
+                           TypedValue<MemRefType> wramBuffer, Value slot) {
 
   auto mramBufTy = mramBuf.getBuffer().getType();
   auto wramBufTy = wramBuffer.getType();
   // The MRAM buffer has an extra leading tasklet dimension whenever it isn't
-  // itself broadcast over threads (see isMramBroadcastOverThreads).
-  bool mramHasTaskletDim = mramBufTy.getRank() == wramBufTy.getRank() + 1;
+  // itself broadcast over threads (see isMramBroadcastOverThreads), on top
+  // of the slot dimension of a slotted buffer.
+  const int64_t slotDims = slotDimsOf(mramBuf);
+  bool mramHasTaskletDim =
+      mramBufTy.getRank() == wramBufTy.getRank() + 1 + slotDims;
+  // What this tasklet moves: its own slice, or the member's slot, or the
+  // whole buffer when there is neither to index.
+  Value mramView =
+      (mramHasTaskletDim || slotDims)
+          ? getTaskletSlice(rewriter, loc, mramBuf, wramBufTy, slot)
+          : mramBuf.getBuffer();
   Value mramBufToScatter;
 
   Operation *insertionPointReset = nullptr;
   if (mramHasTaskletDim) {
-    mramBufToScatter = getTaskletSlice(rewriter, loc, mramBuf, wramBufTy);
+    mramBufToScatter = mramView;
   } else if (isWramShared(wramBuffer)) {
     auto taskletId = upmem::TaskletDimOp::create(rewriter, loc);
     // MRAM buffer corresponds exactly to WRAM buffer, and WRAM is shared:
     // this is a full broadcast (every tasklet reads the same WRAM copy).
-    mramBufToScatter = mramBuf.getBuffer();
+    mramBufToScatter = mramView;
 
     // In that case we need to make only thread 0 call
     // for the transfer
@@ -335,7 +384,7 @@ static void createTransfer(RewriterBase &rewriter, bool toWram, Location loc,
     assert(toWram && "a broadcast MRAM buffer should never be an output "
                      "(outputs always have a gather, disqualifying MRAM "
                      "broadcast -- see isMramBroadcastOverThreads)");
-    mramBufToScatter = mramBuf.getBuffer();
+    mramBufToScatter = mramView;
   }
 
   if (toWram)
@@ -437,6 +486,26 @@ static LogicalResult lowerBodyStagingOps(RewriterBase &rewriter,
 /// IsolatedFromAbove boundary: a value from outside such a region (the
 /// host function of a trial module, say) is not usable inside it, however
 /// well its shape matches.
+/// The residency slot this launch's member holds in its graph-allocation
+/// group and the group's width, from the stamp on the enclosing compute
+/// block (cinm.graph_alloc, GraphInference); {0, 1} without one -- a block
+/// that was never allocated as part of a graph, or a trial lowering, which
+/// profiles one member and one slot.
+static std::pair<int64_t, int64_t> residencySlotOf(cnm::LaunchOp launch) {
+  auto block = launch->getParentOfType<cinm::ComputeBlockOp>();
+  if (!block)
+    return {0, 1};
+  auto alloc =
+      block->getAttrOfType<DictionaryAttr>(cinm::CinmDialect::GRAPH_ALLOC_NAME);
+  if (!alloc)
+    return {0, 1};
+  auto slot = alloc.getAs<IntegerAttr>("slot");
+  auto slots = alloc.getAs<IntegerAttr>("slots");
+  if (!slot || !slots)
+    return {0, 1};
+  return {slot.getInt(), slots.getInt()};
+}
+
 static FailureOr<Value> findForwardedWorkgroup(cnm::LaunchOp launch,
                                                ArrayRef<int64_t> wgShape) {
   for (Block *block = launch->getBlock(); block;) {
@@ -462,6 +531,95 @@ static FailureOr<Value> findForwardedWorkgroup(cnm::LaunchOp launch,
     block = parent->getBlock();
   }
   return Value();
+}
+
+/// The count of launches on a set that its residency slots can be derived
+/// from on the device (see the residency slots in convertCnmLaunchToUpmem),
+/// from the `sequence` field of the block's graph-allocation stamp
+/// (GraphInference), where the whole program was in view: the launches on
+/// the set come in a fixed order, so the n-th launch since the program load
+/// is the launch at position `n mod period` of pass `n div period` over the
+/// members' block, and the pass number gives each enclosing loop's
+/// iteration.
+struct LaunchSequence {
+  int64_t position; ///< this launch's rank among the set's launches per pass
+  int64_t period;   ///< launches on the set per pass over the block
+  struct Loop {
+    int64_t lb, step, trip;
+    int64_t stride; ///< passes per iteration: the product of the inner trips
+    SmallVector<int64_t> operands; ///< block operands carrying the loop's IV
+  };
+  SmallVector<Loop> loops; ///< the enclosing loops, innermost first
+};
+
+/// The loop of `sequence` whose induction variable `index` is: an argument
+/// of `site` that carries it. Null for any other value.
+static const LaunchSequence::Loop *
+loopOf(const LaunchSequence &sequence, cinm::ComputeBlockOp site, Value index) {
+  auto arg = dyn_cast<BlockArgument>(index);
+  if (!arg || arg.getOwner()->getParentOp() != site)
+    return nullptr;
+  for (const LaunchSequence::Loop &loop : sequence.loops)
+    if (llvm::is_contained(loop.operands, arg.getArgNumber()))
+      return &loop;
+  return nullptr;
+}
+
+/// The sequence `launch` counts in; nullopt when its slots are broadcast
+/// instead: no stamp fixes the order of the set's launches, the set is not
+/// one forwarded into the block (a set allocated per launch is loaded per
+/// launch, which would restart the count), the block launches other than
+/// exactly once per pass, or a stacked operand's index is not an enclosing
+/// loop's induction variable.
+static std::optional<LaunchSequence> launchSequenceOf(cnm::LaunchOp launch,
+                                                      Value forwardedSet) {
+  auto site = launch->getParentOfType<cinm::ComputeBlockOp>();
+  if (!site || launch->getParentOp() != site)
+    return std::nullopt;
+  auto set = dyn_cast_or_null<BlockArgument>(forwardedSet);
+  if (!set || set.getOwner()->getParentOp() != site)
+    return std::nullopt;
+  // Converted launches included: a block with two launches has one of them
+  // converted by the time the other is looked at.
+  unsigned launches = 0;
+  site.getBody().walk([&](Operation *op) {
+    if (isa<cnm::LaunchOp, upmem::WaitForOp>(op))
+      ++launches;
+  });
+  if (launches != 1)
+    return std::nullopt;
+
+  auto alloc =
+      site->getAttrOfType<DictionaryAttr>(cinm::CinmDialect::GRAPH_ALLOC_NAME);
+  if (!alloc)
+    return std::nullopt;
+  auto slot = alloc.getAs<IntegerAttr>("slot");
+  auto slots = alloc.getAs<IntegerAttr>("slots");
+  auto stamp = alloc.getAs<DictionaryAttr>("sequence");
+  if (!slot || !slots || !stamp)
+    return std::nullopt;
+  LaunchSequence sequence{slot.getInt(), slots.getInt(), {}};
+  for (Attribute entry : stamp.getAs<ArrayAttr>("loops")) {
+    auto loop = cast<DictionaryAttr>(entry);
+    auto field = [&](StringRef name) {
+      return loop.getAs<IntegerAttr>(name).getInt();
+    };
+    sequence.loops.push_back(
+        {field("lb"), field("step"), field("trip"), field("stride"),
+         SmallVector<int64_t>(
+             loop.getAs<DenseI64ArrayAttr>("operands").asArrayRef())});
+  }
+
+  for (Operation *user : launch.getWg().getUsers()) {
+    auto scatter = dyn_cast<cnm::ScatterOp>(user);
+    if (!scatter || !cinm::isStaticValue(scatter.getHostValue()))
+      continue;
+    std::optional<cinm::StaticSlice> slice =
+        cinm::resolveStaticSlice(scatter.getHostValue());
+    if (slice && !loopOf(sequence, site, slice->index))
+      return std::nullopt;
+  }
+  return sequence;
 }
 
 static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
@@ -504,6 +662,11 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   FailureOr<Value> forwarded = findForwardedWorkgroup(launch, wg);
   if (failed(forwarded))
     return failure();
+  // Whether this launch counts its residency slots on the device (see the
+  // residency slots below).
+  std::optional<LaunchSequence> sequence;
+  if (opts.launchCounterSlots)
+    sequence = launchSequenceOf(launch, *forwarded);
   TypedValue<upmem::DeviceHierarchyType> hierarchy;
   if (*forwarded) {
     hierarchy = cast<TypedValue<upmem::DeviceHierarchyType>>(*forwarded);
@@ -511,8 +674,8 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
     hierarchy = upmem::AllocDPUsOp::create(rewriter, wgAlloc->getLoc(), upmemTy)
                     .getResult();
   }
-  upmem::LoadProgramOp::create(rewriter, wgAlloc->getLoc(), *programPath,
-                               hierarchy);
+  auto loadProgram = upmem::LoadProgramOp::create(rewriter, wgAlloc->getLoc(),
+                                                  *programPath, hierarchy);
 
   llvm::MapVector<Value, upmem::StaticAllocOp> buffersToMramBuf;
   // llvm::MapVector<Value, upmem::StaticAllocOp> buffersToSharedWramBuf;
@@ -526,6 +689,10 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
   // given its own WRAM staging (--upmem-tile-mram-buffers), so this pass must
   // not add a second one around it: the body binds straight to MRAM.
   llvm::DenseSet<Value> mramLevelBuffers;
+  // Output buffers whose per-tasklet result is shorter than a DMA granule and
+  // cannot be pooled either (see paddedWriteback below), mapped to the
+  // padding elements that complete each tasklet's slot.
+  llvm::DenseMap<Value, int64_t> paddedSlotBuffers;
 
   rewriter.setInsertionPointToStart(&dpuProgram.getBody().front());
 
@@ -538,6 +705,173 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       rewriter.getAttr<upmem::DpuMemSpaceAttr>(upmem::DpuMemSpace::MRAM);
   auto wramMemspaceAttr =
       rewriter.getAttr<upmem::DpuMemSpaceAttr>(upmem::DpuMemSpace::WRAM);
+
+  // Residency slots. When the graph allocation grouped this launch's member
+  // with others on one set, each member's static operands live in their own
+  // slot of a shared, `slots`-wide MRAM buffer, and the kernel selects the
+  // slot at run time. It learns the slot one of two ways.
+  //
+  // Counted (`sequence`, launchSequenceOf): the program keeps a count of its
+  // launches in WRAM -- zeroed by the load, incremented by every launch --
+  // and derives the slot from it: launch n is the launch at position `n mod
+  // period` of pass `n div period` over the block, and the pass number gives
+  // each enclosing loop's iteration. No transfer at all. The count is per
+  // tasklet so that no tasklet waits for another. This rests on the program
+  // being loaded once per set (--upmem-hoist-load-programs), since a load
+  // restarts the count; the runtime's load cache keeps it that way across
+  // inferences. Members are numbered by their position in the block, which
+  // is the number the device can reconstruct.
+  //
+  // Broadcast (no sequence: the launches on the set are not fixed by the
+  // program text): the host broadcasts the member's slot index
+  // (residencySlotOf) into a small WRAM symbol the program reads once at
+  // entry. The constant travels rather than being baked into the program so
+  // that the members' kernels stay identical and --upmem-dedup-kernels
+  // keeps one program per class.
+  //
+  // A static operand that is a run-time-indexed slice of a stacked tensor
+  // (cinm::resolveStaticSlice -- the layer's weight inside the layer loop)
+  // adds a second factor: every slice has a slot, so the buffer is `member
+  // slots x slices` wide and this launch lands in slot `member * slices +
+  // index`. Slots are per buffer, since an operand the same on every
+  // iteration (a table shared by the layers) has only the member factor.
+  const auto [residencySlot, residencySlots] = residencySlotOf(launch);
+  const int64_t member = sequence ? sequence->position : residencySlot;
+  const int64_t members = sequence ? sequence->period : residencySlots;
+  auto site = launch->getParentOfType<cinm::ComputeBlockOp>();
+  struct BufferSlot {
+    Value host;   // the slot as an index on the host: the scatter's operand
+    Value kernel; // the slot as an index inside the program
+    int64_t slots;
+    int64_t slices;                   // slots per member: the stack's, or 1
+    const LaunchSequence::Loop *loop; // counted: the loop the stack index is
+  };
+  llvm::MapVector<Value, BufferSlot> bufferSlots;
+  // On the host, right after the program load: ahead of every scatter,
+  // which is where the slots are consumed.
+  rewriter.setInsertionPointAfter(loadProgram);
+  for (auto user : launch.getWg().getUsers()) {
+    auto scatter = llvm::dyn_cast_or_null<cnm::ScatterOp>(user);
+    if (!scatter || !cinm::isStaticValue(scatter.getHostValue()))
+      continue;
+    std::optional<cinm::StaticSlice> slice =
+        cinm::resolveStaticSlice(scatter.getHostValue());
+    const int64_t slices = slice ? slice->slots : 1;
+    if (members * slices <= 1)
+      continue;
+    const LaunchSequence::Loop *loop = nullptr;
+    if (slice && sequence) {
+      loop = loopOf(*sequence, site, slice->index);
+      assert(loop && "launchSequenceOf checked every stack index");
+    }
+    Location loc = scatter.getLoc();
+    Value host = arith::ConstantIndexOp::create(rewriter, loc, member);
+    if (slice) {
+      Value stride = arith::ConstantIndexOp::create(rewriter, loc, slices);
+      host = arith::AddIOp::create(
+          rewriter, loc, arith::MulIOp::create(rewriter, loc, host, stride),
+          slice->index);
+    }
+    bufferSlots[scatter.getBuffer()] = {host, Value(), members * slices, slices,
+                                        loop};
+  }
+  auto hostSlotOf = [&](Value buffer) -> Value {
+    auto it = bufferSlots.find(buffer);
+    return it == bufferSlots.end() ? Value() : it->second.host;
+  };
+  auto kernelSlotOf = [&](Value buffer) -> Value {
+    auto it = bufferSlots.find(buffer);
+    return it == bufferSlots.end() ? Value() : it->second.kernel;
+  };
+  if (!bufferSlots.empty() && sequence) {
+    Location loc = launch->getLoc();
+    OpBuilder::InsertPoint hostPoint = rewriter.saveInsertionPoint();
+
+    rewriter.setInsertionPointToStart(&dpuProgram.getBody().front());
+    auto countTy =
+        MemRefType::get({upmemTy.getNumTaskletsPerDpu()}, rewriter.getI32Type(),
+                        MemRefLayoutAttrInterface{}, wramMemspaceAttr);
+    auto count = upmem::StaticAllocOp::create(
+        rewriter, loc, countTy, upmem::DpuMemSpace::WRAM, "launch_count",
+        /*noinit=*/false, /*zeroinit=*/true);
+    dpuProgramSymTable.insert(count);
+    rewriter.setInsertionPointAfter(count);
+    auto index = [&](int64_t value) -> Value {
+      return arith::ConstantIndexOp::create(rewriter, loc, value);
+    };
+    Value tasklet = upmem::TaskletDimOp::create(rewriter, loc);
+    Value n32 =
+        memref::LoadOp::create(rewriter, loc, count.getBuffer(), tasklet);
+    Value one =
+        arith::ConstantOp::create(rewriter, loc, rewriter.getI32IntegerAttr(1));
+    memref::StoreOp::create(rewriter, loc,
+                            arith::AddIOp::create(rewriter, loc, n32, one),
+                            count.getBuffer(), tasklet);
+    Value n =
+        arith::IndexCastOp::create(rewriter, loc, rewriter.getIndexType(), n32);
+    Value position =
+        arith::RemUIOp::create(rewriter, loc, n, index(sequence->period));
+    Value pass =
+        arith::DivUIOp::create(rewriter, loc, n, index(sequence->period));
+    for (auto &[buffer, entry] : bufferSlots) {
+      Value slot =
+          arith::MulIOp::create(rewriter, loc, position, index(entry.slices));
+      if (const LaunchSequence::Loop *loop = entry.loop) {
+        Value iteration = arith::RemUIOp::create(
+            rewriter, loc,
+            arith::DivUIOp::create(rewriter, loc, pass, index(loop->stride)),
+            index(loop->trip));
+        Value iv = arith::AddIOp::create(
+            rewriter, loc,
+            arith::MulIOp::create(rewriter, loc, iteration, index(loop->step)),
+            index(loop->lb));
+        slot = arith::AddIOp::create(rewriter, loc, slot, iv);
+      }
+      entry.kernel = slot;
+    }
+
+    rewriter.restoreInsertionPoint(hostPoint);
+  } else if (!bufferSlots.empty()) {
+    // One WRAM word per slotted buffer, in a symbol padded to the DMA
+    // granule (a broadcast moves whole granules); the program reads its
+    // entries once at entry, the host fills and broadcasts them before the
+    // scatters.
+    const int64_t words = llvm::alignTo(bufferSlots.size(), 2);
+    Location loc = launch->getLoc();
+    OpBuilder::InsertPoint hostPoint = rewriter.saveInsertionPoint();
+
+    rewriter.setInsertionPointToStart(&dpuProgram.getBody().front());
+    auto slotTy =
+        MemRefType::get({words}, rewriter.getI32Type(),
+                        MemRefLayoutAttrInterface{}, wramMemspaceAttr);
+    auto slotSym = upmem::StaticAllocOp::create(
+        rewriter, loc, slotTy, upmem::DpuMemSpace::WRAM, "slot",
+        /*noinit=*/true);
+    dpuProgramSymTable.insert(slotSym);
+    rewriter.setInsertionPointAfter(slotSym);
+    for (auto [k, entry] : llvm::enumerate(bufferSlots)) {
+      Value at = arith::ConstantIndexOp::create(rewriter, loc, k);
+      Value word =
+          memref::LoadOp::create(rewriter, loc, slotSym.getBuffer(), at);
+      entry.second.kernel = arith::IndexCastOp::create(
+          rewriter, loc, rewriter.getIndexType(), word);
+    }
+
+    rewriter.restoreInsertionPoint(hostPoint);
+    auto hostSlotBuf = memref::AllocaOp::create(
+        rewriter, loc, MemRefType::get({words}, rewriter.getI32Type()));
+    for (auto [k, entry] : llvm::enumerate(bufferSlots)) {
+      Value at = arith::ConstantIndexOp::create(rewriter, loc, k);
+      Value word = arith::IndexCastOp::create(
+          rewriter, loc, rewriter.getI32Type(), entry.second.host);
+      memref::StoreOp::create(rewriter, loc, word, hostSlotBuf, at);
+    }
+    auto broadcast = upmem::BroadcastOp::create(
+        rewriter, loc, hostSlotBuf, slotSym.getSymNameAttr(), hierarchy,
+        /*slot=*/Value());
+    labelTransfer(broadcast, hostSlotBuf, nextTransferId++);
+  }
+  rewriter.setInsertionPointToStart(&dpuProgram.getBody().front());
 
   for (auto user : launch.getWg().getUsers()) {
     if (auto alloc = llvm::dyn_cast_or_null<cnm::DeclareBufferOp>(user)) {
@@ -576,11 +910,10 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       // -- a tasklet count is even -- but one tasklet holding one scalar
       // leaves the flush as sub-granule as the write it replaces, and the
       // host gather would round its own copy up over the next DPU's result.
-      // Pooling cannot rescue that, so it stays a transfer the emitter
-      // refuses and the search space rules out.
-      const int64_t tileBits =
-          computeProduct(bufShape) *
+      // Pooling cannot rescue that; the slots are padded instead (below).
+      const int64_t eltBits =
           bufferType.getElementType().getIntOrFloatBitWidth();
+      const int64_t tileBits = computeProduct(bufShape) * eltBits;
       const int64_t granuleBits = dmaGranuleBits(
           launch.getWg().getType().getAccelerator(), mramMemspaceAttr);
       bool pooledWriteback =
@@ -589,7 +922,30 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
           tileBits % granuleBits != 0 &&
           (tileBits * upmemTy.getNumTaskletsPerDpu()) % granuleBits == 0;
 
-      if (pooledWriteback) {
+      // The rest of the sub-granule outputs -- one tasklet, or an odd number
+      // of them, each holding one scalar -- get a slot of their own padded
+      // to a whole granule, in WRAM and in MRAM alike, so that each tasklet
+      // writes back one aligned granule. The body binds to the slot's
+      // leading elements; the host transfers skip the padding
+      // (upmem.gather_blocks's slotPadding). The tile is padded along its
+      // one dimension, so only tiles of rank 0 or 1 qualify.
+      const bool paddedWriteback =
+          !mramIsBroadcast && !pooledWriteback &&
+          llvm::is_contained(launch.getOutBuffers(), alloc.getResult()) &&
+          tileBits % granuleBits != 0 && bufShape.size() <= 1 &&
+          granuleBits % eltBits == 0;
+      const int64_t paddedElems =
+          llvm::alignTo(tileBits, granuleBits) / std::max<int64_t>(eltBits, 1);
+
+      if (paddedWriteback) {
+        auto padded = memref::AllocaOp::create(
+            rewriter, alloc.getLoc(),
+            MemRefType::get({paddedElems}, bufferType.getElementType(),
+                            MemRefLayoutAttrInterface{}, wramMemspaceAttr));
+        buffersToWramBufValue[alloc.getResult()] = padded.getResult();
+        paddedSlotBuffers[alloc.getResult()] =
+            paddedElems - computeProduct(bufShape);
+      } else if (pooledWriteback) {
         // One slot per tasklet, so the flush is one contiguous run whose
         // shape matches the MRAM buffer's exactly. The body binds to this
         // tasklet's slot, below -- including when it stages the buffer
@@ -626,11 +982,17 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
         buffersToWramBufValue[alloc.getResult()] = pwramBuf.getResult();
       }
 
+      if (paddedWriteback)
+        bufShape.assign({paddedElems});
       if (!mramIsBroadcast) {
         // the mram buffer type has tasklet dimension prepended - unless the
         // buffer is broadcasted.
         bufShape.insert(bufShape.begin(), upmemTy.getNumTaskletsPerDpu());
       }
+      // A slotted static operand: its slots ahead of everything else.
+      const bool bufferSlotted = bufferSlots.count(alloc.getResult()) > 0;
+      if (bufferSlotted)
+        bufShape.insert(bufShape.begin(), bufferSlots[alloc.getResult()].slots);
       (void)memrefTy;
 
       memrefTy = MemRefType::get(bufShape, bufferType.getElementType(),
@@ -639,6 +1001,9 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       auto mrambuf = upmem::StaticAllocOp::create(
           rewriter, alloc->getLoc(), memrefTy, upmem::DpuMemSpace::MRAM, "buf",
           opts.useMramNoInit);
+      if (bufferSlotted)
+        mrambuf.setSlotsAttr(
+            rewriter.getI64IntegerAttr(bufferSlots[alloc.getResult()].slots));
       dpuProgramSymTable.insert(mrambuf); // this renames it to a unique name
       buffersToMramBuf[alloc.getResult()] = mrambuf;
     }
@@ -654,21 +1019,24 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       // per-tasklet leading dimension (isMramBroadcastOverThreads). This is
       // independent of whether WRAM ends up shared.
       bool sharedAcrossTasklets =
-          alloc && alloc.getBuffer().getType().getRank() ==
+          alloc && alloc.getBuffer().getType().getRank() - slotDimsOf(alloc) ==
                        static_cast<int64_t>(
                            scatter.getBuffer().getType().getShape().size());
 
       if (!alloc || failed(convertCnmScatterToUpmem(
                         rewriter, scatter, sharedAcrossTasklets, hierarchy,
-                        alloc.getSymNameAttr(), nextTransferId++))) {
+                        alloc.getSymNameAttr(), nextTransferId++,
+                        hostSlotOf(scatter.getBuffer()),
+                        paddedSlotBuffers.lookup(scatter.getBuffer())))) {
         return failure();
       }
     }
     if (auto gather = llvm::dyn_cast_or_null<cnm::GatherOp>(user)) {
       auto alloc = buffersToMramBuf.lookup(gather.getBuffer());
-      if (!alloc || failed(convertCnmGatherToUpmem(rewriter, gather, hierarchy,
-                                                   alloc.getSymNameAttr(),
-                                                   nextTransferId++))) {
+      if (!alloc || failed(convertCnmGatherToUpmem(
+                        rewriter, gather, hierarchy, alloc.getSymNameAttr(),
+                        nextTransferId++,
+                        paddedSlotBuffers.lookup(gather.getBuffer())))) {
         return failure();
       }
     }
@@ -690,7 +1058,26 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
       // The body computes on MRAM: bind it to this tasklet's slice.
       mapping.map(memref, getTaskletSlice(rewriter, cnmBuf.getLoc(),
                                           buffersToMramBuf[cnmBuf],
-                                          cast<MemRefType>(memref.getType())));
+                                          cast<MemRefType>(memref.getType()),
+                                          kernelSlotOf(cnmBuf)));
+      continue;
+    }
+    if (paddedSlotBuffers.count(cnmBuf)) {
+      // The body sees the slot's leading elements, in its own tile type;
+      // the padding after them is only there for the transfers.
+      auto tileTy = cast<MemRefType>(memref.getType());
+      auto slotBuf = buffersToWramBufValue[cnmBuf];
+      SmallVector<OpFoldResult> offsets{rewriter.getIndexAttr(0)};
+      SmallVector<OpFoldResult> sizes{
+          rewriter.getIndexAttr(tileTy.getRank() ? tileTy.getDimSize(0) : 1)};
+      SmallVector<OpFoldResult> strides{rewriter.getIndexAttr(1)};
+      auto viewTy = memref::SubViewOp::inferRankReducedResultType(
+          tileTy.getShape(), slotBuf.getType(), offsets, sizes, strides);
+      mapping.map(memref,
+                  memref::SubViewOp::create(rewriter, cnmBuf.getLoc(),
+                                            cast<MemRefType>(viewTy), slotBuf,
+                                            offsets, sizes, strides)
+                      .getResult());
       continue;
     }
     if (pooledWritebackBuffers.contains(cnmBuf)) {
@@ -702,7 +1089,8 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
           getTaskletSlice(rewriter, cnmBuf.getLoc(),
                           cast<upmem::StaticAllocOp>(
                               buffersToWramBufValue[cnmBuf].getDefiningOp()),
-                          cast<MemRefType>(memref.getType())));
+                          cast<MemRefType>(memref.getType()),
+                          /*slot=*/Value()));
       continue;
     }
     auto wrambuf = buffersToWramBufValue.lookup(cnmBuf);
@@ -715,7 +1103,8 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
     if (mramLevelBuffers.contains(buf))
       continue;
     auto wramBuf = buffersToWramBufValue[buf];
-    createTransfer(rewriter, true, buf.getLoc(), mramBuf, wramBuf);
+    createTransfer(rewriter, true, buf.getLoc(), mramBuf, wramBuf,
+                   kernelSlotOf(buf));
     rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
   }
 
@@ -730,7 +1119,8 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
     auto wramBuf = buffersToWramBufValue[buf];
     auto mramBuf = buffersToMramBuf[buf];
 
-    createTransfer(rewriter, false, buf.getLoc(), mramBuf, wramBuf);
+    createTransfer(rewriter, false, buf.getLoc(), mramBuf, wramBuf,
+                   kernelSlotOf(buf));
     rewriter.setInsertionPointToEnd(&dpuProgram.getBody().front());
   }
 
@@ -794,7 +1184,9 @@ struct ConvertCnmToUPMEMPass
 
   void runOnOperation() final {
     Operation *rootOp = getOperation();
-    Opts opts{.cinm1codegen = cinm1Codegen, .useMramNoInit = !cinm1Codegen};
+    Opts opts{.cinm1codegen = cinm1Codegen,
+              .useMramNoInit = !cinm1Codegen,
+              .launchCounterSlots = launchCounterSlots};
 
     // Determine kernel module name: prefer per-op annotation, else option.
     std::string kmName = kernelModuleName;

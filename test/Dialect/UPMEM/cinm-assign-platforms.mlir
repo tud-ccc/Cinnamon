@@ -2,8 +2,10 @@
 
 #upmem = #upmem.platform<type = v1A, dpus = 512, tasklets = 24>
 
+// The function lists the host its ops were priced against, ahead of the
+// platforms it advertised.
 // CHECK-LABEL: @gemm_gets_wrapped
-// CHECK-SAME:  cinm.available_platforms = [#upmem]
+// CHECK-SAME:  cinm.available_platforms = [#cinm.host_platform<{{[^>]*}}>, #upmem]
 // CHECK:       cinm.compute -> tensor<8x128xi32> attributes {cinm.available_platforms = [#upmem]}
 // CHECK:       cinm.op.gemm
 func.func @gemm_gets_wrapped(%A: tensor<8x1024xi32>, %B: tensor<1024x128xi32>) -> tensor<8x128xi32>

@@ -72,6 +72,32 @@ def CinmGemmlikeOpInterface : OpInterface<"GemmlikeOpInterface"> {
         /// True when the op operates on tensors (produces a result).
         /// False when it accumulates in-place into a memref output buffer.
         bool isTensorVariant() { return static_cast<bool>(getGemmResult()); }
+
+        /// Element type of the values being multiplied. Both operands share
+        /// it; only the accumulator may be wider.
+        ::mlir::Type getOperandElementType() {
+            return ::llvm::cast<::mlir::ShapedType>(getLhs().getType())
+                .getElementType();
+        }
+
+        /// Element type the products accumulate into. `out` and `bias` are
+        /// the accumulator whenever they are present -- the tiling pass
+        /// threads the running accumulator through `bias`, so honouring it
+        /// keeps a tiled op's result type equal to the untiled op's.
+        ::mlir::Type getAccumulatorElementType() {
+            ::mlir::Value v = getOut();
+            if (!v) v = getBias();
+            if (!v) v = getGemmResult();
+            if (!v) return getOperandElementType();
+            return ::llvm::cast<::mlir::ShapedType>(v.getType())
+                .getElementType();
+        }
+
+        /// True when the operands are narrower than the accumulator, as in
+        /// the i8 x i8 -> i32 of an int8 checkpoint.
+        bool isMixedPrecision() {
+            return getOperandElementType() != getAccumulatorElementType();
+        }
     }];
 }
 

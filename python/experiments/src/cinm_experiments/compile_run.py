@@ -12,6 +12,7 @@ import csv
 import dataclasses
 import pathlib
 import shlex
+import shutil
 import subprocess
 from typing import Callable
 
@@ -36,6 +37,14 @@ class Config:
     ]
     # lower(fn_module, out_file, log_file) -> CompletedProcess; produces
     # out_file at the "upmem dialect" stage bench-single expects as input.
+    # Further make variables for bench-single, e.g. BENCH_DRIVER for a
+    # function whose driver is not the suite's <prim>.cpp.
+    make_vars: dict[str, str] = dataclasses.field(default_factory=dict)
+    # host_kernels(ir_dir) -> make variables: another compiler's kernels for
+    # the host blocks. The outlined host module (HOST_OUTLINE=1, its
+    # manifest and object in ir_dir) is built first; the variables returned
+    # (HOST_KERNEL_OBJS, HOST_KERNEL_LDFLAGS) link the replacements.
+    host_kernels: Callable[[pathlib.Path], dict[str, str]] | None = None
 
     def dir(self, root: pathlib.Path):
         return root / self.system / self.fn_name / self.label
@@ -141,6 +150,30 @@ def compile_config(config: Config, *, compile_root: pathlib.Path) -> CompiledCon
         )
 
     ir_dir, bin_dir = config_dir / "ir", config_dir / "bin"
+    make_vars = dict(config.make_vars)
+    if config.host_kernels:
+        make_vars["HOST_OUTLINE"] = "1"
+        host_o = (ir_dir / f"{config.fn_name}.host.o").resolve()
+        r = _run_make(
+            config.fn_name,
+            config.prim,
+            config_dir,
+            ir_dir,
+            lowered,
+            target=str(host_o),
+            extra_vars=make_vars,
+            write_script=False,
+        )
+        if r.returncode != 0:
+            (config_dir / "make_stderr.txt").write_text(r.stderr)
+            return CompiledConfig(
+                config, config_dir, False, f"make failed:\n{r.stderr[-10000:]}"
+            )
+        try:
+            make_vars |= config.host_kernels(ir_dir)
+        except Exception as err:  # noqa: BLE001 -- reported as the config's failure
+            (config_dir / "host_kernels_error.txt").write_text(str(err))
+            return CompiledConfig(config, config_dir, False, f"host kernels: {err}")
     r = _run_make(
         config.fn_name,
         config.prim,
@@ -148,7 +181,7 @@ def compile_config(config: Config, *, compile_root: pathlib.Path) -> CompiledCon
         ir_dir,
         lowered,
         target="bench-single",
-        extra_vars={"BIN_DIR": str(bin_dir.resolve())},
+        extra_vars={**make_vars, "BIN_DIR": str(bin_dir.resolve())},
     )
     if r.returncode != 0:
         (config_dir / "make_stderr.txt").write_text(r.stderr)
@@ -179,7 +212,13 @@ def compute_cost(config: Config, *, compile_root: pathlib.Path) -> CompiledConfi
 
     ir_dir = config_dir / "ir"
     r = _run_make(
-        config.fn_name, config.prim, config_dir, ir_dir, lowered, target="costs-only"
+        config.fn_name,
+        config.prim,
+        config_dir,
+        ir_dir,
+        lowered,
+        target="costs-only",
+        extra_vars=config.make_vars,
     )
     if r.returncode != 0:
         (config_dir / "compile_error.txt").write_text(r.stderr)
@@ -204,7 +243,9 @@ def recompute_cost(config_dir: pathlib.Path, *, prim: str) -> str | None:
     The pass is forced (-B): its input is unchanged and only cinm-opt itself
     is newer, which make cannot see. CINM_OPT is passed rather than left to
     the Makefile's own default so that the binary priced against is the one
-    the caller can name as a dependency."""
+    the caller can name as a dependency, paths.cinm_opt(). It runs through
+    the client beside it: pricing one config takes milliseconds, starting
+    cinm-opt half a second."""
     lowered = config_dir / "lowered.mlir"
     if not lowered.exists():
         return f"no lowered.mlir in {config_dir}"
@@ -215,7 +256,7 @@ def recompute_cost(config_dir: pathlib.Path, *, prim: str) -> str | None:
         config_dir / "ir",
         lowered,
         target="costs-only",
-        extra_vars={"CINM_OPT": str(paths.cinm_opt())},
+        extra_vars={"CINM_OPT": str(paths.cinm_opt_client())},
         force=True,
         write_script=False,
     )
@@ -224,9 +265,59 @@ def recompute_cost(config_dir: pathlib.Path, *, prim: str) -> str | None:
     return None
 
 
+def _merge_process_outputs(
+    output_dir: pathlib.Path, parts: list[pathlib.Path], iters: int, warmups: int = 1
+) -> None:
+    """Fold the CSVs of several processes' runs into one set in `output_dir`.
+
+    Every row gains `process` (0, 1, ...) and `warmup` (1 for the process's
+    first `warmups` iterations), and process p's iterations are renumbered
+    from p * iters, so an iteration number still names one inference: the
+    readers group by it, and two processes' iteration 3 must not be summed
+    as one."""
+    names = sorted({f.name for part in parts for f in part.glob("*.csv")})
+    for name in names:
+        header: list[str] | None = None
+        rows: list[list[str]] = []
+        for process, part in enumerate(parts):
+            path = part / name
+            if not path.exists():
+                continue
+            with path.open(newline="") as fh:
+                reader = csv.reader(fh)
+                part_header = next(reader, None)
+                if part_header is None:
+                    continue
+                header = header or part_header
+                it = part_header.index("iter" if "iter" in part_header else "iteration")
+                for row in reader:
+                    if not row:
+                        continue
+                    first = int(row[it]) < warmups
+                    row[it] = str(int(row[it]) + process * iters)
+                    rows.append(row + [str(process), "1" if first else "0"])
+        if header is None:
+            continue
+        with (output_dir / name).open("w", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(header + ["process", "warmup"])
+            writer.writerows(rows)
+
+
 def run_config(
-    compiled: CompiledConfig, *, run_root: pathlib.Path, iters: int
+    compiled: CompiledConfig,
+    *,
+    run_root: pathlib.Path,
+    iters: int,
+    processes: int = 1,
+    warmups: int = 1,
 ) -> RunResult:
+    """Run a compiled config's benchmark `processes` times, `iters` iterations
+    each, the first `warmups` of each being warmups. Transfer times move between
+    processes as well as between iterations -- a 512 MB scatter measured
+    27 to 35 ms by process -- so a median over one process's iterations can
+    rank near-ties by which process got lucky. With several, the CSVs are
+    merged, see _merge_process_outputs."""
     if not compiled.ok:
         return RunResult(compiled, False, pathlib.Path(), "not compiled")
     cfg = compiled.config
@@ -235,21 +326,45 @@ def run_config(
     output_dir = (
         pathlib.Path(run_root) / cfg.system / cfg.fn_name / cfg.label / "output"
     )
+    # Everything this config left behind last time goes, before the hardware
+    # gets a chance to leave nothing: a run that fails writes no CSVs, so
+    # anything surviving here would be read as this run's measurement. That is
+    # worse than a hole -- measurements.net_time_ms() finds a number,
+    # clear_failed_bench() therefore never retries the config, and the stale
+    # timing (from a different build) reaches the aggregate unnoticed.
+    error_txt = output_dir.parent / "run_error.txt"
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    error_txt.unlink(missing_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    parts = (
+        [output_dir]
+        if processes == 1
+        else [output_dir / f"process{p}" for p in range(processes)]
+    )
     err = None
-    try:
-        r = subprocess.run(
-            [str(bench_bin), str(output_dir), str(iters)],
-            capture_output=True,
-            text=True,
-            cwd=str(bin_dir / cfg.fn_name),
-        )
-        if r.returncode != 0:
-            err = r.stderr
-    except Exception:
-        traceback.print_exc()
-        err = traceback.format_exc()
+    for part in parts:
+        part.mkdir(parents=True, exist_ok=True)
+        try:
+            r = subprocess.run(
+                [str(bench_bin), str(part), str(iters)],
+                capture_output=True,
+                text=True,
+                cwd=str(bin_dir / cfg.fn_name),
+            )
+            if r.returncode != 0:
+                err = r.stderr
+        except Exception:
+            traceback.print_exc()
+            err = traceback.format_exc()
+        if err:
+            break
+    if processes > 1:
+        if not err:
+            _merge_process_outputs(output_dir, parts, iters, warmups)
+        for part in parts:
+            shutil.rmtree(part, ignore_errors=True)
 
     if err:
         (output_dir.parent / "run_error.txt").write_text(err)

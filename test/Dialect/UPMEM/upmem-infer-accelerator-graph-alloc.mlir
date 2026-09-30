@@ -1,4 +1,8 @@
-// RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=2 n-init=2 graph-allocation=true allocation-granularity=4" | FileCheck %s
+// RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=2 n-init=2 graph-allocation=true screen-menu=0 allocation-granularity=4" | FileCheck %s
+// The screen that decides whether a block is worth a device at all is off
+// here (screen-menu=0): these toy blocks are far too small to beat the host
+// on any DPU count, and what this test pins is what the allocation does with
+// blocks that are offloaded, not whether they should be.
 
 // The graph-level allocation with hoisted device sets: the two blocks have
 // different shapes, so program identity forbids merging them and each gets

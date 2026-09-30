@@ -111,6 +111,43 @@ void markStatic(Operation *repack, Value packed, OpBuilder &b) {
                                   b.getUnitAttr());
 }
 
+/// The staging of a repack whose host value is a static slice
+/// (cinm::resolveStaticSlice): a slot per slice of the source, side by
+/// side. The packed buffer gets a leading dimension of `slots`, and the
+/// repack of `host` -- one slice, through `packedMap` as for any repack --
+/// lands in slot `index` of it, which is also what the transfer reads: a
+/// subview the backend resolves back to (staging, index, slots) to land the
+/// transfer in the slot's place on the device. The repack skip is keyed on
+/// the target, so the first inference fills each slot once and every later
+/// one repacks nothing, as with any other static repack.
+Value stageEverySlice(OpBuilder &b, Location loc, Operation *site,
+                      const cinm::StaticSlice &slice, Value host,
+                      ArrayRef<int64_t> packedShape, AffineMap packedMap,
+                      Type elementType) {
+  SmallVector<int64_t> stackedShape{slice.slots};
+  llvm::append_range(stackedShape, packedShape);
+  Value stack =
+      repackBuffer(b, loc, site, MemRefType::get(stackedShape, elementType));
+
+  SmallVector<OpFoldResult> offsets{slice.index};
+  SmallVector<OpFoldResult> sizes{b.getIndexAttr(1)};
+  SmallVector<OpFoldResult> strides(stackedShape.size(), b.getIndexAttr(1));
+  for (int64_t extent : packedShape) {
+    offsets.push_back(b.getIndexAttr(0));
+    sizes.push_back(b.getIndexAttr(extent));
+  }
+  auto slotTy = memref::SubViewOp::inferRankReducedResultType(
+      packedShape, cast<MemRefType>(stack.getType()), offsets, sizes, strides);
+  Value slot =
+      memref::SubViewOp::create(b, loc, slotTy, stack, offsets, sizes, strides);
+
+  auto compact = cnm::CompactBufferOp::create(b, loc, host, slot, packedMap);
+  // The conclusion goes on the stack the slot is a view of: that is what a
+  // later reader resolves the view back to.
+  markStatic(compact, stack, b);
+  return slot;
+}
+
 /// The dimension at the root of a chain of floordivs/mods by positive
 /// constants, and the product of the floordiv divisors along the chain -- the
 /// scale at which an operation applied on top of `expr` reads that dimension.
@@ -339,8 +376,7 @@ bool packIntoOneBlockPerLeaf(Op op, OpBuilder &b, bool isStatic) {
 
   b.setInsertionPoint(op);
   Value host = op.getHostValue();
-  Value packed = repackBuffer(
-      b, loc, op, MemRefType::get(packedShape, hostTy.getElementType()));
+  Value packed;
 
   // A scatter reads the host value, so the repack fills the packed buffer
   // before the transfer. A gather writes it, so the packed buffer is what the
@@ -348,11 +384,23 @@ bool packIntoOneBlockPerLeaf(Op op, OpBuilder &b, bool isStatic) {
   // map, walked in the other direction, which is why it is a different op and
   // not this one with its operands exchanged.
   if constexpr (isScatter) {
-    auto compact =
-        cnm::CompactBufferOp::create(b, loc, host, packed, packedMap);
+    std::optional<cinm::StaticSlice> slice;
     if (isStatic)
-      markStatic(compact, packed, b);
+      slice = cinm::resolveStaticSlice(host);
+    if (slice && isa<MemRefType>(slice->source.getType())) {
+      packed = stageEverySlice(b, loc, op, *slice, host, packedShape, packedMap,
+                               hostTy.getElementType());
+    } else {
+      packed = repackBuffer(
+          b, loc, op, MemRefType::get(packedShape, hostTy.getElementType()));
+      auto compact =
+          cnm::CompactBufferOp::create(b, loc, host, packed, packedMap);
+      if (isStatic)
+        markStatic(compact, packed, b);
+    }
   } else {
+    packed = repackBuffer(
+        b, loc, op, MemRefType::get(packedShape, hostTy.getElementType()));
     b.setInsertionPointAfter(op);
     auto expand = cnm::ExpandBufferOp::create(b, loc, packed, host, packedMap);
     if (isStatic)
@@ -390,15 +438,26 @@ void ensureScatterContiguous(cnm::ScatterOp op, OpBuilder &b, bool staticOnly) {
 
   Location loc = op.getLoc();
   b.setInsertionPoint(op);
-  Value packed = allocateContiguousLike(b, loc, op, input);
+  auto inputTy = cast<MemRefType>(input.getType());
   // The packed buffer has the input's shape, so each of its elements comes
   // from the same index of the input: only the layout changes.
-  auto rank = cast<MemRefType>(input.getType()).getRank();
-  auto compact = cnm::CompactBufferOp::create(
-      b, loc, input, packed,
-      AffineMap::getMultiDimIdentityMap(rank, b.getContext()));
+  AffineMap identity =
+      AffineMap::getMultiDimIdentityMap(inputTy.getRank(), b.getContext());
+  std::optional<cinm::StaticSlice> slice;
   if (isStatic)
-    markStatic(compact, packed, b);
+    slice = cinm::resolveStaticSlice(input);
+  Value packed;
+  if (slice && inputTy.hasStaticShape() &&
+      isa<MemRefType>(slice->source.getType())) {
+    packed = stageEverySlice(b, loc, op, *slice, input, inputTy.getShape(),
+                             identity, inputTy.getElementType());
+  } else {
+    packed = allocateContiguousLike(b, loc, op, input);
+    auto compact =
+        cnm::CompactBufferOp::create(b, loc, input, packed, identity);
+    if (isStatic)
+      markStatic(compact, packed, b);
+  }
   op.getInputMutable().assign(packed);
 
   // b.setInsertionPointAfter(op);

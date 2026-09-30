@@ -85,8 +85,38 @@ static upmem::DpuProgramOp programLoadedOn(Value hierarchy, Operation *at) {
   return unique ? unique.getDpuProgram() : upmem::DpuProgramOp{};
 }
 
+/// The static_alloc `ref` names in `program`; null when there is no program
+/// to look in or the symbol is something else (the verifier reports that).
+static upmem::StaticAllocOp dpuBufferOf(upmem::DpuProgramOp program,
+                                        FlatSymbolRefAttr ref) {
+  if (!program)
+    return {};
+  return dyn_cast_or_null<upmem::StaticAllocOp>(
+      SymbolTable::lookupSymbolIn(program, ref));
+}
+
 upmem::DpuProgramOp upmem::ScatterOnArrayOp::getDpuProgram() {
   return programLoadedOn(getHierarchy(), getOperation());
+}
+
+upmem::StaticAllocOp upmem::ScatterOnArrayOp::getDpuBuffer() {
+  return dpuBufferOf(getDpuProgram(), getDpuBufRefAttr());
+}
+
+upmem::StaticAllocOp upmem::GatherFromArrayOp::getDpuBuffer() {
+  return dpuBufferOf(getDpuProgram(), getDpuBufRefAttr());
+}
+
+upmem::StaticAllocOp upmem::ScatterBlocksOp::getDpuBuffer() {
+  return dpuBufferOf(getDpuProgram(), getDpuBufRefAttr());
+}
+
+upmem::StaticAllocOp upmem::GatherBlocksOp::getDpuBuffer() {
+  return dpuBufferOf(getDpuProgram(), getDpuBufRefAttr());
+}
+
+upmem::StaticAllocOp upmem::BroadcastOp::getDpuBuffer() {
+  return dpuBufferOf(getDpuProgram(), getDpuBufRefAttr());
 }
 
 upmem::DpuProgramOp upmem::GatherFromArrayOp::getDpuProgram() {
@@ -251,6 +281,17 @@ template <class Op> static LogicalResult verifyBlockTransfer(Op op) {
                           "start index in the host buffer");
   if (op.getNumBlocksPerDpu() < 1)
     return op.emitOpError("must transfer at least one block per DPU");
+  if (op.getSlotPadding()) {
+    if (*op.getSlotPadding() < 0)
+      return op.emitOpError("slot padding cannot be negative");
+    if (!op.getBlocksPerSlot())
+      return op.emitOpError("slot padding needs the number of blocks per slot");
+  }
+  if (std::optional<int64_t> perSlot = op.getBlocksPerSlot())
+    if (*perSlot < 1 || op.getNumBlocksPerDpu() % *perSlot != 0)
+      return op.emitOpError("blocks per slot (")
+             << *perSlot << ") must divide the blocks per DPU ("
+             << op.getNumBlocksPerDpu() << ")";
 
   SmallVector<int64_t> box = arrayBox(op.getHierarchy().getType());
   box.push_back(op.getNumBlocksPerDpu());
@@ -396,8 +437,13 @@ upmem::BroadcastOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   if (!staticAlloc)
     return success(); // hierarchy is a block argument; can't verify statically
 
+  // A slotted target holds `slots` copies along its leading dimension; the
+  // broadcast fills one of them.
+  ArrayRef<int64_t> targetShape = staticAlloc.getType().getShape();
+  if (staticAlloc.getNumSlots() > 1)
+    targetShape = targetShape.drop_front();
   if (!shapesCompatibleUpToUnitDims(getHostBuffer().getType().getShape(),
-                                    staticAlloc.getType().getShape()))
+                                    targetShape))
     return emitOpError("host buffer shape ")
            << getHostBuffer().getType()
            << " is not compatible with target buffer " << staticAlloc.getType()

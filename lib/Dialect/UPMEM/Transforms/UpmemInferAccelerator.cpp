@@ -8,6 +8,7 @@
 #include <cinm-mlir/Dialect/Cinm/AcceleratorInference/SpaceBuilder.h>
 #include <cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h>
 #include <cinm-mlir/Dialect/Cinm/IR/CinmBase.h>
+#include <cinm-mlir/Dialect/Cinm/IR/CinmOffloadModel.h>
 #include <cinm-mlir/Dialect/Cinm/IR/CinmOps.h>
 #include <cinm-mlir/Dialect/Cinm/Transforms/CinmTransforms.h>
 #include <cinm-mlir/Dialect/Cinm/Transforms/Passes.h>
@@ -65,6 +66,7 @@
 #include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/ValueRange.h>
 #include <mlir/Interfaces/TilingInterface.h>
+#include <mlir/Pass/Pass.h>
 #include <mlir/Pass/PassManager.h>
 #include <mlir/Support/LLVM.h>
 #include <mlir/Support/LogicalResult.h>
@@ -80,7 +82,13 @@ namespace mlir::upmem {
 #define GEN_PASS_DEF_UPMEMLOWERSTAMPEDPASS
 #include <cinm-mlir/Dialect/UPMEM/Transforms/Passes.h.inc>
 
+/// Defined in UPMEMOffloadRoofline.cpp.
+cinm::OffloadVerdict evaluateUpmemOffloadAt(const cinm::OffloadFootprint &f,
+                                            int64_t dpus,
+                                            const cinm::HostModel &host);
+
 namespace {
+
 using mlir::cinm::IntVar;
 using mlir::cinm::PermVar;
 using mlir::cinm::SpaceBuilder;
@@ -248,35 +256,13 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   int64_t sharedResourceMax() const override { return platform.getMaxDpus(); }
 
   /// Iteration-space sizes (product of loop extents) of every op the
-  /// pipeline would distribute in `block`, read off a throwaway linalg
-  /// conversion -- the same one the search space itself is derived from, so
-  /// the menu and the space agree about what gets distributed.
-  SmallVector<int64_t>
-  distributedIterationSizes(cinm::ComputeBlockOp block) const {
-    MLIRContext *ctx = block->getContext();
-    OpBuilder b(ctx);
-    Location loc = block.getLoc();
-    OwningOpRef<ModuleOp> module(ModuleOp::create(loc));
-    auto func = func::FuncOp::create(
-        loc, "menu_probe",
-        FunctionType::get(ctx, SmallVector<Type>(block->getOperandTypes()),
-                          SmallVector<Type>(block->getResultTypes())));
-    module->push_back(func);
-    Block *entry = func.addEntryBlock();
-    b.setInsertionPointToStart(entry);
-    IRMapping mapping;
-    for (auto [operand, arg] :
-         llvm::zip(block->getOperands(), entry->getArguments()))
-      mapping.map(operand, arg);
-    auto *clone = b.clone(*block, mapping);
-    func::ReturnOp::create(b, loc, clone->getResults());
-
-    auto pm = buildConvertPipeline(ctx, /*debug=*/false);
-    if (failed(pm->run(*module)))
-      return {};
-
+  /// pipeline would distribute in `reference`, a block already in the linalg
+  /// form the search space is derived from (prepareReference), so the menu
+  /// and the space agree about what gets distributed.
+  static SmallVector<int64_t>
+  distributedIterationSizes(cinm::ComputeBlockOp reference) {
     SmallVector<int64_t> sizes;
-    module->walk([&](Operation *op) {
+    reference.getBody().walk([&](Operation *op) {
       if (!isDistributionCandidate(op))
         return;
       auto extents = linalgLoopExtents(llvm::cast<linalg::LinalgOp>(op));
@@ -290,9 +276,9 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     return sizes;
   }
 
-  /// The DPU counts worth profiling `block` at. The workgroup must be filled
-  /// exactly -- the tiles of every distributed op multiply out to
-  /// dpus * tasklets -- and tasklets = 1 is always admissible, so the
+  /// The DPU counts worth profiling `reference` at. The workgroup must be
+  /// filled exactly -- the tiles of every distributed op multiply out to dpus *
+  /// tasklets -- and tasklets = 1 is always admissible, so the
   /// divisibility-feasible DPU counts are exactly the divisors of each op's
   /// iteration-space size: divisors of their gcd for the block. Among those
   /// the menu prefers multiples of the allocation granularity (rank-sized
@@ -302,12 +288,12 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   /// the pinned search still finds infeasible (capacity) becomes a hole in
   /// the profile.
   SmallVector<int64_t>
-  sharedResourceMenu(cinm::ComputeBlockOp block) const override {
+  sharedResourceMenu(cinm::ComputeBlockOp reference) const override {
     const int64_t maxDpus = sharedResourceMax();
     const int64_t granularity =
         std::max<int64_t>(1, opts.inference.allocationGranularity);
 
-    SmallVector<int64_t> sizes = distributedIterationSizes(block);
+    SmallVector<int64_t> sizes = distributedIterationSizes(reference);
     if (sizes.empty())
       return {};
     int64_t g = 0;
@@ -330,19 +316,40 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     if (menu.empty())
       menu = divisors;
 
-    // Sorted divisors are distributed roughly geometrically, so index-spaced
-    // thinning approximates log spacing and keeps both endpoints.
-    constexpr size_t kMaxMenu = 16;
-    if (menu.size() > kMaxMenu) {
-      SmallVector<int64_t> thinned;
-      for (size_t i = 0; i < kMaxMenu; ++i) {
-        size_t idx = (i * (menu.size() - 1)) / (kMaxMenu - 1);
-        if (thinned.empty() || thinned.back() != menu[idx])
-          thinned.push_back(menu[idx]);
-      }
-      menu = std::move(thinned);
-    }
+    // Every value the block admits, however many that is: what to profile out
+    // of them is the screen's to decide (cinm::screenMenu), and thinning a
+    // menu by index before pricing it drops the values that could pay as
+    // readily as the ones that cannot. InferenceOptions::maxMenuPoints is
+    // the bound on what actually gets profiled, applied to the survivors.
     return menu;
+  }
+
+  /// The roofline of this block on `resource` DPUs -- the same model the
+  /// per-op offload gate uses (UPMEMOffloadRoofline.cpp), asked about one
+  /// resource value rather than the whole array.
+  std::optional<cinm::DeviceRoofline>
+  deviceRoofline(cinm::ComputeBlockOp block, int64_t resource) override {
+    cinm::OffloadFootprint footprint = cinm::measureOffloadFootprint(block);
+    if (!footprint.known)
+      return std::nullopt;
+    auto hostPlatform = cinm::HostPlatformAttr::getInScope(block);
+    if (!hostPlatform)
+      return std::nullopt;
+    cinm::OffloadVerdict v =
+        evaluateUpmemOffloadAt(footprint, resource, hostPlatform.getModel());
+    if (v.unknown)
+      return std::nullopt;
+    // The same block with nothing resident: its static operands become
+    // traffic like everything else, which is the comparison the offload
+    // argument rests on.
+    cinm::OffloadFootprint streamed = footprint;
+    streamed.dynamicBytes += streamed.staticBytes;
+    streamed.staticBytes = 0.0;
+    cinm::OffloadVerdict s =
+        evaluateUpmemOffloadAt(streamed, resource, hostPlatform.getModel());
+    return cinm::DeviceRoofline{v.deviceSeconds * 1e3, v.transferSeconds * 1e3,
+                                v.deviceOpsPerSecond,
+                                s.unknown ? 0.0 : s.transferSeconds * 1e3};
   }
 
   /// Footprint at a configuration, per memory level and split by operand
@@ -391,8 +398,20 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       auto operandDims = linalgOperandDims(op);
       for (auto [opnd, dims] : llvm::zip(op->getOpOperands(), operandDims)) {
         auto shaped = asShaped(opnd.get().getType());
+        // `index` has no bit width to ask for -- asking is an assertion
+        // failure, not a zero -- and a linalg.generic may well take one as a
+        // scalar operand, which asShaped hands back as tensor<index>. It is
+        // 64 bits here, as everywhere else the model weighs one
+        // (cinm::bytesOf). Anything else without a width occupies no data
+        // tile and the space does not tile it (handleLinalgOp posts 0
+        // element bits for it), so it weighs nothing here either.
+        Type element = shaped.getElementType();
+        if (!element.isIntOrFloat() && !element.isIndex())
+          continue;
         const int64_t eltBytes =
-            std::max<int64_t>(1, shaped.getElementTypeBitWidth() / 8);
+            element.isIndex()
+                ? 8
+                : std::max<int64_t>(1, shaped.getElementTypeBitWidth() / 8);
         int64_t mramElts = 1, wramElts = 1;
         for (unsigned dim : dims) {
           mramElts *= mramTile[dim];
@@ -403,11 +422,21 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
         wram.dynBytes += tasklets * wramElts * eltBytes;
 
         const int64_t perDpuBytes = tasklets * mramElts * eltBytes;
+        // An operand the block takes from outside: a block argument, or the
+        // slice of one that --cinm-absorb-static-slices moved inside. A
+        // value initialised inside the block (a fill) is never resident.
         auto arg = llvm::dyn_cast<BlockArgument>(opnd.get());
+        if (!arg)
+          if (std::optional<cinm::StaticSlice> slice =
+                  cinm::resolveStaticSlice(opnd.get()))
+            arg = llvm::dyn_cast<BlockArgument>(slice->source);
         const bool isStatic = arg && arg.getOwner()->getParentOp() == block &&
-                              cinm::isStaticValue(arg);
+                              cinm::isStaticValue(opnd.get());
         if (isStatic) {
-          mram.staticBytes += perDpuBytes;
+          // A run-time-indexed slice of a static tensor keeps every slice
+          // resident, one slot each (resolveStaticSlice): the device holds
+          // all of them, not the one this trial moved.
+          mram.staticBytes += perDpuBytes * cinm::staticSlotsOf(opnd.get());
           // What a timeshared placement would pay per inference to restore
           // these weights. scatterBlockCostMs' second parameter is the block
           // one DPU receives, not the whole tensor -- it is what the
@@ -469,7 +498,10 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // name. Generalizing here keeps that concern out of the distribution
     // pass itself.
     pm->addPass(createLinalgGeneralizeNamedOpsPass());
-    pm->addPass(createLinalgElementwiseOpFusionPass());
+    // Never fuse a producer into a contraction's input: it would be
+    // recomputed once per reduction step.
+    pm->addPass(
+        createLinalgElementwiseOpFusionPass({.fuseWithRecompute = false}));
     pm->addPass(createCanonicalizerPass());
     if (debug)
       pm->addPass(createPrintIRPass({.label = "after-fusion"}));
@@ -630,7 +662,8 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     if (debug)
       pm->addPass(createPrintIRPass({.label = "after-tile-mram-buffers"}));
     pm->addPass(createLinalgGeneralizeNamedOpsPass());
-    pm->addPass(createLinalgElementwiseOpFusionPass());
+    pm->addPass(
+        createLinalgElementwiseOpFusionPass({.fuseWithRecompute = false}));
     pm->addPass(createConvertLinalgToAffineLoopsPass());
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
@@ -681,20 +714,33 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // passes above still see affine loops.
     {
       auto &dpuPm = pm->nest<ModuleOp>().nest<DpuProgramOp>();
-      // The DPU compiler unrolls nothing by itself, so a short innermost loop
-      // pays a counter increment, a branch and an address computation per
-      // operand on every iteration -- about half the instructions of a
+      // The DPU compiler unrolls nothing by itself, so a rolled innermost
+      // loop pays a counter increment, a branch and an address computation
+      // per operand on every iteration -- about half the instructions of a
       // multiply-accumulate body. Unrolling here rather than asking the DPU
       // compiler for it keeps the cost model reading the code that runs.
       //
-      // `unrollUpToFactor` is what makes the factor a *bound*: it unrolls by
-      // min(trip count, factor), so a loop shorter than 64 comes out fully
-      // unrolled instead of untouched -- plain `unroll-factor=64` fails
-      // outright on anything shorter (loopUnrollByFactor bails when the trip
-      // count is below the factor). Only innermost loops are considered, and
-      // only once, so an outer loop is never unrolled around a body this has
-      dpuPm.addPass(affine::createLoopUnrollPass(/*unrollFactor=*/129,
-                                                 /*unrollUpToFactor=*/true));
+      // Not a full unroll, though: that made every operand of the enclosing
+      // loop's body invariant, the loop-invariant code motion below (and
+      // LLVM's own, which no IR shape prevents) hoisted the whole operand
+      // vector out, and the DPU compiler spilled it to the stack -- which is
+      // WRAM -- and read it back on every trip. The pass jams the enclosing
+      // loop into the innermost one within a register budget, so an operand
+      // is loaded once and consumed at once, then unrolls the innermost loop
+      // partially. See its description in Passes.td.
+      //
+      // Before it, a reduction scaled by a loop-invariant value -- a scalar
+      // operand fused into the kernel -- has the scale hoisted out of the
+      // loop. Left in, the unrolled body is a chain LLVM's Reassociate
+      // factors the scale out of by summing every product at its root, after
+      // the last one, so that all of them are live at once and the DPU
+      // compiler spills them. The factoring matches reductions carried by
+      // iteration arguments, which scalar replacement promotes the
+      // accumulators to first.
+      dpuPm.addPass(affine::createAffineScalarReplacementPass());
+      dpuPm.addPass(affine::createAffineFactorReductionScale(
+          {.allowFloatReassociation = opts.allowFloatReassociation}));
+      dpuPm.addPass(createUpmemRegisterTileLoopsPass());
       // Don't do fusion after unrolling, it's very slow
       addAffineOpts(dpuPm, /*fusion=*/false);
       dpuPm.addPass(createLowerAffinePass());
@@ -705,6 +751,10 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     pm->addPass(memref::createFoldMemRefAliasOpsPass());
     pm->addPass(createCanonicalizerPass());
     pm->addPass(createCSEPass());
+    // After the views are composed, since it reads a transfer's offset off one
+    // subview; with nothing after it that would fold the aligned offset's
+    // arithmetic into a form the translator cannot prove aligned.
+    pm->addPass(createUpmemAlignLocalTransfersPass());
     // Last, deliberately: what a configuration occupies is a property of the
     // program every pass above has finished optimizing, not of the
     // configuration itself. A trial that does not fit fails here
@@ -748,13 +798,41 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   std::optional<cinm::DistributedOpInfo>
   handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix, SpaceBuilder &b);
 
+  /// The space is derived from the *linalg* form of the block. Block sizes
+  /// are indexed by iteration dimension and only linalg states an iteration
+  /// space; deriving them from cinm ops instead would mean maintaining a
+  /// second, hand-written notion of each op's iteration space. That notion
+  /// already disagrees: `getTilableDimSizes` reports one flattened dimension
+  /// for an elementwise op where its linalg form has one per rank.
+  ///
+  /// The reference itself is converted, not a throwaway copy of it: the
+  /// conversion does not depend on the configuration, so doing it once here
+  /// both saves every trial from repeating it and lets the parameters be
+  /// stamped straight onto the ops the space was read from. Trials are clones
+  /// of what this leaves behind, so they inherit the annotations and start
+  /// where the search space starts.
+  LogicalResult prepareReference(ModuleOp reference) override {
+    auto pm = buildConvertPipeline(reference.getContext(),
+                                   opts.debugPrintsInPipeline);
+    if (failed(pm->run(reference)))
+      return reference.emitError(
+          "could not convert the compute block to linalg, so no search space "
+          "can be derived from it");
+    return success();
+  }
+
   void initializeSpace(cinm::ComputeBlockOp refClone,
                        cinm::SpaceBuilder &b) override {
     const int64_t maxDpus = platform.getMaxDpus();
     const int64_t maxTasklets = platform.getMaxNumTasklets();
+    // A workgroup narrower than a rank leaves most of the machine idle and
+    // never competes, so the space starts at one rank's worth of DPUs
+    // rather than spending the sample and the search's budget on
+    // configurations that only differ in how much of the device they waste.
+    constexpr int64_t kMinDpus = 64;
     dpusVar_ = opts.fixedDpus > 0
                    ? b.intRange("dpus", opts.fixedDpus, opts.fixedDpus)
-                   : b.intRange("dpus", 1, maxDpus);
+                   : b.intRange("dpus", std::min(kMinDpus, maxDpus), maxDpus);
     b.describe("dpus", "number of DPUs the workgroup spans (ATiM: product of "
                        "blockIdx extents)");
     taskletsVar_ =
@@ -786,60 +864,19 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
       return;
     }
 
-    // The space is derived from the *linalg* form of the block. Block sizes
-    // are indexed by iteration dimension and only linalg states an iteration
-    // space; deriving them from cinm ops instead would mean maintaining a
-    // second, hand-written notion of each op's iteration space. That notion
-    // already disagrees: `getTilableDimSizes` reports one flattened dimension
-    // for an elementwise op where its linalg form has one per rank.
-    //
-    // The reference itself is converted, not a throwaway copy of it: the
-    // conversion does not depend on the configuration, so doing it once here
-    // both saves every trial from repeating it and lets the parameters be
-    // stamped straight onto the ops the space was read from. Trials are clones
-    // of what this leaves behind, so they inherit the annotations and start
-    // where the search space starts.
-    MLIRContext *ctx = refClone->getContext();
-    Location loc = refClone->getLoc();
-    cinm::ComputeBlockOp block = refClone;
-    if (!opts.inference.stampConfigs) {
-      ModuleOp refModule = refClone->getParentOfType<ModuleOp>();
-      {
-        auto pm = buildConvertPipeline(ctx, opts.debugPrintsInPipeline);
-        if (failed(pm->run(refModule))) {
-          emitError(loc, "could not convert the compute block to linalg, "
-                         "so no search space can be derived from it");
-          return;
-        }
-      }
-
-      // Not `refClone`: the pipeline above may have replaced the compute
-      // block op (canonicalization rebuilds it to drop an unused block
-      // argument), so the handle the framework passed in can be dangling by
-      // now.
-      block = nullptr;
-      refModule.walk([&](cinm::ComputeBlockOp op) { block = op; });
-      if (!block) {
-        emitError(loc, "the converted reference has no compute block");
-        return;
-      }
-    }
-    // In stamp mode the block IS the original, sitting in the real module
-    // among other blocks: nothing is converted here (the pass ran the
-    // conversion once, up front) and nothing may walk the enclosing module.
-
-    // Name each op's parameters after the cinm op it came from, e.g.
+    // The block is in the linalg form prepareReference put it in (see there
+    // for why). Name each op's parameters after the cinm op it came from, e.g.
     // `gemv.M0`. Count the kinds first so that a block with two gemvs gets
     // `gemv0`/`gemv1` while the common single-op case stays unadorned.
     llvm::StringMap<unsigned> kindCount;
-    block.getBody().walk([&](Operation *op) {
+    refClone.getBody().walk([&](Operation *op) {
       if (isDistributionCandidate(op))
         ++kindCount[searchNameFor(op)];
     });
 
     llvm::StringMap<unsigned> kindSeen;
     SmallVector<cinm::DistributedOpInfo, 2> distributed;
-    block.getBody().walk([&](Operation *op) {
+    refClone.getBody().walk([&](Operation *op) {
       if (!isDistributionCandidate(op))
         return;
       std::string kind = searchNameFor(op);
@@ -951,7 +988,7 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
   }
 
   /// Lower `trial` through the real pass pipeline. The trial starts in the
-  /// linalg form the search space was built from (see initializeSpace), so
+  /// linalg form the search space was built from (see prepareReference), so
   /// only the configuration-dependent stages are left.
   DiagnosedSilenceableFailure runLowering(cinm::TrialInfo &trial) {
     mlir::Location loc = trial.computeBlock->getLoc();
@@ -1148,7 +1185,6 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
 
   auto dpus = dpusVar_;
   auto tasklets = taskletsVar_;
-  Type eltTy = asShaped(op.getDpsInits()[0].getType()).getElementType();
 
   // Determine the names of the search params. Each dimension gets one
   // parameter per memory level (a tiling factor).
@@ -1204,10 +1240,48 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
   // that would have fitted. That is the direction the bound is meant to err
   // in; the tight test is still done on the lowered program.
   auto operandDims = linalgOperandDims(op);
+  // An op may accumulate into a wider element type than its operands carry
+  // (i8 x i8 -> i32), so operands cannot all be charged at one width. Each is
+  // weighted by its own, in units of the narrowest operand's element: that
+  // keeps the arithmetic integral, and where every operand shares one type it
+  // reduces to weight 1 and the capacity below to getSizeInElements of that
+  // type -- the formula this had before mixed precision, unchanged.
+  //
+  // Bits would be the natural unit but overflow the solver's int32 on the
+  // MRAM level (64 MB is 5.4e8 bits, and the footprint scales that by the
+  // tasklet count).
+  //
+  // One entry per operand, aligned with operandDims below (zip_equal). An
+  // operand that is not a shaped numeric value -- a scalar, or an `index`
+  // element type -- carries 0 here: it occupies no data tile, so it weighs
+  // nothing in the capacity sum and is exempt from the DMA granule bound.
+  SmallVector<int64_t> operandEltBits;
+  for (Value operand : op->getOperands()) {
+    ShapedType shaped = asShaped(operand.getType());
+    Type elem = shaped ? shaped.getElementType() : Type();
+    if (elem && elem.isIntOrFloat()) {
+      operandEltBits.push_back(elem.getIntOrFloatBitWidth());
+    } else {
+      LLVM_DEBUG(llvm::dbgs() << "[cinm-inference] operand "
+                              << operand.getType() << " of " << op->getName()
+                              << " has no numeric element width; not tiled\n");
+      operandEltBits.push_back(0);
+    }
+  }
+  // The unit is the narrowest numeric operand. A 0 must never become the
+  // divisor, and an op with nothing numeric to tile gets an arbitrary unit
+  // -- every weight is then 0 and no bound is charged.
+  int64_t unitBits = 0;
+  for (int64_t bits : operandEltBits)
+    if (bits > 0 && (unitBits == 0 || bits < unitBits))
+      unitBits = bits;
+  if (unitBits == 0)
+    unitBits = 32;
+
   // The tile of each operand at one level, as a count of elements: the
   // product of that level's tiling factors over the dimensions the operand is
-  // indexed by. This is both the unit the capacity bound sums and the unit a
-  // transfer moves, which is why the DMA constraint below shares it.
+  // indexed by. This is the unit a transfer moves, which is why the DMA
+  // constraint below uses it directly.
   auto operandTiles = [operandDims](ArrayRef<IntVar> sizes) {
     SmallVector<cinm::IntExpr> operands;
     for (const auto &dims : operandDims) {
@@ -1218,26 +1292,41 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
     }
     return operands;
   };
+  // The same tiles weighted by element width, which is what the capacity
+  // bound sums: a wide accumulator costs more per element than a narrow
+  // operand.
+  auto weightedTiles = [&operandTiles, &operandEltBits,
+                        unitBits](ArrayRef<IntVar> sizes) {
+    SmallVector<cinm::IntExpr> weighted;
+    for (auto [tile, eltBits] :
+         llvm::zip_equal(operandTiles(sizes), operandEltBits))
+      weighted.push_back(tile *
+                         static_cast<cinm::ParmValue>(eltBits / unitBits));
+    return weighted;
+  };
   // The stack a tasklet reserves, in the same unit as the tiles it is added
-  // to and the capacity it is charged against: elements, not bytes. Rounded
-  // up, so a reserve that is not a whole number of elements still fits.
+  // to and the capacity it is charged against. Rounded up, so a reserve that
+  // is not a whole number of units still fits.
   const int64_t stackReserve =
-      llvm::divideCeil(kStackReserveBytes * 8, eltTy.getIntOrFloatBitWidth());
-  auto footprint = [&operandTiles, tasklets,
+      llvm::divideCeil(kStackReserveBytes * 8, unitBits);
+  auto footprint = [&weightedTiles, tasklets,
                     stackReserve](ArrayRef<IntVar> sizes) {
-    return tasklets * (stackReserve + cinm::sum(operandTiles(sizes)));
+    return tasklets * (stackReserve + cinm::sum(weightedTiles(sizes)));
+  };
+  const auto capacity = [unitBits](cinm::CinmLevelDefAttr level) {
+    return level.getSizeInBytes() * 8 / unitBits;
   };
 
   // One bound per level, against the capacity the platform declares for it.
   for (auto [levelIdx, level] : llvm::enumerate(levels))
-    b.require(footprint(perLevel[levelIdx]) <= level.getSizeInElements(eltTy),
+    b.require(footprint(perLevel[levelIdx]) <= capacity(level),
               ("tasklets * sum of operand tiles <= " +
                level.getName().getValue() + " (assuming no sharing)")
                   .str());
   if (!opts.useMRAMTiling) {
     // Note: this is only required for benchmarks that compare
     // against CINM1 codegen. To be removed.
-    b.require(footprint(blocks) <= levels.back().getSizeInElements(eltTy),
+    b.require(footprint(blocks) <= capacity(levels.back()),
               "MRAM tile should be equal to WRAM tile (no tiling in MRAM)");
   }
 
@@ -1268,23 +1357,24 @@ UpmemInferencePlugin::handleLinalgOp(linalg::LinalgOp op, StringRef namePrefix,
   // whatever the tiling, so the constraint would empty the space rather than
   // shape it. Nothing distributes such an operand, so its buffer gets no
   // per-tasklet dimension and every tasklet reaches it at offset 0.
-  const int64_t eltBits = eltTy.getIntOrFloatBitWidth();
   SmallVector<std::string> operandNames = linalgOperandNames(op);
   for (auto [levelIdx, level] : llvm::enumerate(levels)) {
     // The leaf's own tile is left to the coalescing, per the argument above.
     if (levelIdx + 1 == levels.size())
       continue;
     const int64_t granuleBits = level.getAlignment() * 8;
-    // The smallest tile that is a whole number of granules. Counted in bits
-    // so that an element narrower than a byte stays exact.
-    const int64_t elemsPerGranule =
-        granuleBits / std::gcd(granuleBits, eltBits);
-    if (elemsPerGranule <= 1)
-      continue;
     for (auto [idx, name, tile] :
          llvm::zip_equal(llvm::seq<size_t>(0, operandNames.size()),
                          operandNames, operandTiles(perLevel[levelIdx]))) {
       if (operandDims[idx].empty())
+        continue;
+      // The smallest tile that is a whole number of granules, per operand:
+      // operands of different widths reach a granule at different counts, so
+      // a narrow operand is bound more loosely than a wide one. Counted in
+      // bits so that an element narrower than a byte stays exact.
+      const int64_t elemsPerGranule =
+          granuleBits / std::gcd(granuleBits, operandEltBits[idx]);
+      if (elemsPerGranule <= 1)
         continue;
       b.require(cinm::divides(cinm::ParmValue(elemsPerGranule), tile),
                 (name + "'s " + level.getName().getValue() +
@@ -1389,6 +1479,13 @@ struct UpmemInferAcceleratorPass
     o.programReloadMs = programReloadMs;
     o.latencyObjective = latencyObjective;
     o.allocationGranularity = allocationGranularity;
+    o.screenMenuAgainstHost = screenMenuAgainstHost;
+    o.hostAchievedFraction = hostAchievedFraction;
+    o.allowHostPlacement = allowHostPlacement;
+    o.maxMenuPoints = maxMenuPoints;
+    o.allocationReportDir = allocationReportDir;
+    o.allocationIn = allocationIn;
+    o.gateDryRun = gateDryRun;
     o.stampConfigs = stampConfigs;
     upmemOpts.annotateOpCosts = annotateOpCosts;
     upmemOpts.useMRAMTiling = useMRAMTiling;
@@ -1425,6 +1522,11 @@ struct UpmemInferAcceleratorPass
   void runOnOperation() override {
     ModuleOp module = getOperation();
     UpmemInferenceOptions upmemOpts = buildOptions();
+    if (!allocationIn.empty() && !graphAllocation) {
+      module.emitError("allocation-in is committed by graph allocation only; "
+                       "set graph-allocation=true");
+      return signalPassFailure();
+    }
 
     // Stamp mode builds every block's search space on the block itself, so
     // the whole module has to be in the converted (linalg) form the space is

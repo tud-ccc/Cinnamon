@@ -1,4 +1,5 @@
 add_mlir_dialect_library(CinmTransforms
+    AbsorbStaticSlices.cpp
     AssignPlatformsPass.cpp
     InferTileSizesPass.cpp
     BufferizeCinm.cpp
@@ -13,6 +14,8 @@ add_mlir_dialect_library(CinmTransforms
     DecomposeGemmToGemv.cpp
     ExpandComputeScope.cpp
     GemvMinWrite.cpp
+    MergeHostBlocks.cpp
+    OutlineHostBlocks.cpp
     RelowerStandaloneOps.cpp
     SimplifyComputeSignatures.cpp
     SoftmaxToCinmPass.cpp

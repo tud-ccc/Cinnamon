@@ -18,6 +18,34 @@ def UPMEMDedupKernelsPass: Pass<"upmem-dedup-kernels", "ModuleOp"> {
   ];
 }
 
+def UpmemAsyncLaunchesPass : Pass<"upmem-async-launches"> {
+  let summary = "Issue DPU launches and transfers asynchronously, synced where the host needs them";
+  let description = [{
+    Marks every `upmem.wait_for`, `upmem.scatter_on_array`,
+    `upmem.gather_from_array` and `upmem.broadcast` with `upmem.async`: each
+    is then only issued on its DPU set's queue, which runs the set's
+    operations in issue order. For every set, an `upmem.sync` goes before
+    the first host op that reads a buffer its transfers in flight write,
+    writes a buffer they read, or operates on the set itself, and before the
+    end of each block.
+
+    Each sync is then moved as late as the ops after it allow: an op that
+    depends neither on the sync nor on what is carried along with it --
+    another set's launch, or host work independent of the results -- is
+    moved before it, so that it runs while the set works. Dependences are
+    memory effects under alias analysis, SSA uses and shared DPU sets; an op
+    with effects that cannot be described (a call) depends on everything.
+
+    Runs on host code with memref semantics, after bufferization.
+  }];
+  let options = [
+    Option<"noaliasArguments", "noalias-arguments", "bool", "false",
+           "Take distinct memref arguments of a function to be distinct "
+           "buffers, as when every caller passes separate allocations">,
+  ];
+  let dependentDialects = ["mlir::upmem::UPMEMDialect"];
+}
+
 def UpmemHoistLoadProgramsPass : Pass<"upmem-hoist-load-programs"> {
   let summary = "Load each DPU set's resident program once, where the set is allocated";
   let description = [{
@@ -53,6 +81,10 @@ def UpmemCoalesceLocalTransfersPass: Pass<"upmem-coalesce-local-transfers"> {
     between, so one read before the loop and one write after move the same
     data. That is what makes an output tile cheap under a reduction -- the
     reduction updates it every trip and only the final value has to travel.
+    A staging that is only read is hoisted the same way when nothing in the
+    loop writes its source or its buffer and the read precedes every other use
+    of the buffer -- the staging of a scalar operand fused into the kernel,
+    which the tiling places in the innermost loop using it.
 
     A staging whose tile advances by one step per trip is **coalesced**: the
     loop is split into a strip loop and a walk over the strip, and the transfer
@@ -70,6 +102,30 @@ def UpmemCoalesceLocalTransfersPass: Pass<"upmem-coalesce-local-transfers"> {
     "::mlir::cnm::CnmDialect",
     "::mlir::upmem::UPMEMDialect",
     "mlir::affine::AffineDialect",
+    "mlir::memref::MemRefDialect"
+  ];
+}
+
+def UpmemAlignLocalTransfersPass: Pass<"upmem-align-local-transfers"> {
+  let summary = "Move sub-granule MRAM data through the aligned granule holding it";
+  let description = [{
+    An MRAM DMA moves whole 8-byte granules between granule-aligned
+    addresses. A `upmem.local_transfer` whose MRAM side is shorter than a
+    granule, or starts inside one, and whose data lies within a single
+    granule -- one element of a small tile, staged per loop trip -- is
+    rewritten to move that granule through a granule-sized WRAM buffer: a
+    read takes the granule and copies the data out of it; a write reads the
+    granule, copies the data in and writes it back.
+
+    A write rewrites the bytes around the data too, so it is only rewritten
+    when no other tasklet writes them: the program has one tasklet, or the
+    buffer is indexed by the tasklet and each tasklet's slice is whole
+    granules. Every other sub-granule transfer is left as it is, for the C
+    translator to reject.
+  }];
+  let dependentDialects = [
+    "::mlir::upmem::UPMEMDialect",
+    "mlir::arith::ArithDialect",
     "mlir::memref::MemRefDialect"
   ];
 }
@@ -210,19 +266,19 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "host cost model: transfer-bound work gains ~nothing from the "
            "device, while the conjunction keeps compute-bound classes that "
            "merely scale poorly. 0 (default) only surfaces transfer_share "
-           "in profiles.csv">,
+           "in the allocation report">,
     Option<"profileRepair", "profile-repair", "bool", "true",
-           "Graph profiling only: lower-envelope repair of each class's cost "
-           "profile. A menu point whose pinned search measured worse than a "
-           "smaller point's incumbent takes that incumbent (config, cost, "
-           "residency) -- allocating R devices can always run the best "
-           "configuration found at any R' <= R and idle the rest -- so the "
-           "profile handed to the allocator is non-increasing by "
-           "construction and search-seed cliffs cannot reach it. "
-           "profiles.csv keeps the raw measurement in raw_cost_ms">,
+           "Graph profiling only: keep each class's cost profile to its "
+           "lower envelope. A menu point whose pinned search measured no "
+           "better than a smaller point is dropped, like an infeasible one: "
+           "allocating R devices can always run the best configuration found "
+           "at any R' < R and idle the rest, so it offers nothing the smaller "
+           "point does not. The profile handed to the allocator is strictly "
+           "decreasing by construction; the allocation report says which "
+           "point dominated each dropped one">,
     Option<"profileSeeds", "profile-seeds", "int", "1",
            "Graph allocation only: how many independent searches to run per "
-           "menu point, dumped to profile_seeds.csv as a measurement of how "
+           "menu point, recorded in the allocation report as a measurement of how "
            "much of a profile's shape is search noise. Diagnostic: the "
            "allocator is always handed the first seed's point, so raising "
            "this cannot change an allocation, only what is reported about "
@@ -279,7 +335,10 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
     Option<"dumpDir", "dump-dir", "std::string", "\"\"",
            "If non-empty, write a pool.csv file to this directory containing "
            "all candidate configurations, their observed costs, and "
-           "surrogate model statistics (mu, sigma, acq) after inference">,
+           "surrogate model statistics (mu, sigma, acq) after inference. "
+           "Under graph-allocation, also each graph's allocation report as "
+           "<graph>/allocation.json, with the searches' dumps under "
+           "<graph>/class_<i>/">,
     Option<"exhaustiveSearch", "exhaustive-search", "bool", "false",
            "Evaluate every valid configuration in the search space exhaustively "
            "instead of running Bayesian optimisation">,
@@ -365,6 +424,44 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "profiling menu prefers multiples of it (rank-sized sets keep "
            "host<->DPU transfers rank-parallel) but falls back to whatever "
            "divides the problem size when no such multiple does">,
+    Option<"screenMenuAgainstHost", "screen-menu", "bool", "true",
+           "Graph allocation only: before profiling a block, drop the DPU "
+           "counts whose roofline cannot beat the host's for that block, and "
+           "keep the block on the host when none can. The same comparison "
+           "the per-op offload gate makes, taken per DPU count and where the "
+           "counts the block admits are known">,
+    Option<"allowHostPlacement", "allow-host-placement", "bool", "true",
+           "Graph allocation only, with latency-objective: let the allocation "
+           "decide which blocks run on the host, by offering each class a "
+           "profile point that stays there. A block then falls back when the "
+           "DPUs it would take are worth more elsewhere, which a screen in "
+           "front of the solve cannot know">,
+    Option<"hostAchievedFraction", "host-achieved-fraction", "double", "0.64",
+           "Graph allocation only: the share of its roofline the host is "
+           "taken to achieve. Every host cost the allocation uses is the "
+           "roofline divided by it">,
+    Option<"maxMenuPoints", "max-menu-points", "int64_t", "16",
+           "Graph allocation only: the most DPU counts to profile per block "
+           "after the screen, thinned geometrically. 0 profiles every count "
+           "the screen leaves">,
+    Option<"allocationIn", "allocation-in", "std::string", "\"\"",
+           "Graph allocation only: a directory holding each graph's "
+           "allocation as <dir>/<graph>.json, committed instead of profiling "
+           "and solving. Per class, its groups: member indices, and either "
+           "on_host or a resource and the config to run there, laid out as in "
+           "the allocation report">,
+    Option<"allocationReportDir", "allocation-report", "std::string", "\"\"",
+           "Graph allocation only: a directory to write each graph's "
+           "allocation report to, as <dir>/<graph>.json: per block class its "
+           "operator, every candidate DPU count with its rooflines, the "
+           "screen's verdict, the searches and what became of the point, and "
+           "the groups the allocation gave it. Written as "
+           "<dump-dir>/<graph>/allocation.json anyway when dump-dir is set; "
+           "this is for the report without the per-search dumps">,
+    Option<"gateDryRun", "gate-dry-run", "bool", "false",
+           "Graph allocation only: stop after the menu screen, profiling "
+           "nothing. The allocation report then says what the screen decides "
+           "and what it saves; the program that comes out is all host">,
     Option<"allowFloatReassociation", "allow-float-reassociation", "bool",
            "false",
            "Permit distributing a floating-point reduction across the "
@@ -507,6 +604,94 @@ def UpmemAnnotateCostsPass
            "the two simulators can be cross-checked on the same program. "
            "Debugging aid; ignored by the opcount simulator, which builds no "
            "instruction-level program">,
+  ];
+}
+
+def UpmemRegisterTileLoopsPass
+    : Pass<"upmem-register-tile-loops", "::mlir::upmem::DpuProgramOp"> {
+  let summary = "Unroll-and-jam a kernel's inner nests within a register budget";
+  let description = [{
+    Shapes each innermost loop nest of a DPU program for the DPU compiler's
+    register allocator, which is where a naively unrolled kernel loses most
+    of its time.
+
+    A DPU has 24 general registers, and its `mul_sl_sl` multiplies the signed
+    low bytes of two registers directly, so an `i8` operand costs exactly one
+    load whether it is read from its buffer or from a stack slot. Hoisting a
+    load out of a loop therefore only pays while the hoisted value stays in a
+    register. Unrolling the reduction loop of a `y[j] += A[j][k] * x[k]` nest
+    makes every `x[k]` invariant in the `j` loop, and LLVM's loop-invariant
+    code motion hoists all of them -- with no register-pressure check, and
+    with no way to undo it, since a load is not rematerializable -- so all but
+    a dozen are spilled to the stack, which is WRAM, and read back on every
+    trip. Leaving the loads inside the loop in the MLIR changes nothing: LLVM
+    hoists them itself. Fully unrolling `j` does not help either: the
+    clustered loads still spill, because the DPU backend does not reorder
+    them toward their uses.
+
+    What removes the invariants is unroll-and-jam of `j` into `k`: each `x[k]`
+    is then loaded once and used by every jammed copy in the next few
+    instructions, and the only values live across the loop are the copies'
+    accumulators. The jam factor is chosen from a register budget: with `c`
+    loads per copy (accumulators and operands indexed by `j`) and `s` loads
+    shared between copies (indexed by `k` alone, or by neither loop), it is
+    the largest factor `f` with `f * c + s <= register-budget`, preferring one
+    that divides the trip count. A body that calls into the runtime library
+    -- a multiply wider than 16 bits, any integer division, any
+    floating-point arithmetic -- gets `call-register-budget` instead of
+    `register-budget`, for its jam and its unroll: what is live across a call
+    must sit in one of the 8 callee-saved registers. The jam is applied only
+    where each copy
+    provably touches locations of its own: the parent loop's body holds
+    nothing but the inner loop, index arithmetic, and loads and stores, and
+    every buffer written in it -- inside the inner loop or around it, as an
+    accumulator promoted to the inner loop's iteration arguments is -- is
+    accessed only at the written address, which moves with the parent's
+    induction variable.
+
+    The innermost loop is then unrolled fully when the trip count is at most
+    `max-unroll` or the unrolled body stays within `max-body-ops`, and
+    otherwise by a factor in [`min-unroll`, `max-unroll`], preferring one
+    dividing the trip count. Beyond a factor of 8 the per-element cost is
+    within a few percent of a full unroll at a fraction of the IRAM, but a
+    short rolled loop still costs an elementwise kernel a few percent on the
+    hardware, hence the full unroll up to `max-unroll`. `max-body-ops`
+    bounds the unrolled body's size in ops.
+
+    A loop whose inner loop was unrolled fully is unrolled fully in turn,
+    outward, as long as its body is arithmetic, loads and stores only, it
+    fits `max-body-ops`, and it hoists no more operands into the loop around
+    it than the register budget. A kernel's buffers are stack arrays, so
+    straight-line code addresses them at constant offsets from the stack
+    pointer, where a loop computes every address and keeps its induction
+    variable and the buffer bases in registers. The walk stops at a loop
+    that transfers data.
+
+    Every loop left in the program is then marked `upmem.nounroll`, which the
+    C translator turns into `#pragma clang loop unroll(disable)`. The DPU
+    compiler's unroller has no register model either: unrolling a short loop
+    left around the shaped body re-creates the hoisted, spilled operands, or
+    the jam without its budget.
+  }];
+  let dependentDialects = [
+    "::mlir::upmem::UPMEMDialect",
+    "mlir::affine::AffineDialect",
+    "mlir::arith::ArithDialect"
+  ];
+  let options = [
+    Option<"registerBudget", "register-budget", "unsigned", "12",
+           "Registers the jammed body may keep live: the copies' accumulators "
+           "and per-copy operands plus the operands shared between copies">,
+    Option<"callRegisterBudget", "call-register-budget", "unsigned", "8",
+           "The register budget of a body that calls into the runtime library "
+           "(wide multiplies, divisions, floating point): the callee-saved "
+           "registers, the only ones a value keeps across a call">,
+    Option<"minUnroll", "min-unroll", "unsigned", "8",
+           "Smallest unroll factor for an innermost loop longer than max-unroll">,
+    Option<"maxUnroll", "max-unroll", "unsigned", "16",
+           "Largest unroll factor; a loop this short or shorter is fully unrolled">,
+    Option<"maxBodyOps", "max-body-ops", "unsigned", "1024",
+           "Bound on the unrolled innermost body, in ops">,
   ];
 }
 

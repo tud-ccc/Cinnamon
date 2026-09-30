@@ -148,3 +148,58 @@ func.func @hoists_an_invariant_tile(%wg: !cnm.workgroup<#upmem.array<2048x8, <ty
   }
   return
 }
+
+// -----
+
+// A scalar operand staged in the innermost loop that uses it, as the tiling
+// places a scalar fused into the kernel: the same bytes are read on every
+// trip, so the staging leaves both loops.
+
+#upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
+
+// CHECK-LABEL: @hoists_an_invariant_read
+func.func @hoists_an_invariant_read(%wg: !cnm.workgroup<#upmem.array<2048x8, <type = v1A, dpus = 2048, tasklets = 24>>>,
+                                    %s: !cnm.buffer<i32 on #upmem.array<2048x8, <type = v1A, dpus = 2048, tasklets = 24>>, #upmem.mram>,
+                                    %out: !cnm.buffer<4x16xi32 on #upmem.array<2048x8, <type = v1A, dpus = 2048, tasklets = 24>>, #upmem.mram>) {
+  cnm.launch %wg ins(%argS = %s : <i32, #upmem.mram>) outs(%argOut = %out : <4x16xi32, #upmem.mram>) on !cnm.workgroup<#upmem.array<2048x8, <type = v1A, dpus = 2048, tasklets = 24>>> {
+    // CHECK:      %[[BUF:.*]] = memref.alloca() : memref<i32, #upmem.wram>
+    // CHECK-NEXT: cnm.local_transfer %{{.*}} into %[[BUF]]
+    // CHECK-NEXT: affine.for
+    // CHECK-NOT:    cnm.local_transfer
+    // CHECK:        memref.load %[[BUF]][]
+    affine.for %i = 0 to 4 {
+      affine.for %j = 0 to 16 {
+        %staged = memref.alloca() : memref<i32, #upmem.wram>
+        cnm.local_transfer %argS into %staged : memref<i32, #upmem.mram> to memref<i32, #upmem.wram>
+        %v = memref.load %staged[] : memref<i32, #upmem.wram>
+        memref.store %v, %argOut[%i, %j] : memref<4x16xi32, #upmem.mram>
+      }
+    }
+  }
+  return
+}
+
+// -----
+
+// The loop also writes the staged source: each trip may read different bytes,
+// so the read stays.
+
+#upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
+
+// CHECK-LABEL: @keeps_a_read_of_a_written_source
+func.func @keeps_a_read_of_a_written_source(%wg: !cnm.workgroup<#upmem.array<2048x8, <type = v1A, dpus = 2048, tasklets = 24>>>,
+                                            %s: !cnm.buffer<i32 on #upmem.array<2048x8, <type = v1A, dpus = 2048, tasklets = 24>>, #upmem.mram>) {
+  cnm.launch %wg outs(%argS = %s : <i32, #upmem.mram>) on !cnm.workgroup<#upmem.array<2048x8, <type = v1A, dpus = 2048, tasklets = 24>>> {
+    // CHECK:      affine.for
+    // CHECK-NEXT:   memref.alloca
+    // CHECK-NEXT:   cnm.local_transfer
+    affine.for %i = 0 to 4 {
+      %staged = memref.alloca() : memref<i32, #upmem.wram>
+      cnm.local_transfer %argS into %staged : memref<i32, #upmem.mram> to memref<i32, #upmem.wram>
+      %v = memref.load %staged[] : memref<i32, #upmem.wram>
+      %w = arith.addi %v, %v : i32
+      memref.store %w, %argS[] : memref<i32, #upmem.mram>
+    }
+  }
+  return
+}

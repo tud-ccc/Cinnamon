@@ -255,6 +255,19 @@ int64_t UpmemAcceleratorAttr::bufferSizeOfLeaf() const {
   return getWramLevel().getSizeInBytes() / getNumTaskletsPerDpu();
 }
 
+/// Defined in UPMEMOffloadRoofline.cpp.
+namespace mlir::upmem {
+cinm::OffloadVerdict evaluateUpmemOffload(Operation *op,
+                                          UpmemPlatformAttr platform,
+                                          const cinm::HostModel &host);
+}
+
+cinm::OffloadVerdict
+UpmemPlatformAttr::evaluateOffload(Operation *op,
+                                   const cinm::HostModel &host) const {
+  return mlir::upmem::evaluateUpmemOffload(op, *this, host);
+}
+
 bool UpmemPlatformAttr::isOffloadingTarget(Operation *op) const {
   if (isa<cinm::BatchGemmOp, cinm::BatchGemvOp, cinm::GemmOp, cinm::GemvOp,
           cinm::ReduceOp, cinm::ElementwiseOp>(op))
