@@ -1,0 +1,27 @@
+{
+  "graph": "infer_looped",
+  "classes": [
+    {
+      "class": 0,
+      "groups": [
+        {
+          "members": [
+            0
+          ],
+          "on_host": true
+        }
+      ]
+    },
+    {
+      "class": 1,
+      "groups": [
+        {
+          "members": [
+            0
+          ],
+          "on_host": true
+        }
+      ]
+    }
+  ]
+}

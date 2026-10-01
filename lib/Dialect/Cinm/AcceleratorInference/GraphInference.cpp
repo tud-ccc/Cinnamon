@@ -132,9 +132,10 @@ std::string blockSignature(ComputeBlockOp block) {
 
 /// The nodes of `nodeOfBlock` whose results `block` consumes, directly or
 /// through ops the graph does not own (a slice of a producer's result, a
-/// reshape, a host-side merge). Tracing back through those intermediates is
-/// what makes the edge set reflect the dataflow rather than the syntax.
-/// Sorted and deduplicated.
+/// reshape, a host-side merge, a loop, whose result is what its body
+/// yields). Tracing back through those intermediates is what makes the edge
+/// set reflect the dataflow rather than the syntax. Sorted and
+/// deduplicated.
 SmallVector<unsigned>
 producingNodes(ComputeBlockOp block,
                const DenseMap<Operation *, unsigned> &nodeOfBlock) {
@@ -154,6 +155,12 @@ producingNodes(ComputeBlockOp block,
       continue; // a graph node: an edge, not something to see through
     }
     llvm::append_range(worklist, def->getOperands());
+    if (auto loop = dyn_cast<LoopLikeOpInterface>(def)) {
+      ValueRange yielded = loop.getYieldedValues();
+      unsigned index = cast<OpResult>(value).getResultNumber();
+      if (index < yielded.size())
+        worklist.push_back(yielded[index]);
+    }
   }
   llvm::sort(preds);
   preds.erase(llvm::unique(preds), preds.end());
