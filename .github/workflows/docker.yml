@@ -3,7 +3,7 @@ run-name: 'Tutorial image: ${{ github.event.head_commit.message }}'
 on:
   workflow_dispatch:
   push:
-    branches: [tutorial2]
+    branches: [dse-tutorial]
     paths:
       - docker/tutorial/**
       - .dockerignore
