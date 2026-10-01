@@ -19,7 +19,9 @@ doit connects stages.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import fcntl
 import hashlib
 import os
 import pathlib
@@ -182,8 +184,9 @@ def bench_one_config(
     warmups: int = 1,
     bench_marker: pathlib.Path | None = None,
     env: dict[str, str] | None = None,
+    lock: pathlib.Path | None = None,
 ) -> bool:
-    """Never raises, like compile_one: a config whose compile failed
+    """Never raises but for `lock`, like compile_one: a config whose compile failed
     (compile.done marker present, no bench_* binary) is skipped rather than
     treated as a hard doit failure, so it doesn't block sibling configs'
     bench tasks. The bench.done marker is always touched, even when the
@@ -193,7 +196,70 @@ def bench_one_config(
 
     `env` is set for the duration of the run and restored after: the RQ4
     stack benches under UPMEM_RT_CACHE=1 (the runtime residency cache), and
-    nothing else must inherit that."""
+    nothing else must inherit that.
+
+    `lock`, a file held for the run: if another process holds it -- another
+    doit benching on the same hardware, which doit's `exclusive` does not
+    see -- this raises at once, before anything is run or marked, rather
+    than waiting for it."""
+    with _held(lock, config):
+        return _bench_env(
+            config,
+            roots,
+            iters=iters,
+            processes=processes,
+            warmups=warmups,
+            bench_marker=bench_marker,
+            env=env,
+        )
+
+
+class BenchLockHeld(RuntimeError):
+    """Another process is benching on the same hardware."""
+
+
+@contextlib.contextmanager
+def _held(lock: pathlib.Path | None, config: compile_run.Config):
+    """An exclusive flock on `lock` for the duration, or BenchLockHeld. The
+    kernel drops it when its holder exits, so there is nothing stale to
+    clean up after a crash."""
+    if lock is None:
+        yield
+        return
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock, "a+") as fh:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            fh.seek(0)
+            holder = fh.read().strip() or "unknown"
+            raise BenchLockHeld(
+                f"{lock} is held by {holder}: another process is benching on this"
+                f" hardware; not benching {config.system} {config.fn_name}"
+                f" {config.label}"
+            ) from None
+        fh.seek(0)
+        fh.truncate()
+        fh.write(
+            f"pid {os.getpid()} ({config.system} {config.fn_name} {config.label})\n"
+        )
+        fh.flush()
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def _bench_env(
+    config: compile_run.Config,
+    roots: MeasureRoots,
+    *,
+    iters: int,
+    processes: int,
+    warmups: int,
+    bench_marker: pathlib.Path | None,
+    env: dict[str, str] | None,
+) -> bool:
     saved: dict[str, str | None] = {}
     for k, v in (env or {}).items():
         saved[k] = os.environ.get(k)
