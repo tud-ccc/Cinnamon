@@ -102,8 +102,25 @@ CXX = "$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-clang++"
 # system's, which are built against a newer glibc than this compiler targets.
 CMAKE_PREFIX_PATH = "$CONDA_PREFIX"
 
+# What the tutorial image runs the notebooks on, and nothing else: no compiler,
+# no torch. cinm-opt is built in the default environment and only carries its
+# libstdc++ over.
+[feature.notebook.dependencies]
+python = "3.12.*"
+
+[feature.notebook.pypi-dependencies]
+notebook = "*"
+ipywidgets = "*"
+numpy = "*"
+pandas = "*"
+matplotlib = "*"
+pygments = "*"
+# Binder installs the tutorial's own package into the environment
+pip = "*"
+
 [environments]
 default = { features = ["toolchain"], solve-group = "default" }
+notebook = { features = ["notebook"], no-default-feature = true }
 # The same tools and Python, with the system compiler
 host = { features = [], solve-group = "default" }
 
