@@ -133,9 +133,10 @@ std::string blockSignature(ComputeBlockOp block) {
 /// The nodes of `nodeOfBlock` whose results `block` consumes, directly or
 /// through ops the graph does not own (a slice of a producer's result, a
 /// reshape, a host-side merge, a loop, whose result is what its body
-/// yields). Tracing back through those intermediates is what makes the edge
-/// set reflect the dataflow rather than the syntax. Sorted and
-/// deduplicated.
+/// yields, and whose iteration argument is its initial value -- from one
+/// iteration to the next the graph orders a loop's nodes itself). Tracing
+/// back through those intermediates is what makes the edge set reflect the
+/// dataflow rather than the syntax. Sorted and deduplicated.
 SmallVector<unsigned>
 producingNodes(ComputeBlockOp block,
                const DenseMap<Operation *, unsigned> &nodeOfBlock) {
@@ -147,8 +148,16 @@ producingNodes(ComputeBlockOp block,
     if (!seen.insert(value).second)
       continue;
     Operation *def = value.getDefiningOp();
-    if (!def) // a block argument: outside the graph, nothing to trace
+    if (!def) {
+      // A loop's iteration argument: its initial value. Any other block
+      // argument is outside the graph, nothing to trace.
+      auto arg = cast<BlockArgument>(value);
+      if (auto loop = dyn_cast_or_null<LoopLikeOpInterface>(
+              arg.getOwner()->getParentOp()))
+        if (OpOperand *init = loop.getTiedLoopInit(arg))
+          worklist.push_back(init->get());
       continue;
+    }
     auto known = nodeOfBlock.find(def);
     if (known != nodeOfBlock.end()) {
       preds.push_back(known->second);

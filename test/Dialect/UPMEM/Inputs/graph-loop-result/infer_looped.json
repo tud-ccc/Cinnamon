@@ -22,6 +22,17 @@
           "on_host": true
         }
       ]
+    },
+    {
+      "class": 2,
+      "groups": [
+        {
+          "members": [
+            0
+          ],
+          "on_host": true
+        }
+      ]
     }
   ]
 }
