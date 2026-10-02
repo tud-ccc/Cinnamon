@@ -4,6 +4,14 @@ indicators/2.3
 gtest/1.17.0
 gecode/6.4.0
 
+[options]
+# OpenBLAS is linked statically into cinm-opt, and by default it is tuned to
+# the CPU that compiles it: a binary built on one machine then dies with an
+# illegal instruction on another (GitHub's AVX-512 runners vs. a laptop). With
+# dynamic_arch it carries kernels for every x86-64 generation and picks one at
+# run time.
+openblas/*:dynamic_arch=True
+
 [generators]
 CMakeDeps
 CMakeToolchain
