@@ -3,7 +3,7 @@
 #upmem = #upmem.array<1024x1, #upmem_platform>
 
 // Affine maps emitted for scatter/gather index computations.
-// CHECK-DAG: #[[MAP_ROW_MOD8:[^ ]*]] = affine_map<(d0, d1, d2) -> (d0 mod 8, d2)>
+// CHECK-DAG: #[[MAP_ROW_A:[^ ]*]] = affine_map<(d0, d1, d2) -> (d0 floordiv 128, d2)>
 // CHECK-DAG: #[[MAP_ROW_SUM:[^ ]*]] = affine_map<(d0, d1, d2) -> (d0 mod 128, d2)>
 // CHECK-DAG: #[[MAP_ROW_COL:[^ ]*]] = affine_map<(d0, d1) -> (d0 floordiv 128, d0 mod 128)>
 // CHECK-DAG: #[[MAP_ID:[^ ]*]] = affine_map<(d0) -> (d0)>
@@ -19,7 +19,7 @@
 // CHECK: %[[BUF_A:.*]] = cnm.declare_buffer() for %[[WG]] : !cnm.buffer<1024xi32 on {{.*}}>
 // CHECK: %[[BUF_B:.*]] = cnm.declare_buffer() for %[[WG]] : !cnm.buffer<1024xi32 on {{.*}}>
 // CHECK: %[[BUF_C:.*]] = cnm.declare_buffer() for %[[WG]] : !cnm.buffer<i32 on {{.*}}>
-// CHECK: cnm.scatter %arg0 into %[[BUF_A]][#[[MAP_ROW_MOD8]]] of %[[WG]] : memref<8x1024xi32> into !cnm.buffer<1024xi32 on {{.*}}>
+// CHECK: cnm.scatter %arg0 into %[[BUF_A]][#[[MAP_ROW_A]]] of %[[WG]] : memref<8x1024xi32> into !cnm.buffer<1024xi32 on {{.*}}>
 // CHECK: cnm.scatter %[[ALLOC_T]] into %[[BUF_B]][#[[MAP_ROW_SUM]]] of %[[WG]] : memref<128x1024xi32> into !cnm.buffer<1024xi32 on {{.*}}>
 // CHECK: cnm.scatter %[[ALLOC]] into %[[BUF_C]][#[[MAP_ROW_COL]]] of %[[WG]] : memref<8x128xi32> into !cnm.buffer<i32 on {{.*}}>
 // CHECK: cnm.launch %[[WG]] ins(%[[K_A:[^ ]*]] = %[[BUF_A]] : <1024xi32>, %[[K_B:[^ ]*]] = %[[BUF_B]] : <1024xi32>) outs(%[[K_C:[^ ]*]] = %[[BUF_C]] : <i32>) on {{.*}} {

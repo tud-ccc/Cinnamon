@@ -800,7 +800,7 @@ LogicalResult computeScatterMapForGemm(cnm::BufferType bufferTyAB,
         mlir::linearizeIndices(ctx, bufferTyAB.getWorkgroupShape());
 
     scatterA = mlir::simplifyAffineMapWithBounds(
-        AffineMap::get(numInputs, 0, linearInput % rowsA),
+        AffineMap::get(numInputs, 0, linearInput.floorDiv(colsB)),
         bufferTyAB.getWorkgroupShape());
 
     scatterB = mlir::simplifyAffineMapWithBounds(
