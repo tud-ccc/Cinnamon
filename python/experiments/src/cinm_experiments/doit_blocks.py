@@ -218,11 +218,40 @@ class BenchLockHeld(RuntimeError):
     """Another process is benching on the same hardware."""
 
 
+class GovernorNotPerformance(RuntimeError):
+    """The CPU frequency governor is not `performance`."""
+
+
+_GOVERNORS = pathlib.Path("/sys/devices/system/cpu")
+
+
+def check_governor() -> None:
+    """GovernorNotPerformance unless every core's governor is `performance`.
+
+    Under `powersave` (what a reboot leaves, and what nothing on the bench
+    machine sets back) host-side work -- program loads, gathers, DPU
+    allocations -- runs 1.5-2x slower while kernels are untouched, so a
+    measurement taken then compares with nothing taken otherwise. Setting
+    it needs root: echo performance into every scaling_governor."""
+    others = {}
+    for path in _GOVERNORS.glob("cpu[0-9]*/cpufreq/scaling_governor"):
+        governor = path.read_text().strip()
+        if governor != "performance":
+            others.setdefault(governor, []).append(path.parent.parent.name)
+    if others:
+        where = "; ".join(f"{g} on {len(c)} cpus" for g, c in sorted(others.items()))
+        raise GovernorNotPerformance(
+            f"CPU frequency governor is not `performance` ({where}): not benching"
+        )
+
+
 @contextlib.contextmanager
 def _held(lock: pathlib.Path | None, config: compile_run.Config):
-    """An exclusive flock on `lock` for the duration, or BenchLockHeld. The
-    kernel drops it when its holder exits, so there is nothing stale to
-    clean up after a crash."""
+    """An exclusive flock on `lock` for the duration, or BenchLockHeld; and
+    GovernorNotPerformance first, lock or not. The kernel drops the flock
+    when its holder exits, so there is nothing stale to clean up after a
+    crash."""
+    check_governor()
     if lock is None:
         yield
         return
