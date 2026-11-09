@@ -399,7 +399,16 @@ def discover_compiled(
 
 
 def is_dpu_allocation_error(error: str) -> bool:
-    return "allocation error" in error.lower()
+    """A transient failure to get DPUs -- the SDK's allocation error, or a
+    rank refusing its internal state reset at allocation -- as opposed to a
+    failure of the program run on them. Worth one immediate retry, in a
+    fresh process."""
+    text = error.lower()
+    return (
+        "allocation error" in text
+        or "internal state reset failed" in text
+        or "dpu error (internal error)" in text
+    )
 
 
 def compile_configs(
