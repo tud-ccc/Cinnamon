@@ -111,6 +111,37 @@
 
 // -----
 
+// The i32 gemv over 4 rows of 16. The jam's budget fits 2 copies (two
+// registers each, plus x[k]), which would leave j 2 trips for the full unroll
+// of k to hoist its 16 x[k] out of, so that jam is refused. Across the
+// multiplies, though, a jam over all 4 rows holds only the 4 accumulators and
+// the x[k] they share, 5 of the 8 callee-saved registers: A[j][k] goes
+// straight into its call. So j is jammed by 4, and k unrolled fully after it:
+// each x[k] is loaded once and consumed by the 4 rows in turn.
+//
+// CHECK-LABEL: upmem.dpu_program @gemv_i32_four_rows
+//   CHECK-NOT:   affine.for
+// CHECK-COUNT-64: arith.muli
+//   CHECK-NOT:   arith.muli
+  upmem.dpu_program @gemv_i32_four_rows() tasklets(1) {
+    %A = memref.alloca() : memref<4x16xi32, #upmem.wram>
+    %x = memref.alloca() : memref<16xi32, #upmem.wram>
+    %y = memref.alloca() : memref<4xi32, #upmem.wram>
+    affine.for %j = 0 to 4 {
+      affine.for %k = 0 to 16 {
+        %a = affine.load %A[%j, %k] : memref<4x16xi32, #upmem.wram>
+        %xv = affine.load %x[%k] : memref<16xi32, #upmem.wram>
+        %acc = affine.load %y[%j] : memref<4xi32, #upmem.wram>
+        %p = arith.muli %a, %xv : i32
+        %s = arith.addi %acc, %p : i32
+        affine.store %s, %y[%j] : memref<4xi32, #upmem.wram>
+      }
+    }
+    upmem.return
+  }
+
+// -----
+
 // The same gemv with the accumulator promoted to the reduction loop's
 // iteration arguments, as scalar replacement leaves it: y[j] is loaded before
 // the inner loop and stored after it. Each copy's load and store are at its

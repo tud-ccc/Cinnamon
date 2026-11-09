@@ -640,8 +640,13 @@ def UpmemRegisterTileLoopsPass
     -- a multiply wider than 16 bits, any integer division, any
     floating-point arithmetic -- gets `call-register-budget` instead of
     `register-budget`, for its jam and its unroll: what is live across a call
-    must sit in one of the 8 callee-saved registers. The jam is applied only
-    where each copy
+    must sit in one of the 8 callee-saved registers. Across calls, a jam that
+    would leave the parent loop trips for a full unroll of the inner loop to
+    hoist its shared operands out of is replaced by a jam over all of the
+    parent's trips when that fits: what such a jam holds across a call is
+    each copy's accumulators and the shared operands once, the operands
+    indexed by both loops going straight into their calls. The jam is applied
+    only where each copy
     provably touches locations of its own: the parent loop's body holds
     nothing but the inner loop, index arithmetic, and loads and stores, and
     every buffer written in it -- inside the inner loop or around it, as an

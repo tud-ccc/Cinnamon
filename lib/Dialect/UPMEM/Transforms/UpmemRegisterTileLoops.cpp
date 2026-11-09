@@ -270,6 +270,42 @@ static uint64_t chooseJamFactor(AffineForOp parent, AffineForOp inner,
   return maxFactor;
 }
 
+/// Whether a jam of `inner` over all of `parent`'s trips keeps what its body
+/// holds across calls within `budget`: per copy, the inner loop's iteration
+/// arguments and the loads addressed by the parent alone (an accumulator,
+/// read and written on every trip), and once, the distinct loads not
+/// addressed by the parent (the operands the copies share). A load addressed
+/// by both loops is not counted: each copy's goes straight into its own call
+/// as an argument. chooseJamFactor counts it against every copy, which suits
+/// a body without calls, whose operands all compete for registers at once;
+/// across calls it keeps a 4-row tile of a 32-bit gemv from being jammed
+/// (4 x 2 + 1 > 8) when what is live across each multiply is the 4
+/// accumulators and the shared x[k] (4 + 1).
+static bool fullJamFitsAcrossCalls(AffineForOp parent, AffineForOp inner,
+                                   unsigned budget) {
+  std::optional<uint64_t> trip = affine::getConstantTripCount(parent);
+  if (!trip)
+    return false;
+  Value parentIV = parent.getInductionVar();
+  Value innerIV = inner.getInductionVar();
+  uint64_t perCopy = inner.getNumIterOperands();
+  SmallVector<Access> shared;
+  inner.getBody()->walk([&](Operation *op) {
+    std::optional<Access> access = Access::of(op);
+    if (!access || access->isStore)
+      return;
+    if (access->dependsOn(parentIV)) {
+      if (!access->dependsOn(innerIV))
+        ++perCopy;
+      return;
+    }
+    if (llvm::none_of(
+            shared, [&](const Access &a) { return a.sameAddressAs(*access); }))
+      shared.push_back(*access);
+  });
+  return *trip * perCopy + shared.size() <= budget;
+}
+
 /// The allocation or block argument `v` is a view of.
 static Value viewRoot(Value v) {
   while (auto view = v.getDefiningOp<ViewLikeOpInterface>())
@@ -413,13 +449,23 @@ struct UpmemRegisterTileLoopsPass
       // callee-saved registers. gemv_512MB jammed by 2 over a 32-bit
       // multiply, its 16 hoisted vector values spilled, ran 6% slower than
       // unjammed. A jam over all of the parent's trips leaves nothing to
-      // hoist into, and pays: mtv_256MB unjammed ran 9% slower.
+      // hoist into, and pays: mtv_256MB unjammed ran 9% slower. It is taken
+      // instead when what it keeps live across the calls fits: left
+      // unjammed, the parent is unrolled fully below once the inner loop
+      // is, and its copies' loads of the shared operands are merged after
+      // this pass -- the same jam without its order, every shared value
+      // held from the first copy's use to the last's. mtv_512MB's 4-row
+      // tile, so merged, kept its 16 vector values on the stack and ran
+      // 3.4% slower than the 2-row tile jammed over both rows.
       std::optional<uint64_t> parentTrip = affine::getConstantTripCount(parent);
       std::optional<uint64_t> innerTrip = affine::getConstantTripCount(inner);
       if (bodyMakesCalls(inner) && parentTrip && factor < *parentTrip &&
           (!innerTrip ||
-           *innerTrip * invariantLoadsAfterFullUnroll(inner) > budget))
-        continue;
+           *innerTrip * invariantLoadsAfterFullUnroll(inner) > budget)) {
+        if (!fullJamFitsAcrossCalls(parent, inner, budget))
+          continue;
+        factor = *parentTrip;
+      }
       LLVM_DEBUG(llvm::dbgs()
                  << "unroll-and-jam by " << factor << ": " << parent << "\n");
       if (failed(affine::loopUnrollJamByFactor(parent, factor)))
