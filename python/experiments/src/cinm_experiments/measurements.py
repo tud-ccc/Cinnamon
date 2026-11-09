@@ -450,7 +450,9 @@ def _charged_array_scatter(df: pd.DataFrame) -> pd.DataFrame:
     return arrays.drop(index=_amortizable_index(df), errors="ignore")
 
 
-def charged_array_scatter_ms(output_dir: Union[pathlib.Path, RunResult]) -> float:
+def charged_array_scatter_ms(
+    output_dir: Union[pathlib.Path, RunResult], drop_first: bool = False
+) -> float:
     """Median per-iteration ms of _charged_array_scatter in scatter.csv, 0.0
     when every array scatter is already amortized. This is the term the
     assemble layer moves between the two timing conventions on the
@@ -458,6 +460,7 @@ def charged_array_scatter_ms(output_dir: Union[pathlib.Path, RunResult]) -> floa
     for t, df in _tables(output_dir):
         if t != "scatter":
             continue
+        df = _iters(df, drop_first)
         rows = _charged_array_scatter(df)
         if rows.empty:
             return 0.0
@@ -467,13 +470,16 @@ def charged_array_scatter_ms(output_dir: Union[pathlib.Path, RunResult]) -> floa
     return 0.0
 
 
-def charged_array_scatter_bytes(output_dir: Union[pathlib.Path, RunResult]) -> float:
+def charged_array_scatter_bytes(
+    output_dir: Union[pathlib.Path, RunResult], drop_first: bool = False
+) -> float:
     """Median per-iteration wire bytes of _charged_array_scatter in
     scatter.csv, counted like amortizable_bytes (per DPU reached), so the
     two compose into one excluded-bytes figure."""
     for t, df in _tables(output_dir):
         if t != "scatter":
             continue
+        df = _iters(df, drop_first)
         rows = _charged_array_scatter(df)
         if rows.empty:
             return 0.0
@@ -481,6 +487,60 @@ def charged_array_scatter_bytes(output_dir: Union[pathlib.Path, RunResult]) -> f
         series = wire.groupby(rows["iteration"]).sum()
         iterations = df["iteration"].unique()
         return _over_iterations(series.reindex(iterations).fillna(0))
+    return 0.0
+
+
+def kept_resident(output_dir: Union[pathlib.Path, RunResult]) -> bool:
+    """Whether the run kept its DPU set across iterations -- benched under
+    the runtime residency cache (UPMEM_RT_CACHE=1) -- read off its data: it
+    allocated in its warm-up iterations only. Such a run's timed iterations
+    are the steady state, and its one-time costs (alloc, load, the static
+    transfers) appear in the warm-ups alone, so it is read with
+    drop_first=True and its amortizable transfer with
+    warmup_amortizable_ms."""
+    for t, df in _tables(output_dir):
+        if t != "alloc":
+            continue
+        if df.empty:
+            return False
+        if "warmup" in df.columns:
+            return bool((df["warmup"] == 1).all())
+        return bool((df["iteration"] == 0).all()) and _has_later_iterations(output_dir)
+    return False
+
+
+def _has_later_iterations(output_dir: Union[pathlib.Path, RunResult]) -> bool:
+    for t, df in _tables(output_dir):
+        if t == "total":
+            return bool((df["iteration"] > 0).any())
+    return False
+
+
+def warmup_amortizable_ms(
+    output_dir: Union[pathlib.Path, RunResult], csv_type: str
+) -> float:
+    """amortizable_time_ms for a run that kept its DPU set (kept_resident):
+    the median over the iterations that made the amortizable transfer --
+    each process's warm-up, the only call that paid it -- rather than over
+    every iteration, most of which had nothing to move. 0.0 when there is
+    nothing to amortize."""
+    for t, df in _tables(output_dir):
+        if t != csv_type:
+            continue
+        series = amortizable_ns(df)
+        return 0.0 if series.empty else _over_iterations(series) / 1e6
+    return 0.0
+
+
+def warmup_amortizable_bytes(
+    output_dir: Union[pathlib.Path, RunResult], csv_type: str
+) -> float:
+    """warmup_amortizable_ms's bytes, counted like amortizable_bytes."""
+    for t, df in _tables(output_dir):
+        if t != csv_type:
+            continue
+        series = amortizable_bytes(df)
+        return 0.0 if series.empty else _over_iterations(series)
     return 0.0
 
 
