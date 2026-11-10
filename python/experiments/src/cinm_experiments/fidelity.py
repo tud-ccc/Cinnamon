@@ -27,24 +27,36 @@ _PREDICTED_TERM_CATEGORIES = {
 }
 
 
-def _predicted_terms(cost_csv: pathlib.Path) -> dict[str, float] | None:
+def _predicted_terms(
+    cost_csv: pathlib.Path, kept_resident: bool = False
+) -> dict[str, float] | None:
+    """Per term, the cost model's prediction for one timed iteration of a
+    run that re-allocated every call, or, with `kept_resident`, of one that
+    kept its DPU set (measurements.kept_resident)."""
     if not cost_csv.exists():
         return None
     df = pd.read_csv(cost_csv)
-    terms = {
-        term: float(df.loc[df["category"].isin(cats), "cost_ms"].sum())
-        for term, cats in _PREDICTED_TERM_CATEGORIES.items()
-    }
-    # combined drops the cost model's `excluded` rows (transfers of data
-    # pinned on the device across inferences, see SimCost) to match the
-    # measured combined, which is net_time_ms -- it subtracts the runtime rows
-    # of those same transfers. The transfer term keeps them, because the
-    # measured transfer term is the raw scatter+gather time; the asymmetry is
-    # the measured side's, and predicting it is the point. Older cost.csvs
-    # have no such column and nothing to drop.
+    # The cost model's `excluded` rows are transfers of data pinned on the
+    # device across inferences (see SimCost). combined drops them to match
+    # the measured combined, which is net_time_ms -- it subtracts the runtime
+    # rows of those same transfers. The transfer term keeps them when every
+    # call re-sent that data: the measured transfer term is then the raw
+    # scatter+gather time, the asymmetry is the measured side's, and
+    # predicting it is the point. A run that kept its DPU set sent them once,
+    # in its warm-up, so its timed transfers are the charged ones alone.
+    # Older cost.csvs have no such column and nothing to drop.
     charged = (
         df if "excluded" not in df.columns else df.loc[~df["excluded"].astype(bool)]
     )
+    transfers = charged if kept_resident else df
+    terms = {
+        term: float(
+            (transfers if term == "transfer" else df)
+            .loc[lambda d: d["category"].isin(cats), "cost_ms"]
+            .sum()
+        )
+        for term, cats in _PREDICTED_TERM_CATEGORIES.items()
+    }
     terms["combined"] = float(charged["cost_ms"].sum())
     return terms
 
@@ -65,7 +77,9 @@ def _measured_terms(
 
     Each process's first iteration is a warmup and is left out: the first
     launch, the first touch of a host buffer and the program load all land
-    in it."""
+    in it. A run that kept its DPU set (measurements.kept_resident) made its
+    static scatters in those warm-ups alone, so its timed iterations hold no
+    amortizable transfer and its raw and charged terms coincide."""
     net = measurements.net_series_ms(output_dir, drop_first=True)
     if net is None or net.empty:
         return None
@@ -118,8 +132,11 @@ def config_rows(job: tuple[str, pathlib.Path, pathlib.Path]) -> list[dict]:
     job, none when either side is missing. A top-level function of one
     argument, so that a caller can map it over a process pool."""
     fn_name, compile_dir, config_dir = job
-    predicted = _predicted_terms(compile_dir / "ir" / "cost.csv")
     measured = _measured_terms(config_dir / "output")
+    predicted = _predicted_terms(
+        compile_dir / "ir" / "cost.csv",
+        kept_resident=measurements.kept_resident(config_dir / "output"),
+    )
     if predicted is None or measured is None:
         return []
     raw, charged, noise = measured
