@@ -213,6 +213,32 @@ def LocalTransferOp : Upmem_Op<"local_transfer"> {
 }
 
 def DpuResource : Resource<"DpuSetResource">;
+def NodeTimer : Resource<"NodeTimerResource">;
+
+// The bracket a timed node sits in: everything the host does for a device
+// node of a solved graph, from its first op to its last -- repacks,
+// transfers, launch, waits and the epilogue that reduces what it gathered --
+// recorded per execution as one row of the runtime's node table, under the
+// node's tag. Inserted by --upmem-time-compute-blocks.
+class NodeTimerOp<string mnemonic, string what>
+  : Upmem_Op<mnemonic, [MemoryEffects<[MemWrite<NodeTimer>]>]> {
+  let summary = what # " a timed device node";
+  let description = [{
+    `node` names the node: "node:<graph>:<class>:<member>", from its compute
+    block's `cinm.graph_alloc`. Lowered to a runtime call
+    (upmemrt_node_begin / upmemrt_node_end) taking it as a string.
+
+    ```mlir
+    upmem.node_begin "node:infer_m:4:0"
+    upmem.node_end "node:infer_m:4:0"
+    ```
+  }];
+  let arguments = (ins StrAttr:$node);
+  let assemblyFormat = "$node attr-dict";
+}
+
+def NodeBeginOp : NodeTimerOp<"node_begin", "start">;
+def NodeEndOp : NodeTimerOp<"node_end", "end">;
 
 // The transfer ops form one family at three levels of specificity, from most
 // to least general:

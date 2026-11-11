@@ -35,6 +35,15 @@ struct DpuSetResource : public SideEffects::Resource::Base<DpuSetResource> {
   StringRef getName() const override { return "<DPU set>"; }
 };
 
+/// The runtime's node timers (upmem.node_begin / upmem.node_end): an effect
+/// on it keeps the markers from being erased or merged, and touches no host
+/// memory and no DPU set, so nothing is ordered against it but the markers.
+struct NodeTimerResource
+    : public SideEffects::Resource::Base<NodeTimerResource> {
+  NodeTimerResource() = default;
+  StringRef getName() const override { return "<node timer>"; }
+};
+
 /// Unit attribute on a loop in a DPU program that the DPU compiler must not
 /// unroll: --upmem-register-tile-loops has already shaped it, and the C
 /// translator emits `#pragma clang loop unroll(disable)` before it.

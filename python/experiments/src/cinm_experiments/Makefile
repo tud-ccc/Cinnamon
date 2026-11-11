@@ -165,9 +165,19 @@ HOST_KERNEL_LDFLAGS ?=
 OUTLINE_PASS = $(if $(filter-out 0,$(HOST_OUTLINE)),--cinm-outline-host-blocks="unplaced=true outlined-file=$(IR_DIR)/$*.host.mlir manifest-file=$(IR_DIR)/$*.host.json",)
 HOST_OBJS = $(if $(filter-out 0,$(HOST_OUTLINE)),$(IR_DIR)/$(BENCH_FN).host.o $(HOST_KERNEL_OBJS),)
 
+# NODE_TIMERS=1 brackets every device node of a solved graph with node
+# timers (--upmem-time-compute-blocks), so that a run records each node's
+# whole time -- the host work around its transfers and launch included -- in
+# its node table. The brackets hold only where host code runs in program
+# order: time a build without ASYNC_LAUNCHES, whose pass moves host code
+# across them.
+NODE_TIMERS ?= 0
+TIME_PASS = $(if $(filter-out 0,$(NODE_TIMERS)),--upmem-time-compute-blocks,)
+
 LOWER_PIPELINE = $(OUTLINE_PASS) $(LOWER_PASSES)
 
 LOWER_PASSES = \
+    $(TIME_PASS) \
     --cinm-unwrap-compute-blocks \
     --upmem-dedup-kernels \
     --upmem-hoist-load-programs \

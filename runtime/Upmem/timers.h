@@ -20,8 +20,8 @@ void upmemrt_start_stat_collection(int iter);
 // Write one CSV file per kind of row -- {prefix}_scatter.csv,
 // {prefix}_gather.csv, {prefix}_launch.csv, {prefix}_free.csv,
 // {prefix}_alloc.csv, {prefix}_load.csv, {prefix}_copy.csv,
-// {prefix}_compact.csv and {prefix}_host.csv -- containing all rows collected
-// since program start.
+// {prefix}_compact.csv, {prefix}_host.csv and {prefix}_node.csv --
+// containing all rows collected since program start.
 void upmemrt_dump_stats(const char *prefix);
 
 // Internal: called by upmem_rt.c / memref_rt.cpp ────────────────────────────
@@ -57,6 +57,8 @@ void upmemrt_record_alloc(uint64_t elapsed_ns, uint32_t num_dpus);
 // load amortizes is a per-occurrence question (once per workload lifetime vs
 // once per operator switch -- see the paper's amortizability rule), so it
 // must never be folded into the alloc row the analysis blanket-subtracts.
+// The row also says whether a node bracket was open (`in_node`): a load
+// inside a node is already part of that node's row.
 void upmemrt_record_load(uint64_t elapsed_ns, uint32_t num_dpus);
 // Host-side memrefCopy calls (e.g. the strided repack copies feeding
 // upmem.scatter buffers) -- not a DPU-facing operation, hence no num_dpus.
@@ -77,7 +79,18 @@ void upmemrt_record_compact(uint64_t elapsed_ns, size_t bytes,
 // outlined function's symbol; stored by pointer, so a string literal.
 void upmemrt_record_host(uint64_t elapsed_ns, const char *function);
 
-#else // UPMEM_RT_STATS not defined ─────────────────────────────────────────
+#endif // UPMEM_RT_STATS
+
+// Called by the generated code (upmem.node_begin / upmem.node_end, see
+// --upmem-time-compute-blocks), so defined whether or not stats are
+// collected: one execution of a timed device node, recorded as a row of
+// {prefix}_node.csv (iteration, elapsed_ns, node). `node` names it,
+// "node:<graph>:<class>:<member>"; a string literal of the generated code,
+// stored by pointer. Brackets nest; an end must name the innermost open one.
+void upmemrt_node_begin(const char *node);
+void upmemrt_node_end(const char *node);
+
+#ifndef UPMEM_RT_STATS // ──────────────────────────────────────────────────
 
 static inline void upmemrt_start_stat_collection(int iter) { (void)iter; }
 static inline void upmemrt_dump_stats(const char *prefix) { (void)prefix; }

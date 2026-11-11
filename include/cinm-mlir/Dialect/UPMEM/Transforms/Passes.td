@@ -46,6 +46,27 @@ def UpmemAsyncLaunchesPass : Pass<"upmem-async-launches"> {
   let dependentDialects = ["mlir::upmem::UPMEMDialect"];
 }
 
+def UpmemTimeComputeBlocksPass : Pass<"upmem-time-compute-blocks"> {
+  let summary = "Bracket each device node of a solved graph with node timers";
+  let description = [{
+    Puts `upmem.node_begin` / `upmem.node_end` at the start and the end of
+    the body of every `cinm.compute_block` on the UPMEM accelerator that
+    carries `cinm.graph_alloc`, named "node:<graph>:<class>:<member>" from
+    it. At run time each execution of the node is then one row of the node
+    table: the whole node, the host work around its transfers and launch
+    included -- the repacks, the waits, the reduction of the partial results
+    it gathers -- which the transfer and launch rows alone leave out.
+
+    Run before `--cinm-unwrap-compute-blocks`, which is what removes the
+    blocks. The markers are ordered against nothing but each other, so a
+    pass that moves host code (`--upmem-async-launches`) can carry ops
+    across them: time a build whose host code stays in program order.
+  }];
+  let dependentDialects = [
+    "::mlir::upmem::UPMEMDialect"
+  ];
+}
+
 def UpmemHoistLoadProgramsPass : Pass<"upmem-hoist-load-programs"> {
   let summary = "Load each DPU set's resident program once, where the set is allocated";
   let description = [{

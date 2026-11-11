@@ -99,9 +99,11 @@ Footprint footprintOf(Operation *root) {
         Value v = effect.getValue();
         if (!v) {
           // Effects on a resource rather than a value: the DPU sets are
-          // tracked through the operands above; anything else is a side
-          // effect this pass cannot order.
-          if (!isa<upmem::DpuSetResource>(effect.getResource()))
+          // tracked through the operands above, and the node timers order
+          // only against each other; anything else is a side effect this
+          // pass cannot order.
+          if (!isa<upmem::DpuSetResource, upmem::NodeTimerResource>(
+                  effect.getResource()))
             fp.unknown = true;
           continue;
         }

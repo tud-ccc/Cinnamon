@@ -5,6 +5,7 @@
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -38,6 +39,16 @@ typedef struct {
 typedef struct {
   int iteration;
   uint64_t elapsed_ns;
+  uint32_t num_dpus;
+  // Whether a node bracket was open: the load is then part of that node's
+  // time (a set timeshared between programs reloads inside its nodes),
+  // which a reader must not add again.
+  int in_node;
+} LoadRecord;
+
+typedef struct {
+  int iteration;
+  uint64_t elapsed_ns;
   size_t bytes;
   const char *kind;
 } CompactRecord;
@@ -47,6 +58,12 @@ typedef struct {
   uint64_t elapsed_ns;
   const char *function;
 } HostRecord;
+
+typedef struct {
+  int iteration;
+  uint64_t elapsed_ns;
+  const char *node;
+} NodeRecord;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Growable buffers
@@ -68,18 +85,28 @@ typedef struct {
 DEFINE_BUF(XferBuf, XferRecord)
 DEFINE_BUF(LaunchBuf, LaunchRecord)
 DEFINE_BUF(CopyBuf, CopyRecord)
+DEFINE_BUF(LoadBuf, LoadRecord)
 DEFINE_BUF(CompactBuf, CompactRecord)
 DEFINE_BUF(HostBuf, HostRecord)
+DEFINE_BUF(NodeBuf, NodeRecord)
 
 static XferBuf g_scatter = {NULL, 0, 0};
 static XferBuf g_gather = {NULL, 0, 0};
 static LaunchBuf g_launch = {NULL, 0, 0};
 static LaunchBuf g_free = {NULL, 0, 0};
 static LaunchBuf g_alloc = {NULL, 0, 0};
-static LaunchBuf g_load = {NULL, 0, 0};
+static LoadBuf g_load = {NULL, 0, 0};
 static CopyBuf g_copy = {NULL, 0, 0};
 static CompactBuf g_compact = {NULL, 0, 0};
 static HostBuf g_host = {NULL, 0, 0};
+static NodeBuf g_node = {NULL, 0, 0};
+// The open node brackets, innermost last.
+#define MAX_OPEN_NODES 16
+static struct {
+  const char *node;
+  uint64_t start_ns;
+} g_open[MAX_OPEN_NODES];
+static int g_n_open = 0;
 static int g_iteration = 0;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -123,7 +150,8 @@ void upmemrt_record_alloc(uint64_t elapsed_ns, uint32_t num_dpus) {
 }
 
 void upmemrt_record_load(uint64_t elapsed_ns, uint32_t num_dpus) {
-  LaunchBuf_push(&g_load, (LaunchRecord){g_iteration, elapsed_ns, num_dpus});
+  LoadBuf_push(&g_load,
+               (LoadRecord){g_iteration, elapsed_ns, num_dpus, g_n_open > 0});
 }
 
 void upmemrt_record_copy(uint64_t elapsed_ns, size_t bytes) {
@@ -139,6 +167,29 @@ void upmemrt_record_compact(uint64_t elapsed_ns, size_t bytes,
 void upmemrt_record_host(uint64_t elapsed_ns, const char *function) {
   HostBuf_push(&g_host,
                (HostRecord){g_iteration, elapsed_ns, function ? function : ""});
+}
+
+void upmemrt_node_begin(const char *node) {
+  if (g_n_open == MAX_OPEN_NODES) {
+    fprintf(stderr, "upmemrt: node '%s' opens more than %d nested brackets\n",
+            node, MAX_OPEN_NODES);
+    abort();
+  }
+  g_open[g_n_open].node = node;
+  g_open[g_n_open].start_ns = upmemrt_now_ns();
+  g_n_open++;
+}
+
+void upmemrt_node_end(const char *node) {
+  uint64_t now = upmemrt_now_ns();
+  if (g_n_open == 0 || strcmp(g_open[g_n_open - 1].node, node) != 0) {
+    fprintf(stderr, "upmemrt: node '%s' ends, but the open bracket is '%s'\n",
+            node, g_n_open ? g_open[g_n_open - 1].node : "(none)");
+    abort();
+  }
+  g_n_open--;
+  NodeBuf_push(&g_node, (NodeRecord){g_iteration,
+                                     now - g_open[g_n_open].start_ns, node});
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -171,6 +222,21 @@ static void dump_launch(const LaunchBuf *buf, const char *path) {
   for (size_t i = 0; i < buf->size; i++) {
     const LaunchRecord *r = &buf->data[i];
     fprintf(f, "%d,%" PRIu64 ",%u\n", r->iteration, r->elapsed_ns, r->num_dpus);
+  }
+  fclose(f);
+}
+
+static void dump_load(const LoadBuf *buf, const char *path) {
+  FILE *f = fopen(path, "w");
+  if (!f) {
+    perror(path);
+    return;
+  }
+  fprintf(f, "iteration,elapsed_ns,num_dpus,in_node\n");
+  for (size_t i = 0; i < buf->size; i++) {
+    const LoadRecord *r = &buf->data[i];
+    fprintf(f, "%d,%" PRIu64 ",%u,%d\n", r->iteration, r->elapsed_ns,
+            r->num_dpus, r->in_node);
   }
   fclose(f);
 }
@@ -218,6 +284,20 @@ static void dump_host(const HostBuf *buf, const char *path) {
   fclose(f);
 }
 
+static void dump_node(const NodeBuf *buf, const char *path) {
+  FILE *f = fopen(path, "w");
+  if (!f) {
+    perror(path);
+    return;
+  }
+  fprintf(f, "iteration,elapsed_ns,node\n");
+  for (size_t i = 0; i < buf->size; i++) {
+    const NodeRecord *r = &buf->data[i];
+    fprintf(f, "%d,%" PRIu64 ",%s\n", r->iteration, r->elapsed_ns, r->node);
+  }
+  fclose(f);
+}
+
 void upmemrt_dump_stats(const char *prefix) {
   char path[4096];
   snprintf(path, sizeof(path), "%s_scatter.csv", prefix);
@@ -231,13 +311,22 @@ void upmemrt_dump_stats(const char *prefix) {
   snprintf(path, sizeof(path), "%s_alloc.csv", prefix);
   dump_launch(&g_alloc, path);
   snprintf(path, sizeof(path), "%s_load.csv", prefix);
-  dump_launch(&g_load, path);
+  dump_load(&g_load, path);
   snprintf(path, sizeof(path), "%s_copy.csv", prefix);
   dump_copy(&g_copy, path);
   snprintf(path, sizeof(path), "%s_compact.csv", prefix);
   dump_compact(&g_compact, path);
   snprintf(path, sizeof(path), "%s_host.csv", prefix);
   dump_host(&g_host, path);
+  snprintf(path, sizeof(path), "%s_node.csv", prefix);
+  dump_node(&g_node, path);
 }
+
+#else // UPMEM_RT_STATS not defined: the generated code still calls these.
+
+#include "timers.h"
+
+void upmemrt_node_begin(const char *node) { (void)node; }
+void upmemrt_node_end(const char *node) { (void)node; }
 
 #endif // UPMEM_RT_STATS

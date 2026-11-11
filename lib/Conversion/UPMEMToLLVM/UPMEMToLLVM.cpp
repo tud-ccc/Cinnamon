@@ -1198,6 +1198,34 @@ struct SyncOpToFuncCallLowering : public ConvertOpToLLVMPattern<upmem::SyncOp> {
     return success();
   }
 };
+/// upmem.node_begin / upmem.node_end:
+///   void upmemrt_node_begin(const char *node)
+///   void upmemrt_node_end(const char *node)
+template <typename Op>
+struct NodeTimerOpToFuncCallLowering : public ConvertOpToLLVMPattern<Op> {
+  NodeTimerOpToFuncCallLowering(LLVMTypeConverter &converter, StringRef callee)
+      : ConvertOpToLLVMPattern<Op>(converter), callee(callee) {}
+
+  LogicalResult
+  matchAndRewrite(Op op, typename Op::Adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto ctx = rewriter.getContext();
+    auto funcOp =
+        appendOrGetFuncOp(rewriter, callee, LLVM::LLVMVoidType::get(ctx),
+                          {untypedPtrType(ctx)}, op);
+    if (llvm::failed(funcOp))
+      return failure();
+    ImplicitLocOpBuilder builder(op.getLoc(), rewriter);
+    Value name =
+        reifyAsString(builder, op->template getParentOfType<ModuleOp>(),
+                      op.getNode(), "node");
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, *funcOp, name);
+    return success();
+  }
+
+  StringRef callee;
+};
+
 struct EraseDpuProgram : public ConvertOpToLLVMPattern<upmem::DpuProgramOp> {
   using ConvertOpToLLVMPattern<upmem::DpuProgramOp>::ConvertOpToLLVMPattern;
 
@@ -1238,6 +1266,10 @@ void populateUPMEMToLLVMConversionPatterns(LLVMTypeConverter &typeConverter,
   patterns.add<CompactBufferOpToFuncCallLowering>(typeConverter);
   patterns.add<ExpandBufferOpToFuncCallLowering>(typeConverter);
   patterns.add<EraseDpuProgram>(typeConverter);
+  patterns.add<NodeTimerOpToFuncCallLowering<upmem::NodeBeginOp>>(
+      typeConverter, "upmemrt_node_begin");
+  patterns.add<NodeTimerOpToFuncCallLowering<upmem::NodeEndOp>>(
+      typeConverter, "upmemrt_node_end");
 }
 
 struct ConvertUPMEMToLLVMPass
