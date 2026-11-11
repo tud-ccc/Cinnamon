@@ -42,6 +42,12 @@ typedef struct {
   const char *kind;
 } CompactRecord;
 
+typedef struct {
+  int iteration;
+  uint64_t elapsed_ns;
+  const char *function;
+} HostRecord;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Growable buffers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -63,6 +69,7 @@ DEFINE_BUF(XferBuf, XferRecord)
 DEFINE_BUF(LaunchBuf, LaunchRecord)
 DEFINE_BUF(CopyBuf, CopyRecord)
 DEFINE_BUF(CompactBuf, CompactRecord)
+DEFINE_BUF(HostBuf, HostRecord)
 
 static XferBuf g_scatter = {NULL, 0, 0};
 static XferBuf g_gather = {NULL, 0, 0};
@@ -72,6 +79,7 @@ static LaunchBuf g_alloc = {NULL, 0, 0};
 static LaunchBuf g_load = {NULL, 0, 0};
 static CopyBuf g_copy = {NULL, 0, 0};
 static CompactBuf g_compact = {NULL, 0, 0};
+static HostBuf g_host = {NULL, 0, 0};
 static int g_iteration = 0;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -126,6 +134,11 @@ void upmemrt_record_compact(uint64_t elapsed_ns, size_t bytes,
                             const char *kind) {
   CompactBuf_push(&g_compact,
                   (CompactRecord){g_iteration, elapsed_ns, bytes, kind});
+}
+
+void upmemrt_record_host(uint64_t elapsed_ns, const char *function) {
+  HostBuf_push(&g_host,
+               (HostRecord){g_iteration, elapsed_ns, function ? function : ""});
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -191,6 +204,20 @@ static void dump_compact(const CompactBuf *buf, const char *path) {
   fclose(f);
 }
 
+static void dump_host(const HostBuf *buf, const char *path) {
+  FILE *f = fopen(path, "w");
+  if (!f) {
+    perror(path);
+    return;
+  }
+  fprintf(f, "iteration,elapsed_ns,function\n");
+  for (size_t i = 0; i < buf->size; i++) {
+    const HostRecord *r = &buf->data[i];
+    fprintf(f, "%d,%" PRIu64 ",%s\n", r->iteration, r->elapsed_ns, r->function);
+  }
+  fclose(f);
+}
+
 void upmemrt_dump_stats(const char *prefix) {
   char path[4096];
   snprintf(path, sizeof(path), "%s_scatter.csv", prefix);
@@ -209,6 +236,8 @@ void upmemrt_dump_stats(const char *prefix) {
   dump_copy(&g_copy, path);
   snprintf(path, sizeof(path), "%s_compact.csv", prefix);
   dump_compact(&g_compact, path);
+  snprintf(path, sizeof(path), "%s_host.csv", prefix);
+  dump_host(&g_host, path);
 }
 
 #endif // UPMEM_RT_STATS

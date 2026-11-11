@@ -17,10 +17,11 @@ extern "C" {
 // tagged with this number until the next call.
 void upmemrt_start_stat_collection(int iter);
 
-// Write seven CSV files: {prefix}_scatter.csv, {prefix}_gather.csv,
-// {prefix}_launch.csv, {prefix}_free.csv, {prefix}_alloc.csv,
-// {prefix}_load.csv, {prefix}_copy.csv, containing all rows collected since
-// program start.
+// Write one CSV file per kind of row -- {prefix}_scatter.csv,
+// {prefix}_gather.csv, {prefix}_launch.csv, {prefix}_free.csv,
+// {prefix}_alloc.csv, {prefix}_load.csv, {prefix}_copy.csv,
+// {prefix}_compact.csv and {prefix}_host.csv -- containing all rows collected
+// since program start.
 void upmemrt_dump_stats(const char *prefix);
 
 // Internal: called by upmem_rt.c / memref_rt.cpp ────────────────────────────
@@ -69,6 +70,12 @@ void upmemrt_record_copy(uint64_t elapsed_ns, size_t bytes);
 // pointer: pass a string literal.
 void upmemrt_record_compact(uint64_t elapsed_ns, size_t bytes,
                             const char *kind);
+// One call of an outlined host function, by the code that implements it
+// (the TVM kernel wrappers that replace our host code record their kernel
+// call), so the host side of a run can be read per function rather than
+// only as what the device rows leave of the total. `function` is the
+// outlined function's symbol; stored by pointer, so a string literal.
+void upmemrt_record_host(uint64_t elapsed_ns, const char *function);
 
 #else // UPMEM_RT_STATS not defined ─────────────────────────────────────────
 
