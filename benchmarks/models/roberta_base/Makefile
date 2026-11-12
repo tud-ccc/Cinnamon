@@ -68,7 +68,7 @@ DECISIONS = $(OUT)/$(NAME)_offload_decisions.jsonl
 
 $(OUT)/$(NAME)_with_compute.mlir: $(OUT)/$(NAME)_linalg.mlir $(MK)
 	$(CINM_OPT) $< "--cinm-assign-platforms=$(ASSIGN_OPTS) dump-decisions=$(DECISIONS)" \
-	--cinm-isolate-compute-blocks --cinm-expand-compute-scope --cinm-complete-compute-graph --cinm-absorb-static-slices \
+	--cinm-isolate-compute-blocks --cinm-expand-compute-scope --cinm-complete-compute-graph --cinm-annotate-operand-reuse --cinm-absorb-static-slices \
    > $@
 
 # The program split for a host compiler: _host.mlir holds the bodies of the

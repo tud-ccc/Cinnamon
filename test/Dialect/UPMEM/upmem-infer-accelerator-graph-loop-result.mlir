@@ -10,6 +10,7 @@
 // CHECK:          "class": 0,
 // CHECK:          "loops": [],
 // CHECK-NEXT:     "member": 0,
+// CHECK-NEXT:     "operand_reuse_bytes": null,
 // CHECK-NEXT:     "predecessors": []
 // CHECK:          "class": 1,
 // CHECK:          "loops": [
@@ -19,6 +20,7 @@
 // CHECK:          "class": 2,
 // CHECK:          "loops": [],
 // CHECK-NEXT:     "member": 0,
+// CHECK-NEXT:     "operand_reuse_bytes": null,
 // CHECK-NEXT:     "predecessors": [
 // CHECK-NEXT:       0,
 // CHECK-NEXT:       1

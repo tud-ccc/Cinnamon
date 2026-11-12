@@ -1566,6 +1566,11 @@ struct UpmemInferAcceleratorPass
       (void)result.checkAndReport();
       signalPassFailure();
     }
+    // The reuse distances are read into the allocation report, and the
+    // passes from here on rewrite operand lists without them.
+    module.walk([](cinm::ComputeBlockOp block) {
+      block->removeAttr(cinm::CinmDialect::OPERAND_REUSE_NAME);
+    });
   }
 };
 

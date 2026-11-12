@@ -111,6 +111,9 @@ ReferenceModule buildReferenceModule(cinm::ComputeBlockOp computeOp) {
   }
 
   auto *cloned = b.clone(*computeOp, mapping);
+  // Read off the original by the report; the trials rewrite the clone's
+  // operands, which would leave the entries describing others.
+  cloned->removeAttr(CinmDialect::OPERAND_REUSE_NAME);
   mlir::func::ReturnOp::create(b, loc, cloned->getResults());
 
   return {std::move(module), llvm::cast<cinm::ComputeBlockOp>(cloned)};

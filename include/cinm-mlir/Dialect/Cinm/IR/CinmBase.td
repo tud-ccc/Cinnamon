@@ -52,6 +52,12 @@ def Cinm_Dialect : Dialect {
     /// landed on). Pure provenance -- nothing reads it back -- but it is
     /// what lets the solve's CSV dumps be read against the IR they describe.
     constexpr static StringRef GRAPH_ALLOC_NAME = "cinm.graph_alloc";
+    /// On a compute block: per operand, the bytes the function touches
+    /// between that operand's data last being touched and the block reading
+    /// it (a reuse distance), or -1 when no block touched it before in the
+    /// call. A dense i64 array as long as the operand list; see
+    /// --cinm-annotate-operand-reuse.
+    constexpr static StringRef OPERAND_REUSE_NAME = "cinm.operand_reuse_bytes";
     /// On the prototype of an outlined host block: the function touches
     /// host memory through its memref arguments alone, each as its
     /// argument attributes say.

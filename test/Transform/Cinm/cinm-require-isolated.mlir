@@ -1,6 +1,7 @@
 // RUN: cinm-opt %s --split-input-file --verify-diagnostics --cinm-absorb-static-slices
 // RUN: cinm-opt %s --split-input-file --verify-diagnostics --cinm-expand-compute-scope
 // RUN: cinm-opt %s --split-input-file --verify-diagnostics --cinm-complete-compute-graph
+// RUN: cinm-opt %s --split-input-file --verify-diagnostics --cinm-annotate-operand-reuse
 
 // A pass that takes compute ops in the isolated form fails on a cinm.compute
 // instead of skipping it.

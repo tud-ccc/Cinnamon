@@ -107,6 +107,25 @@ CinmDialect::verifyOperationAttribute(::mlir::Operation *op,
     }
     return success();
   }
+  if (attribute.getName() == CinmDialect::OPERAND_REUSE_NAME) {
+    if (!isa<cinm::ComputeBlockOp>(op))
+      return op->emitOpError() << attribute.getName()
+                               << " can only be set on a cinm.compute_block";
+    auto entries = llvm::dyn_cast<DenseI64ArrayAttr>(attribute.getValue());
+    if (!entries)
+      return op->emitOpError()
+             << attribute.getName() << " should be a dense i64 array attr";
+    // A pass that changes the operand list without updating the entries
+    // would otherwise leave them describing other operands.
+    if (entries.size() != static_cast<int64_t>(op->getNumOperands()))
+      return op->emitOpError()
+             << attribute.getName() << " has " << entries.size()
+             << " entries for " << op->getNumOperands() << " operands";
+    if (llvm::any_of(entries.asArrayRef(), [](int64_t e) { return e < -1; }))
+      return op->emitOpError()
+             << attribute.getName() << " entries are byte counts, or -1";
+    return success();
+  }
   if (attribute.getName() == CinmDialect::AVAILABLE_PLATFORMS_NAME) {
     bool validHost = op->hasTrait<FunctionOpInterface::Trait>() ||
                      isa<cinm::ComputeOp, cinm::ComputeBlockOp>(op);

@@ -290,6 +290,33 @@ def CinmAssignPlatformsPass : Pass<"cinm-assign-platforms", "mlir::func::FuncOp"
   ];
 }
 
+def CinmAnnotateOperandReusePass : Pass<"cinm-annotate-operand-reuse", "ModuleOp"> {
+  let summary = "Annotate each compute block operand with how many bytes were touched since its data last was";
+  let description = [{
+    Sets `cinm.operand_reuse_bytes` on every compute block: per operand, the
+    bytes the blocks of the function touch between the operand's data last
+    being touched and the block reading it -- the operand's reuse distance,
+    which says whether a cache of a given size can still hold it -- or -1
+    when no block touched that data before in the call.
+
+    Read off the graph alone: a block reads its operands whole and writes
+    its results whole, whatever its body does. So it runs while every slice
+    a block reads is still taken outside it, before
+    `--cinm-absorb-static-slices` (which carries the entries over).
+
+    Data is identified through the ops between blocks: a cast or reshape
+    holds its source's data, and a slice the same data as any slice of the
+    same source at the same offsets, sizes and strides. A loop's body is
+    walked twice, its iteration arguments bound to the previous iteration's
+    yields; the blocks inside are annotated with the second walk, an
+    iteration in the middle of the loop, where a value defined in the body
+    (the induction variable included) is other data than in the iteration
+    before.
+
+    Takes the isolated form only (fails on a `cinm.compute`).
+  }];
+}
+
 def CinmAbsorbStaticSlicesPass : Pass<"cinm-absorb-static-slices"> {
   let summary = "Move a compute block's run-time-indexed slice of a static tensor into its region";
   let description = [{

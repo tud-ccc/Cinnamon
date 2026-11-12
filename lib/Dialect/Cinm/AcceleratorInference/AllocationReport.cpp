@@ -198,6 +198,11 @@ void snapshotGraph(const ComputeGraph &graph, GraphRecord &record) {
     json::Array preds;
     for (unsigned p : node.predecessors)
       preds.push_back(static_cast<int64_t>(p));
+    // Per operand, in the order of the class operator's args.
+    json::Value reuse = nullptr;
+    if (auto entries = node.block->getAttrOfType<DenseI64ArrayAttr>(
+            CinmDialect::OPERAND_REUSE_NAME))
+      reuse = json::Array(entries.asArrayRef());
     record.nodes.push_back(json::Object{
         {"class", static_cast<int64_t>(node.classIndex)},
         {"member", static_cast<int64_t>(node.memberIndex)},
@@ -205,6 +210,7 @@ void snapshotGraph(const ComputeGraph &graph, GraphRecord &record) {
         {"executions", node.executions},
         {"loops", loopsOf(node.block)},
         {"predecessors", std::move(preds)},
+        {"operand_reuse_bytes", std::move(reuse)},
     });
   }
 
