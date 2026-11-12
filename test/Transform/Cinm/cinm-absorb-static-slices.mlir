@@ -1,4 +1,4 @@
-// RUN: cinm-opt %s --split-input-file --cinm-absorb-static-slices --cinm-isolate-compute-blocks | FileCheck %s
+// RUN: cinm-opt %s --split-input-file --cinm-isolate-compute-blocks --cinm-absorb-static-slices | FileCheck %s
 
 #upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 

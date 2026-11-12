@@ -7,10 +7,16 @@
 // takes the whole tensor and the index instead -- the signature under which
 // all the slices can be kept resident and the launch selects its slot.
 //
+// Takes the isolated form: a block that takes such a slice as an operand is
+// turned back into a cinm.compute for the time it takes to clone the slice
+// in, then isolated again, with the slice's source and index as operands in
+// its place. The other blocks are left alone.
+//
 //===----------------------------------------------------------------------===//
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmUtils.h"
+#include "cinm-mlir/Dialect/Cinm/Transforms/CinmTransforms.h"
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
 
 #include <mlir/IR/PatternMatch.h>
@@ -43,7 +49,12 @@ Operation *absorbableSlice(Value value, Region &region) {
   return def;
 }
 
-void absorbInto(ComputeOp compute, RewriterBase &rewriter) {
+void absorbInto(ComputeBlockOp block, RewriterBase &rewriter) {
+  if (llvm::none_of(block.getOperands(), [&](Value operand) {
+        return absorbableSlice(operand, block.getBody());
+      }))
+    return;
+  ComputeOp compute = deisolateComputeBlock(block, rewriter);
   Region &region = compute.getBody();
   SetVector<Value> captured;
   getUsedValuesDefinedAbove(region, captured);
@@ -58,6 +69,7 @@ void absorbInto(ComputeOp compute, RewriterBase &rewriter) {
           return region.isAncestor(use.getOwner()->getParentRegion());
         });
   }
+  isolateComputeBlock(compute, rewriter);
 }
 
 struct AbsorbStaticSlicesPass
@@ -65,11 +77,13 @@ struct AbsorbStaticSlicesPass
   using Base::Base;
 
   void runOnOperation() override {
-    SmallVector<ComputeOp> computes;
-    getOperation()->walk([&](ComputeOp op) { computes.push_back(op); });
+    if (failed(requireIsolatedComputeOps(getOperation(), getArgument())))
+      return signalPassFailure();
+    SmallVector<ComputeBlockOp> blocks;
+    getOperation()->walk([&](ComputeBlockOp op) { blocks.push_back(op); });
     IRRewriter rewriter(&getContext());
-    for (ComputeOp compute : computes)
-      absorbInto(compute, rewriter);
+    for (ComputeBlockOp block : blocks)
+      absorbInto(block, rewriter);
   }
 };
 

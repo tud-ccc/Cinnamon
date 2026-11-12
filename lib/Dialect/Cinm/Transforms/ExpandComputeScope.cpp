@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
+#include "cinm-mlir/Dialect/Cinm/Transforms/CinmTransforms.h"
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
 
 #include <mlir/Dialect/Linalg/IR/Linalg.h>
@@ -543,6 +544,8 @@ struct ExpandComputeScopePass
   using Base::Base;
 
   void runOnOperation() override {
+    if (failed(cinm::requireIsolatedComputeOps(getOperation(), getArgument())))
+      return signalPassFailure();
     RewritePatternSet patterns(&getContext());
     patterns.add<AbsorbOperandProducers, AbsorbScalarExtract>(&getContext());
 
@@ -557,6 +560,8 @@ struct AbsorbResultDestinationsPass
   using Base::Base;
 
   void runOnOperation() override {
+    if (failed(cinm::requireIsolatedComputeOps(getOperation(), getArgument())))
+      return signalPassFailure();
     RewritePatternSet patterns(&getContext());
     patterns.add<AbsorbResultDestination>(&getContext());
 

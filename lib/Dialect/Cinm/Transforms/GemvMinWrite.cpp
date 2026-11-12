@@ -10,6 +10,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
+#include "cinm-mlir/Dialect/Cinm/Transforms/CinmTransforms.h"
 #include "cinm-mlir/Dialect/Cinm/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -757,6 +758,8 @@ struct CinmGemvMinWritePass
   }
 
   void runOnOperation() override {
+    if (failed(cinm::requireIsolatedComputeOps(getOperation(), getArgument())))
+      return signalPassFailure();
     OpBuilder rewriter(&getContext());
     SmallVector<cinm::ComputeBlockOp, 4> computes;
     getOperation()->walk(

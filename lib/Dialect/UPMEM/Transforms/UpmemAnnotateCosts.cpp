@@ -1,4 +1,5 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmAttributes.h"
+#include "cinm-mlir/Dialect/Cinm/Transforms/CinmTransforms.h"
 #include <cinm-mlir/Dialect/Cinm/IR/CinmOps.h>
 #include <cinm-mlir/Dialect/UPMEM/IR/UPMEMBase.h>
 #include <cinm-mlir/Dialect/UPMEM/Transforms/Passes.h>
@@ -34,6 +35,8 @@ struct UpmemAnnotateCostsPass
   using Base::Base;
 
   void runOnOperation() override {
+    if (failed(cinm::requireIsolatedComputeOps(getOperation(), getArgument())))
+      return signalPassFailure();
     Operation *container = getOperation();
 
     auto timeout = std::chrono::milliseconds(evalTimeoutMs);

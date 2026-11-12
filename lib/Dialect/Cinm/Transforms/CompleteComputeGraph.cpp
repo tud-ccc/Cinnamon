@@ -1,11 +1,13 @@
 //===- CompleteComputeGraph.cpp - Wrap host code in compute blocks --------===//
 //
-// Wraps the operations of a function that are not part of any cinm.compute
-// region into compute blocks pinned to the host platform, so that the whole
+// Wraps the operations of a function that are not part of any compute block
+// into compute blocks pinned to the host platform, so that the whole
 // function body becomes a single connected dataflow graph of compute blocks.
 // The graph scheduling algorithm can then see the host portions of the
 // application as nodes with their own cost, instead of invisible gaps
 // between the offloadable blocks.
+//
+// Takes the isolated form, and creates its blocks in it.
 //
 //===----------------------------------------------------------------------===//
 
@@ -76,6 +78,8 @@ struct CompleteComputeGraphPass
   using Base::Base;
 
   void runOnOperation() override {
+    if (failed(requireIsolatedComputeOps(getOperation(), getArgument())))
+      return signalPassFailure();
     // Collected up front: wrapping restructures the IR under the functions.
     SmallVector<func::FuncOp> funcs;
     getOperation()->walk([&](func::FuncOp func) { funcs.push_back(func); });
@@ -184,7 +188,8 @@ private:
 
   /// Moves the ops of `group` into a new host compute block inserted in their
   /// place, and clears `group`. The values the group ops define that are used
-  /// from outside the group become the results of the block.
+  /// from outside the group become the results of the block, the values they
+  /// use from outside it its operands.
   void wrapGroup(SmallVectorImpl<Operation *> &group, RewriterBase &rewriter) {
     if (group.empty())
       return;
@@ -222,6 +227,7 @@ private:
       rewriter.replaceUsesWithIf(value, result, [&](OpOperand &use) {
         return !compute->isProperAncestor(use.getOwner());
       });
+    isolateComputeBlock(compute, rewriter);
     group.clear();
   }
 };

@@ -1,19 +1,20 @@
-// RUN: cinm-opt %s --cinm-complete-compute-graph --split-input-file --verify-diagnostics | FileCheck %s
-// RUN: cinm-opt %s --cinm-complete-compute-graph=demote-nested-compute --split-input-file 2>/dev/null | FileCheck %s --check-prefix=DEMOTE
+// RUN: cinm-opt %s --cinm-isolate-compute-blocks --cinm-complete-compute-graph --split-input-file --verify-diagnostics | FileCheck %s
+// RUN: cinm-opt %s --cinm-isolate-compute-blocks --cinm-complete-compute-graph=demote-nested-compute --split-input-file 2>/dev/null | FileCheck %s --check-prefix=DEMOTE
 
-// The host ops between the two compute ops become a single host block. Its
-// results are the values that escape the group: the scalar (used by the
-// return) and the splatted tensor (used by the second compute op).
+// The host ops between the two compute blocks become a single host block,
+// isolated like the others. Its results are the values that escape the
+// group: the scalar (used by the return) and the splatted tensor (used by the
+// second compute block); its operands the values the group uses from outside.
 
 // CHECK-LABEL: func @bridge
-// CHECK:       %[[V:.*]] = cinm.compute -> tensor<8xf32>
-// CHECK:       %[[H:.*]]:2 = cinm.compute -> f32, tensor<8xf32> attributes {cinm.available_platforms = [#cinm.host_platform<{{[^>]*}}>]}
-// CHECK:         %[[E:.*]] = tensor.extract %[[V]]
+// CHECK:       %[[V:.*]] = cinm.compute_block
+// CHECK:       %[[H:.*]]:2 = cinm.compute_block (%[[A:.*]] = %[[V]] : tensor<8xf32>) -> f32, tensor<8xf32> attributes {cinm.available_platforms = [#cinm.host_platform<{{[^>]*}}>]}
+// CHECK:         %[[E:.*]] = tensor.extract %[[A]]
 // CHECK:         %[[Y:.*]] = arith.mulf %[[E]], %[[E]]
 // CHECK:         %[[SP:.*]] = tensor.splat %[[Y]]
 // CHECK:         cinm.yield %[[Y]], %[[SP]]
-// CHECK:       %[[W:.*]] = cinm.compute -> tensor<8xf32>
-// CHECK:         cinm.op.elementwise mul %[[H]]#1, %[[H]]#1
+// CHECK:       %[[W:.*]] = cinm.compute_block (%[[B:.*]] = %[[H]]#1 : tensor<8xf32>)
+// CHECK:         cinm.op.elementwise mul %[[B]], %[[B]]
 // CHECK:       return %[[H]]#0, %[[W]]
 func.func @bridge(%a: tensor<8x8xf32>, %x: tensor<8xf32>) -> (f32, tensor<8xf32>) {
   %c0 = arith.constant 0 : index
@@ -39,10 +40,10 @@ func.func @bridge(%a: tensor<8x8xf32>, %x: tensor<8xf32>) -> (f32, tensor<8xf32>
 
 // CHECK-LABEL: func @views_are_edges
 // CHECK-NOT:   #cinm.host_platform
-// CHECK:       %[[V:.*]] = cinm.compute -> tensor<8xf32>
+// CHECK:       %[[V:.*]] = cinm.compute_block
 // CHECK:       %[[S:.*]] = tensor.insert_slice %[[V]]
 // CHECK:       %[[E:.*]] = tensor.extract_slice %[[S]]
-// CHECK:       cinm.compute -> tensor<8xf32>
+// CHECK:       cinm.compute_block (%{{.*}} = %[[E]] : tensor<8xf32>)
 // CHECK:         cinm.op.elementwise mul
 func.func @views_are_edges(%a: tensor<8x8xf32>, %x: tensor<8xf32>, %d: tensor<64xf32>) -> (tensor<64xf32>, tensor<8xf32>) {
   %v = cinm.compute -> tensor<8xf32> {
@@ -61,14 +62,15 @@ func.func @views_are_edges(%a: tensor<8x8xf32>, %x: tensor<8xf32>, %d: tensor<64
 // -----
 
 // A control flow op without compute ops inside is absorbed whole into a host
-// block. Constants stay outside.
+// block. Constants are not part of the group: isolating the block clones the
+// ones it uses in.
 
 // CHECK-LABEL: func @absorb_loop
 // CHECK:       arith.constant
-// CHECK:       %[[V:.*]] = cinm.compute -> tensor<8xf32>
-// CHECK:       %[[H:.*]] = cinm.compute -> tensor<8xf32> attributes {cinm.available_platforms = [#cinm.host_platform<{{[^>]*}}>]}
-// CHECK-NOT:     arith.constant
-// CHECK:         %[[L:.*]] = scf.for {{.*}} iter_args(%[[ACC:.*]] = %[[V]])
+// CHECK:       %[[V:.*]] = cinm.compute_block
+// CHECK:       %[[H:.*]] = cinm.compute_block (%[[A:.*]] = %[[V]] : tensor<8xf32>) -> tensor<8xf32> attributes {cinm.available_platforms = [#cinm.host_platform<{{[^>]*}}>]}
+// CHECK:         arith.constant
+// CHECK:         %[[L:.*]] = scf.for {{.*}} iter_args(%[[ACC:.*]] = %[[A]])
 // CHECK:         cinm.yield %[[L]]
 // CHECK:       return %[[H]]
 func.func @absorb_loop(%t: tensor<8xf32>) -> tensor<8xf32> {
@@ -100,11 +102,11 @@ func.func @absorb_loop(%t: tensor<8xf32>) -> tensor<8xf32> {
 // CHECK-LABEL: func @barrier
 // CHECK-NOT:   #cinm.host_platform
 // CHECK:       scf.for
-// CHECK:         cinm.compute
+// CHECK:         cinm.compute_block
 // CHECK:       return
 
 // DEMOTE-LABEL: func @barrier
-// DEMOTE:       cinm.compute -> tensor<8xf32> attributes {cinm.available_platforms = [#cinm.host_platform<{{[^>]*}}>]}
+// DEMOTE:       cinm.compute_block (%{{.*}} = %arg0 : tensor<8xf32>) -> tensor<8xf32> attributes {cinm.available_platforms = [#cinm.host_platform<{{[^>]*}}>]}
 // DEMOTE:         scf.for
 // DEMOTE-NOT:       cinm.compute
 // DEMOTE:           cinm.op.elementwise add
@@ -141,7 +143,7 @@ func.func @no_compute(%t: tensor<8xf32>, %d: tensor<64xf32>) -> tensor<64xf32> {
 // control flow that cannot be wrapped.
 
 // CHECK-LABEL: func @opaque_call
-// CHECK:       %[[V:.*]] = cinm.compute -> tensor<64xf32>
+// CHECK:       %[[V:.*]] = cinm.compute_block
 // CHECK:       %[[E:.*]] = tensor.extract_slice %[[V]]
 // CHECK:       %[[C:.*]] = call @callee(%[[E]])
 // CHECK:       %[[S:.*]] = tensor.insert_slice %[[C]]

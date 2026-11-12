@@ -1520,6 +1520,8 @@ struct UpmemInferAcceleratorPass
   }
 
   void runOnOperation() override {
+    if (failed(cinm::requireIsolatedComputeOps(getOperation(), getArgument())))
+      return signalPassFailure();
     ModuleOp module = getOperation();
     UpmemInferenceOptions upmemOpts = buildOptions();
     if (!allocationIn.empty() && !graphAllocation) {

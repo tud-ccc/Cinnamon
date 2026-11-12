@@ -291,18 +291,19 @@ def CinmAssignPlatformsPass : Pass<"cinm-assign-platforms", "mlir::func::FuncOp"
 }
 
 def CinmAbsorbStaticSlicesPass : Pass<"cinm-absorb-static-slices"> {
-  let summary = "Move a compute op's run-time-indexed slice of a static tensor into its compute region";
+  let summary = "Move a compute block's run-time-indexed slice of a static tensor into its region";
   let description = [{
-    A `cinm.compute` whose body reads one slice of a static tensor selected
+    A `cinm.compute_block` that takes one slice of a static tensor selected
     by a run-time index along its leading dimension (the layer's weight,
-    `weights[layer]`, inside the layer loop -- see resolveStaticSlice) takes
-    the slice from outside, so isolating it would hand the block the slice
-    and hide both the tensor and the index. This pass clones the slicing op
-    into the region, so that the isolated block's signature is the whole
+    `weights[layer]`, inside the layer loop -- see resolveStaticSlice) as an
+    operand hides both the tensor and the index. This pass clones the
+    slicing op into the region, so that the block's signature is the whole
     static tensor plus the index: what the graph allocation needs to keep
     every slice resident, and what the lowering needs to select the slot
     at run time. Slices at constant offsets stay outside: they are the
     unrolled case, where identical blocks must keep identical signatures.
+
+    Takes the isolated form only (fails on a `cinm.compute`).
   }];
 }
 
@@ -412,9 +413,9 @@ def CinmSimplifyComputeSignaturesPass
 def CinmCompleteComputeGraphPass : Pass<"cinm-complete-compute-graph"> {
   let summary = "Wrap the host code between compute blocks into host compute blocks, connecting the compute graph";
   let description = [{
-    For every function that already contains `cinm.compute` ops, wraps the
-    remaining operations of the function body into new `cinm.compute` ops
-    pinned to `#cinm.host_platform`, so that every operation belongs to some
+    For every function that already contains compute blocks, wraps the
+    remaining operations of the function body into new `cinm.compute_block`
+    ops pinned to `#cinm.host_platform`, so that every operation belongs to some
     compute block and the dataflow between blocks forms a single connected
     graph -- the input the graph scheduling algorithm needs to see the whole
     application, including the parts that run on the host CPU.
@@ -434,6 +435,8 @@ def CinmCompleteComputeGraphPass : Pass<"cinm-complete-compute-graph"> {
     first to avoid those.
 
     Functions that contain no compute op at all are left untouched.
+
+    Takes the isolated form only (fails on a `cinm.compute`).
   }];
 
   let options = [

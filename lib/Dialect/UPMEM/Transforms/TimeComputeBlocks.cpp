@@ -2,6 +2,7 @@
 ///
 /// @file
 
+#include "cinm-mlir/Dialect/Cinm/Transforms/CinmTransforms.h"
 #include <cinm-mlir/Dialect/Cinm/IR/CinmBase.h>
 #include <cinm-mlir/Dialect/Cinm/IR/CinmOps.h>
 #include <cinm-mlir/Dialect/UPMEM/IR/UPMEMAttributes.h>
@@ -39,6 +40,8 @@ std::optional<std::string> nodeName(DictionaryAttr alloc) {
 struct UpmemTimeComputeBlocksPass
     : upmem::impl::UpmemTimeComputeBlocksPassBase<UpmemTimeComputeBlocksPass> {
   void runOnOperation() override {
+    if (failed(cinm::requireIsolatedComputeOps(getOperation(), getArgument())))
+      return signalPassFailure();
     getOperation()->walk([&](cinm::ComputeBlockOp block) {
       if (!llvm::isa_and_nonnull<upmem::UpmemAcceleratorAttr>(
               block.getAcceleratorAttr()))

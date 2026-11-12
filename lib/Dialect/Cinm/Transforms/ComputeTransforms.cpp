@@ -117,6 +117,18 @@ bool cinm::isHostComputeOp(Operation *op) {
          llvm::all_of(platforms, llvm::IsaPred<HostPlatformAttr>);
 }
 
+LogicalResult cinm::requireIsolatedComputeOps(Operation *root, StringRef pass) {
+  bool found = false;
+  root->walk([&](ComputeOp op) {
+    op.emitError() << pass
+                   << " takes compute ops isolated from above "
+                      "(cinm.compute_block): run "
+                      "--cinm-isolate-compute-blocks first";
+    found = true;
+  });
+  return failure(found);
+}
+
 using namespace mlir;
 
 namespace mlir::cinm {
