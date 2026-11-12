@@ -1,8 +1,13 @@
-// RUN: cinm-opt %s --cinm-attach-host-platform="%cinm_host" --split-input-file --cinm-assign-platforms | FileCheck %s --check-prefix=OPEN
-// RUN: cinm-opt %s --cinm-attach-host-platform="%cinm_host" --split-input-file --cinm-assign-platforms=require-profitable=true | FileCheck %s --check-prefix=GATED
-// RUN: cinm-opt %s --cinm-attach-host-platform="%cinm_host" --split-input-file --cinm-assign-platforms=require-profitable=true -verify-diagnostics -o /dev/null
-// RUN: cinm-opt %s --cinm-attach-host-platform="%cinm_host" --split-input-file "--cinm-assign-platforms=require-profitable=true dump-decisions=%t.jsonl" -o /dev/null 2>/dev/null
+// RUN: cinm-opt %s --cinm-attach-host-platform="ops-per-second=2.1e12 dram-bytes-per-second=23e9 scalar-op-ns=3.0 vector-op-ns=0.5 vector-bytes=64 stream-bytes-per-second=10.8e9 copy-bytes-per-second=0.63e9" --split-input-file --cinm-assign-platforms | FileCheck %s --check-prefix=OPEN
+// RUN: cinm-opt %s --cinm-attach-host-platform="ops-per-second=2.1e12 dram-bytes-per-second=23e9 scalar-op-ns=3.0 vector-op-ns=0.5 vector-bytes=64 stream-bytes-per-second=10.8e9 copy-bytes-per-second=0.63e9" --split-input-file --cinm-assign-platforms=require-profitable=true | FileCheck %s --check-prefix=GATED
+// RUN: cinm-opt %s --cinm-attach-host-platform="ops-per-second=2.1e12 dram-bytes-per-second=23e9 scalar-op-ns=3.0 vector-op-ns=0.5 vector-bytes=64 stream-bytes-per-second=10.8e9 copy-bytes-per-second=0.63e9" --split-input-file --cinm-assign-platforms=require-profitable=true -verify-diagnostics -o /dev/null
+// RUN: cinm-opt %s --cinm-attach-host-platform="ops-per-second=2.1e12 dram-bytes-per-second=23e9 scalar-op-ns=3.0 vector-op-ns=0.5 vector-bytes=64 stream-bytes-per-second=10.8e9 copy-bytes-per-second=0.63e9" --split-input-file "--cinm-assign-platforms=require-profitable=true dump-decisions=%t.jsonl" -o /dev/null 2>/dev/null
 // RUN: FileCheck %s --check-prefix=DUMP < %t.jsonl
+
+// The host every function without its own is priced against is stated here
+// rather than taken from %cinm_host: the verdicts below sit near the host's
+// roofline, and the reasoning in their comments is about this machine (the
+// bench machine as measured before the 21.7 GB/s STREAM re-run).
 
 // The dump has one line per decision, in program order across the splits
 // (the file is truncated once per process, then appended to). Keys print
@@ -43,8 +48,8 @@ func.func @gemv_resident_weight(%A: tensor<8192x8192xi32> {cinm.static},
 
 // The same gemv with the matrix streamed in. Nothing to amortize, and the
 // result is 32 KB, so the verdict rests on scatter against the host's DRAM
-// path alone -- and the host wins it: 12.4 ms to stream the matrix at the
-// measured 21.7 GB/s against 15.3 ms to scatter it. Streaming an operand in
+// path alone -- and the host wins it: 11.7 ms to stream the matrix at the
+// 23 GB/s this file's host states against 15.3 ms to scatter it. Streaming an operand in
 // to use it once is what the array is worst at; see @va.
 
 // OPEN-LABEL: @gemv_streamed_weight
