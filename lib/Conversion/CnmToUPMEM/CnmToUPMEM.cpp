@@ -1009,9 +1009,12 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
     }
   }
 
-  // then, replace all scatter/gather with the upmem equivalents
-
-  for (auto user : launch.getWg().getUsers()) {
+  // then, replace all scatter/gather with the upmem equivalents. Over a copy
+  // of the working group's users: each conversion erases the op it converts,
+  // and with it the use the iteration would step from -- and the op itself,
+  // so a user is classified once, before anything converts it.
+  SmallVector<Operation *> wgUsers(launch.getWg().getUsers());
+  for (Operation *user : wgUsers) {
 
     if (auto scatter = llvm::dyn_cast_or_null<cnm::ScatterOp>(user)) {
       upmem::StaticAllocOp alloc = buffersToMramBuf.lookup(scatter.getBuffer());
@@ -1030,8 +1033,7 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
                         paddedSlotBuffers.lookup(scatter.getBuffer())))) {
         return failure();
       }
-    }
-    if (auto gather = llvm::dyn_cast_or_null<cnm::GatherOp>(user)) {
+    } else if (auto gather = llvm::dyn_cast_or_null<cnm::GatherOp>(user)) {
       auto alloc = buffersToMramBuf.lookup(gather.getBuffer());
       if (!alloc || failed(convertCnmGatherToUpmem(
                         rewriter, gather, hierarchy, alloc.getSymNameAttr(),
@@ -1144,7 +1146,10 @@ static LogicalResult convertCnmLaunchToUpmem(cnm::LaunchOp launch,
     }
   }
 
-  for (auto user : wgAlloc.getResult().getUsers()) {
+  // Early-increment: the free is erased, and with it the use the iteration
+  // would step from.
+  for (Operation *user :
+       llvm::make_early_inc_range(wgAlloc.getResult().getUsers())) {
     if (auto free = llvm::dyn_cast_or_null<cnm::FreeWorkgroupOp>(user)) {
       // A forwarded set is not this block's to release: whoever allocated it
       // frees it, so the cnm-level free simply disappears here.
