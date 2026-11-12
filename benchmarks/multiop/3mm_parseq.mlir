@@ -1,4 +1,4 @@
-//#! cinm-opt --cinm-assign-platforms --cinm-isolate-compute-blocks --upmem-infer-accelerator --split-input-file
+//#! cinm-opt --cinm-attach-host-platform --cinm-assign-platforms --cinm-isolate-compute-blocks --upmem-infer-accelerator --split-input-file
 //
 // (r2, r3) = ((X * W1) * W2, X * W3): a two-gemm chain plus one gemm
 // parallel to it, sharing the activation X. Size class = bytes of each

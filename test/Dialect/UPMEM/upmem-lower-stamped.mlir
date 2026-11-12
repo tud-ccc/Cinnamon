@@ -1,4 +1,4 @@
-// RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=4 n-init=4 fixed-tasklets=4 graph-allocation=1 screen-menu=0 allocation-granularity=4 stamp-configs=1" --upmem-lower-stamped | FileCheck %s
+// RUN: cinm-opt %s --cinm-attach-host-platform="%cinm_host" --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=4 n-init=4 fixed-tasklets=4 graph-allocation=1 screen-menu=0 allocation-granularity=4 stamp-configs=1" --upmem-lower-stamped | FileCheck %s
 // The screen that decides whether a block is worth a device at all is off
 // here (screen-menu=0): these toy blocks are far too small to beat the host
 // on any DPU count, and what this test pins is what the search and the

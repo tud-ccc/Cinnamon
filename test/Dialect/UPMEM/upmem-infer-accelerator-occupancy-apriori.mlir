@@ -1,4 +1,4 @@
-// RUN: cinm-opt %s --cinm-isolate-compute-blocks --verify-diagnostics \
+// RUN: cinm-opt %s --cinm-attach-host-platform="%cinm_host" --cinm-isolate-compute-blocks --verify-diagnostics \
 // RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=1024,tasklets=8,gemv.M.mram=8,gemv.K.mram=256,gemv.M.wram=8,gemv.K.wram=256,gemv.order[0]=2,gemv.order[1]=1"
 
 // The same shape as upmem-infer-accelerator-occupancy.mlir, one leaf tile

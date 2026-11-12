@@ -94,8 +94,9 @@ ReferenceModule buildReferenceModule(cinm::ComputeBlockOp computeOp) {
   // The host the original is priced against, which the enclosing scopes the
   // clone leaves behind would otherwise have supplied: the cost model prices
   // the host code around the block against it.
-  hostFunc->setAttr(CinmDialect::AVAILABLE_PLATFORMS_NAME,
-                    b.getArrayAttr({HostPlatformAttr::getInScope(computeOp)}));
+  if (auto host = HostPlatformAttr::getInScope(computeOp))
+    hostFunc->setAttr(CinmDialect::AVAILABLE_PLATFORMS_NAME,
+                      b.getArrayAttr({host}));
   mlir::Block *entry = hostFunc.addEntryBlock();
   b.setInsertionPointToStart(entry);
 

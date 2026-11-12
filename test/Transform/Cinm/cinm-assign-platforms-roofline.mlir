@@ -1,7 +1,7 @@
-// RUN: cinm-opt %s --split-input-file --cinm-assign-platforms | FileCheck %s --check-prefix=OPEN
-// RUN: cinm-opt %s --split-input-file --cinm-assign-platforms=require-profitable=true | FileCheck %s --check-prefix=GATED
-// RUN: cinm-opt %s --split-input-file --cinm-assign-platforms=require-profitable=true -verify-diagnostics -o /dev/null
-// RUN: cinm-opt %s --split-input-file "--cinm-assign-platforms=require-profitable=true dump-decisions=%t.jsonl" -o /dev/null 2>/dev/null
+// RUN: cinm-opt %s --cinm-attach-host-platform="%cinm_host" --split-input-file --cinm-assign-platforms | FileCheck %s --check-prefix=OPEN
+// RUN: cinm-opt %s --cinm-attach-host-platform="%cinm_host" --split-input-file --cinm-assign-platforms=require-profitable=true | FileCheck %s --check-prefix=GATED
+// RUN: cinm-opt %s --cinm-attach-host-platform="%cinm_host" --split-input-file --cinm-assign-platforms=require-profitable=true -verify-diagnostics -o /dev/null
+// RUN: cinm-opt %s --cinm-attach-host-platform="%cinm_host" --split-input-file "--cinm-assign-platforms=require-profitable=true dump-decisions=%t.jsonl" -o /dev/null 2>/dev/null
 // RUN: FileCheck %s --check-prefix=DUMP < %t.jsonl
 
 // The dump has one line per decision, in program order across the splits
@@ -43,8 +43,8 @@ func.func @gemv_resident_weight(%A: tensor<8192x8192xi32> {cinm.static},
 
 // The same gemv with the matrix streamed in. Nothing to amortize, and the
 // result is 32 KB, so the verdict rests on scatter against the host's DRAM
-// path alone -- and the host wins it: 11.7 ms to stream the matrix at the
-// measured 23 GB/s against 15.3 ms to scatter it. Streaming an operand in
+// path alone -- and the host wins it: 12.4 ms to stream the matrix at the
+// measured 21.7 GB/s against 15.3 ms to scatter it. Streaming an operand in
 // to use it once is what the array is worst at; see @va.
 
 // OPEN-LABEL: @gemv_streamed_weight
@@ -76,7 +76,7 @@ func.func @gemv_streamed_weight(%A: tensor<8192x8192xi32>,
 // GATED: cinm.compute
 func.func @gemv_streamed_weight_slow_host(%A: tensor<8192x8192xi32>,
                                           %x: tensor<8192xi32>) -> tensor<8192xi32>
-  attributes {cinm.available_platforms = [#cinm.host_platform<dram_bytes_per_second = 1.5e10>, #upmem]} {
+  attributes {cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 1.5e10, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>, #upmem]} {
   %y = cinm.op.gemv %A, %x : tensor<8192x8192xi32>, tensor<8192xi32> -> tensor<8192xi32>
   return %y : tensor<8192xi32>
 }

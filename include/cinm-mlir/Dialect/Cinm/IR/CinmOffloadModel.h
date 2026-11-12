@@ -10,6 +10,7 @@
 #define CINM_OFFLOAD_MODEL_H
 
 #include "mlir/IR/Types.h"
+#include <limits>
 
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/StringRef.h"
@@ -26,10 +27,15 @@ class ComputeBlockOp;
 /// What the host the accelerators hang off can sustain, and what running
 /// code on it costs. These are properties of the machine, not of the
 /// program: they are the parameters of the `#cinm.host_platform` in scope
-/// (HostPlatformAttr::getInScope). The defaults are the bench machine; the
-/// attribute's description says where each number comes from, under the
-/// same name in snake case.
+/// (HostPlatformAttr::getInScope), which states every one of them. No member
+/// has a value of its own: a default-constructed model is NaN throughout, so
+/// pricing against one yields no cost rather than some machine's. The bench
+/// machine's numbers are the options of --cinm-attach-host-platform, and the
+/// attribute's description says what each parameter means, under the same
+/// name in snake case.
 struct HostModel {
+  static constexpr double kUnset = std::numeric_limits<double>::quiet_NaN();
+
   // The offload roofline.
 
   /// Arithmetic throughput summed over every core, in ops per second (a
@@ -43,26 +49,23 @@ struct HostModel {
   /// compiler that used AVX512-VNNI on int8 (vpdpbusd, u8 x i8 with packed
   /// weights, ~8.6e12 peak) would want its own rate.
   ///
-  /// The default is the nominal int32 peak (32 cores x 2.1 GHz x 16 lanes x
-  /// 2): a roofline, of which the host code achieves the share the graph
-  /// allocation's hostAchievedFraction states. That share is calibrated on
-  /// the memory-bound kernels (0.64); the tuned TVM achieves 0.2-0.26 of
-  /// this peak on compute-bound gemms with their weights in DRAM.
-  double opsPerSecond = 2.1e12;
+  /// A roofline, of which the host code achieves the share the graph
+  /// allocation's hostAchievedFraction states.
+  double opsPerSecond = kUnset;
   /// Bandwidth from DRAM to those cores, in bytes per second.
-  double dramBytesPerSecond = 23.0e9;
+  double dramBytesPerSecond = kUnset;
 
   // The cost model's host code.
 
   /// One scalar add in straight-line code, in ns.
-  double scalarOpNs = 3.0;
+  double scalarOpNs = kUnset;
   /// One vector instruction, in ns, and the bytes it operates on.
-  double vectorOpNs = 0.5;
-  double vectorBytes = 64.0;
+  double vectorOpNs = kUnset;
+  double vectorBytes = kUnset;
   /// What one core streams through a loop nest, in bytes per second.
-  double streamBytesPerSecond = 10.8e9;
+  double streamBytesPerSecond = kUnset;
   /// The rate of a strided repack between two layouts, in bytes per second.
-  double copyBytesPerSecond = 0.63e9;
+  double copyBytesPerSecond = kUnset;
 
   /// The arithmetic intensity at which the two balance. Below it the host is
   /// bandwidth-bound and an accelerator has something to beat; above it the

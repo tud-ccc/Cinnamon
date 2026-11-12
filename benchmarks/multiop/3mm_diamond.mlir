@@ -1,4 +1,4 @@
-//#! cinm-opt --cinm-assign-platforms --cinm-isolate-compute-blocks --upmem-infer-accelerator --split-input-file
+//#! cinm-opt --cinm-attach-host-platform --cinm-assign-platforms --cinm-isolate-compute-blocks --upmem-infer-accelerator --split-input-file
 //
 // J = (A * B) * (C * D): the diamond -- two independent gemms joining in a
 // third. Size class = bytes of each i32 weight (see 2mm_seq.mlir): B is

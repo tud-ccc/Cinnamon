@@ -44,7 +44,7 @@
 
 func.func @slow_host(%A: tensor<2048x2048xi8> {cinm.static}, %x: tensor<2048xi8>) -> tensor<2048xi32>
     attributes {cinm.available_platforms = [
-      #cinm.host_platform<ops_per_second = 1.0e9, dram_bytes_per_second = 1.0e9>,
+      #cinm.host_platform<ops_per_second = 1.0e9, dram_bytes_per_second = 1.0e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>,
       #upmem]} {
   %r = cinm.compute -> tensor<2048xi32> attributes {cinm.available_platforms = [#upmem]} {
     %e = tensor.empty() : tensor<2048xi32>
@@ -76,7 +76,7 @@ func.func @slow_host(%A: tensor<2048x2048xi8> {cinm.static}, %x: tensor<2048xi8>
 #upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 16>
 
 func.func @fast_host(%A: tensor<2048x2048xi8> {cinm.static}, %x: tensor<2048xi8>) -> tensor<2048xi32>
-    attributes {cinm.available_platforms = [#cinm.host_platform, #upmem]} {
+    attributes {cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>, #upmem]} {
   %r = cinm.compute -> tensor<2048xi32> attributes {cinm.available_platforms = [#upmem]} {
     %e = tensor.empty() : tensor<2048xi32>
     %g = linalg.matvec ins(%A, %x : tensor<2048x2048xi8>, tensor<2048xi8>) outs(%e : tensor<2048xi32>) -> tensor<2048xi32>
@@ -104,7 +104,7 @@ func.func @fast_host(%A: tensor<2048x2048xi8> {cinm.static}, %x: tensor<2048xi8>
 #map = affine_map<(d0) -> (d0)>
 
 func.func @unpriced(%x: tensor<65536xi32>, %steps: index) -> tensor<65536xi32>
-    attributes {cinm.available_platforms = [#cinm.host_platform, #upmem]} {
+    attributes {cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>, #upmem]} {
   %r = cinm.compute -> tensor<65536xi32> attributes {cinm.available_platforms = [#upmem]} {
     %e = tensor.empty() : tensor<65536xi32>
     %g = linalg.generic {indexing_maps = [#map, #map], iterator_types = ["parallel"]}
@@ -136,7 +136,7 @@ func.func @unpriced(%x: tensor<65536xi32>, %steps: index) -> tensor<65536xi32>
 #upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 16>
 
 func.func @stacked(%W: tensor<4x2048x2048xi8> {cinm.static}, %layer: index, %x: tensor<2048xi8>) -> tensor<2048xi32>
-    attributes {cinm.available_platforms = [#cinm.host_platform, #upmem]} {
+    attributes {cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>, #upmem]} {
   %r = cinm.compute -> tensor<2048xi32> attributes {cinm.available_platforms = [#upmem]} {
     %w = tensor.extract_slice %W[%layer, 0, 0] [1, 2048, 2048] [1, 1, 1] : tensor<4x2048x2048xi8> to tensor<2048x2048xi8>
     %e = tensor.empty() : tensor<2048xi32>

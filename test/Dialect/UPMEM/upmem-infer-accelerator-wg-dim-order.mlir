@@ -1,13 +1,13 @@
-// RUN: cinm-opt %s --cinm-isolate-compute-blocks \
+// RUN: cinm-opt %s --cinm-attach-host-platform="%cinm_host" --cinm-isolate-compute-blocks \
 // RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=2048,tasklets=8,gemv.M.mram=8,gemv.K.mram=128,gemv.M.wram=8,gemv.K.wram=64,gemv.order[0]=2,gemv.order[1]=1" \
 // RUN: | FileCheck %s --check-prefixes=CHECK,SHARED
-// RUN: cinm-opt %s --cinm-isolate-compute-blocks \
+// RUN: cinm-opt %s --cinm-attach-host-platform="%cinm_host" --cinm-isolate-compute-blocks \
 // RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=2048,tasklets=8,gemv.M.mram=8,gemv.K.mram=128,gemv.M.wram=8,gemv.K.wram=64,gemv.order[0]=1,gemv.order[1]=2" \
 // RUN: | FileCheck %s --check-prefixes=CHECK,REPLICATED
-// RUN: not cinm-opt %s --cinm-isolate-compute-blocks \
+// RUN: not cinm-opt %s --cinm-attach-host-platform="%cinm_host" --cinm-isolate-compute-blocks \
 // RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=2048,tasklets=8,gemv.M.mram=8,gemv.K.mram=128,gemv.M.wram=8,gemv.K.wram=64,gemv.order[0]=3,gemv.order[1]=1" 2>&1 \
 // RUN: | FileCheck %s --check-prefix=RANGE
-// RUN: not cinm-opt %s --cinm-isolate-compute-blocks \
+// RUN: not cinm-opt %s --cinm-attach-host-platform="%cinm_host" --cinm-isolate-compute-blocks \
 // RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=2048,tasklets=8,gemv.M.mram=8,gemv.K.mram=128,gemv.M.wram=8,gemv.K.wram=64,gemv.order[0]=1,gemv.order[1]=1" 2>&1 \
 // RUN: | FileCheck %s --check-prefix=REPEATED
 

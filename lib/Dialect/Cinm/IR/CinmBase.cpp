@@ -9,6 +9,7 @@
 #include "cinm-mlir/Dialect/Cinm/IR/CinmOps.h"
 #include "cinm-mlir/Dialect/Cinm/IR/CinmWorkgroupTypeInterface.h"
 #include "cinm-mlir/Dialect/Cinm/IR/TilingInterface.h"
+#include <cmath>
 #include <cstdint>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/ADT/StringSet.h>
@@ -26,6 +27,24 @@
 
 using namespace mlir;
 using namespace mlir::cinm;
+
+namespace mlir::cinm {
+/// One #cinm.host_platform parameter: an integer literal is accepted as well
+/// as a float, so that `vector_bytes = 64` need not be spelled `64.`.
+static FailureOr<llvm::APFloat> parseHostParameter(AsmParser &parser) {
+  int64_t integral;
+  OptionalParseResult asInteger = parser.parseOptionalInteger(integral);
+  if (asInteger.has_value()) {
+    if (failed(*asInteger))
+      return failure();
+    return llvm::APFloat(static_cast<double>(integral));
+  }
+  double value;
+  if (parser.parseFloat(value))
+    return failure();
+  return llvm::APFloat(value);
+}
+} // namespace mlir::cinm
 
 //===- Generated implementation -------------------------------------------===//
 
@@ -210,101 +229,77 @@ Attribute CinmDialect::parseAttribute(DialectAsmParser &parser,
   if (parser.parseOptionalKeyword(CinmPlatformArrayAttr::getMnemonic())
           .succeeded())
     return CinmPlatformArrayAttr::parse(parser, type);
-  if (parser.parseOptionalKeyword(HostPlatformAttr::getMnemonic()).succeeded())
-    return HostPlatformAttr::parse(parser, type);
   if (parser.parseOptionalKeyword(CostModelDataAttr::getMnemonic()).succeeded())
     return CostModelDataAttr::parse(parser, type);
 
   StringRef mnemonic;
   Attribute result;
+  // The struct parser reports a missing host parameter only as a missing
+  // ',', so a host that fails to parse also says what it takes.
+  if (parser.parseOptionalKeyword(HostPlatformAttr::getMnemonic())
+          .succeeded()) {
+    Attribute host = HostPlatformAttr::parse(parser, type);
+    if (!host)
+      parser.emitError(parser.getNameLoc())
+          << "#cinm.host_platform takes exactly these parameters, each once, "
+             "in any order: ops_per_second, dram_bytes_per_second, "
+             "scalar_op_ns, vector_op_ns, vector_bytes, "
+             "stream_bytes_per_second, copy_bytes_per_second";
+    return host;
+  }
+
   auto res = generatedAttributeParser(parser, &mnemonic, type, result);
-  if (res.has_value() && res.value().succeeded())
+  if (res.has_value() && succeeded(*res))
     return result;
-  parser.emitError(parser.getNameLoc(), "Unknown attribute ") << mnemonic;
+  if (!res.has_value())
+    parser.emitError(parser.getNameLoc(), "Unknown attribute ") << mnemonic;
   return {};
 }
 
 void CinmDialect::printAttribute(Attribute attr, DialectAsmPrinter &out) const {
-  if (auto a = llvm::dyn_cast_or_null<HostPlatformAttr>(attr)) {
-    out << HostPlatformAttr::getMnemonic();
-    a.print(out);
-    return;
-  } else if (auto myAttr = llvm::dyn_cast<CostModelDataAttr>(attr)) {
+  if (auto myAttr = llvm::dyn_cast<CostModelDataAttr>(attr)) {
     myAttr.print(out);
     return;
   }
   (void)generatedAttributePrinter(attr, out);
 }
 
-/// Calls `fn(key, field, default)` for each HostModel field of `model`, with
-/// its textual key, in print order.
-template <typename Fn> static void forEachHostField(HostModel &model, Fn fn) {
-  const HostModel def;
-  fn("ops_per_second", model.opsPerSecond, def.opsPerSecond);
-  fn("dram_bytes_per_second", model.dramBytesPerSecond, def.dramBytesPerSecond);
-  fn("scalar_op_ns", model.scalarOpNs, def.scalarOpNs);
-  fn("vector_op_ns", model.vectorOpNs, def.vectorOpNs);
-  fn("vector_bytes", model.vectorBytes, def.vectorBytes);
-  fn("stream_bytes_per_second", model.streamBytesPerSecond,
-     def.streamBytesPerSecond);
-  fn("copy_bytes_per_second", model.copyBytesPerSecond, def.copyBytesPerSecond);
-}
-
-/// `#cinm.host_platform` is the default machine; any parameter that differs
-/// is given as `<key = value, ...>`. Every parameter is printed, so that
-/// printed IR states the machine it is priced against rather than leaving it
-/// to whichever defaults the reader was built with.
-Attribute HostPlatformAttr::parse(::mlir::AsmParser &parser, ::mlir::Type) {
-  HostModel model;
-  if (succeeded(parser.parseOptionalLess())) {
-    llvm::StringSet<> seen;
-    auto parseEntry = [&]() -> ParseResult {
-      SMLoc loc = parser.getCurrentLocation();
-      std::string key;
-      if (parser.parseKeywordOrString(&key) || parser.parseEqual())
-        return failure();
-      double *field = nullptr;
-      forEachHostField(model, [&](llvm::StringRef name, double &value, double) {
-        if (name == key)
-          field = &value;
-      });
-      if (!field)
-        return parser.emitError(loc, "unknown host platform parameter '")
-               << key << "'";
-      if (!seen.insert(key).second)
-        return parser.emitError(loc, "host platform parameter '")
-               << key << "' given twice";
-      // An integer literal is accepted as well: `vector_bytes = 64` should
-      // not have to be spelled `64.`.
-      int64_t integral;
-      OptionalParseResult asInteger = parser.parseOptionalInteger(integral);
-      if (asInteger.has_value()) {
-        if (failed(*asInteger))
-          return failure();
-        *field = static_cast<double>(integral);
-      } else if (parser.parseFloat(*field)) {
-        return failure();
-      }
-      if (!(*field > 0.0))
-        return parser.emitError(loc, "host platform parameter '")
-               << key << "' must be positive";
-      return success();
-    };
-    if (parser.parseCommaSeparatedList(parseEntry) || parser.parseGreater())
-      return {};
+LogicalResult HostPlatformAttr::verify(
+    function_ref<InFlightDiagnostic()> emitError, llvm::APFloat opsPerSecond,
+    llvm::APFloat dramBytesPerSecond, llvm::APFloat scalarOpNs,
+    llvm::APFloat vectorOpNs, llvm::APFloat vectorBytes,
+    llvm::APFloat streamBytesPerSecond, llvm::APFloat copyBytesPerSecond) {
+  const std::pair<llvm::StringRef, const llvm::APFloat *> parameters[] = {
+      {"ops_per_second", &opsPerSecond},
+      {"dram_bytes_per_second", &dramBytesPerSecond},
+      {"scalar_op_ns", &scalarOpNs},
+      {"vector_op_ns", &vectorOpNs},
+      {"vector_bytes", &vectorBytes},
+      {"stream_bytes_per_second", &streamBytesPerSecond},
+      {"copy_bytes_per_second", &copyBytesPerSecond},
+  };
+  for (auto [key, value] : parameters) {
+    if (&value->getSemantics() != &llvm::APFloat::IEEEdouble())
+      return emitError() << "host platform parameter '" << key
+                         << "' must be a double";
+    double v = value->convertToDouble();
+    if (!(v > 0.0) || !std::isfinite(v))
+      return emitError() << "host platform parameter '" << key
+                         << "' must be positive and finite, got " << v;
   }
-  return get(parser.getContext(), model);
+  return success();
 }
 
-void HostPlatformAttr::print(::mlir::AsmPrinter &printer) const {
-  HostModel model = getModel();
-  bool first = true;
-  forEachHostField(model, [&](llvm::StringRef key, double &value, double) {
-    printer << (first ? "<" : ", ") << key << " = ";
-    printer.printFloat(llvm::APFloat(value));
-    first = false;
-  });
-  printer << ">";
+HostModel HostPlatformAttr::getModel() const {
+  HostModel model;
+  model.opsPerSecond = getOpsPerSecond().convertToDouble();
+  model.dramBytesPerSecond = getDramBytesPerSecond().convertToDouble();
+  model.scalarOpNs = getScalarOpNs().convertToDouble();
+  model.vectorOpNs = getVectorOpNs().convertToDouble();
+  model.vectorBytes = getVectorBytes().convertToDouble();
+  model.streamBytesPerSecond = getStreamBytesPerSecond().convertToDouble();
+  model.copyBytesPerSecond = getCopyBytesPerSecond().convertToDouble();
+  return model;
 }
 
 HostPlatformAttr HostPlatformAttr::getInScope(Operation *op) {
@@ -317,5 +312,5 @@ HostPlatformAttr HostPlatformAttr::getInScope(Operation *op) {
       if (auto host = llvm::dyn_cast<HostPlatformAttr>(attr))
         return host;
   }
-  return get(op->getContext());
+  return {};
 }

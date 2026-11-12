@@ -16,7 +16,7 @@
 // CHECK-NOT:     cinm.compute
 // CHECK:         return %[[M]]#0, %[[M]]#1
 func.func @views_between(%x: tensor<1x8xi32>) -> (tensor<16xi32>, tensor<8xi32>) {
-  %a = cinm.compute -> tensor<1x8xi32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+  %a = cinm.compute -> tensor<1x8xi32> attributes {cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>]} {
     %s = arith.addi %x, %x : tensor<1x8xi32>
     cinm.yield %s : tensor<1x8xi32>
   }
@@ -24,7 +24,7 @@ func.func @views_between(%x: tensor<1x8xi32>) -> (tensor<16xi32>, tensor<8xi32>)
   %e = tensor.empty() : tensor<16xi32>
   %i = tensor.insert_slice %c into %e[0] [8] [1] : tensor<8xi32> into tensor<16xi32>
   %v = tensor.extract_slice %i[0] [8] [1] : tensor<16xi32> to tensor<8xi32>
-  %b = cinm.compute -> tensor<8xi32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+  %b = cinm.compute -> tensor<8xi32> attributes {cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>]} {
     %m = arith.muli %v, %v : tensor<8xi32>
     cinm.yield %m : tensor<8xi32>
   }
@@ -40,7 +40,7 @@ func.func @views_between(%x: tensor<1x8xi32>) -> (tensor<16xi32>, tensor<8xi32>)
 // CHECK-NOT:     cinm.compute
 #upmem = #upmem.platform<type = v1A, dpus = 2048, tasklets = 24>
 func.func @device_between(%w: tensor<8x8xi32>, %x: tensor<8xi32>) -> tensor<8xi32> {
-  %a = cinm.compute -> tensor<8xi32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+  %a = cinm.compute -> tensor<8xi32> attributes {cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>]} {
     %s = arith.addi %x, %x : tensor<8xi32>
     cinm.yield %s : tensor<8xi32>
   }
@@ -48,7 +48,7 @@ func.func @device_between(%w: tensor<8x8xi32>, %x: tensor<8xi32>) -> tensor<8xi3
     %r = cinm.op.gemv %w, %a : tensor<8x8xi32>, tensor<8xi32> -> tensor<8xi32>
     cinm.yield %r : tensor<8xi32>
   }
-  %b = cinm.compute -> tensor<8xi32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+  %b = cinm.compute -> tensor<8xi32> attributes {cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>]} {
     %m = arith.muli %g, %g : tensor<8xi32>
     cinm.yield %m : tensor<8xi32>
   }
@@ -65,12 +65,12 @@ func.func @device_between(%w: tensor<8x8xi32>, %x: tensor<8xi32>) -> tensor<8xi3
 // CHECK:         tensor.insert_slice {{.*}} into %{{.*}}[0, 0] [1, 8] [1, 1] : tensor<8xi32> into tensor<4x8xi32>
 // CHECK:         cinm.compute
 func.func @state_between(%x: tensor<8xi32>, %cache: tensor<4x8xi32>) -> (tensor<4x8xi32>, tensor<8xi32>) {
-  %a = cinm.compute -> tensor<8xi32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+  %a = cinm.compute -> tensor<8xi32> attributes {cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>]} {
     %s = arith.addi %x, %x : tensor<8xi32>
     cinm.yield %s : tensor<8xi32>
   }
   %u = tensor.insert_slice %a into %cache[0, 0] [1, 8] [1, 1] : tensor<8xi32> into tensor<4x8xi32>
-  %b = cinm.compute -> tensor<8xi32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+  %b = cinm.compute -> tensor<8xi32> attributes {cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>]} {
     %m = arith.muli %a, %a : tensor<8xi32>
     cinm.yield %m : tensor<8xi32>
   }
@@ -91,13 +91,13 @@ func.func @in_loop(%x0: tensor<8xi32>) -> tensor<8xi32> {
   %c1 = arith.constant 1 : index
   %c4 = arith.constant 4 : index
   %r = scf.for %i = %c0 to %c4 step %c1 iter_args(%x = %x0) -> (tensor<8xi32>) {
-    %a = cinm.compute -> tensor<2x4xi32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %a = cinm.compute -> tensor<2x4xi32> attributes {cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>]} {
       %s = arith.addi %x, %x : tensor<8xi32>
       %e = tensor.expand_shape %s [[0, 1]] output_shape [2, 4] : tensor<8xi32> into tensor<2x4xi32>
       cinm.yield %e : tensor<2x4xi32>
     }
     %c = tensor.collapse_shape %a [[0, 1]] : tensor<2x4xi32> into tensor<8xi32>
-    %b = cinm.compute -> tensor<8xi32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %b = cinm.compute -> tensor<8xi32> attributes {cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>]} {
       %m = arith.muli %c, %c : tensor<8xi32>
       cinm.yield %m : tensor<8xi32>
     }

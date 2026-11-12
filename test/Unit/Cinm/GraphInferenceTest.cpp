@@ -55,7 +55,7 @@ TEST(ComputeGraphs, IdenticalBlocksFormOneClass) {
   OwningOpRef<ModuleOp> m;
   auto shape = graphShape(ctx, m, R"mlir(
     func.func @f(%x: tensor<8xi32>) -> (tensor<8xi32>, tensor<8xi32>)
-        attributes {cinm.available_platforms = [#cinm.host_platform]} {
+        attributes {cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>]} {
       %r1 = cinm.compute_block (%a = %x : tensor<8xi32>) -> tensor<8xi32> {
         %w = arith.constant dense<1> : tensor<8xi32>
         %y = arith.addi %a, %w : tensor<8xi32>
@@ -79,7 +79,7 @@ TEST(ComputeGraphs, DifferentShapesAreDifferentClasses) {
   OwningOpRef<ModuleOp> m;
   auto shape = graphShape(ctx, m, R"mlir(
     func.func @f(%x: tensor<8xi32>) -> tensor<4xi32>
-        attributes {cinm.available_platforms = [#cinm.host_platform]} {
+        attributes {cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>]} {
       %r1 = cinm.compute_block (%a = %x : tensor<8xi32>) -> tensor<8xi32> {
         %y = arith.addi %a, %a : tensor<8xi32>
         cinm.yield %y : tensor<8xi32>
@@ -104,7 +104,7 @@ TEST(ComputeGraphs, StaticnessIsPartOfTheSignature) {
   auto shape = graphShape(ctx, m, R"mlir(
     func.func @f(%w: tensor<8xi32> {cinm.static}, %x: tensor<8xi32>)
         -> (tensor<8xi32>, tensor<8xi32>)
-        attributes {cinm.available_platforms = [#cinm.host_platform]} {
+        attributes {cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>]} {
       %r1 = cinm.compute_block (%a = %w : tensor<8xi32>) -> tensor<8xi32> {
         %y = arith.addi %a, %a : tensor<8xi32>
         cinm.yield %y : tensor<8xi32>
@@ -126,7 +126,7 @@ TEST(ComputeGraphs, DisconnectedComponentsAreSeparateGraphs) {
   OwningOpRef<ModuleOp> m;
   auto shape = graphShape(ctx, m, R"mlir(
     func.func @f(%x: tensor<8xi32>) -> tensor<8xi32>
-        attributes {cinm.available_platforms = [#cinm.host_platform]} {
+        attributes {cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>]} {
       %r = cinm.compute_block (%a = %x : tensor<8xi32>) -> tensor<8xi32> {
         %y = arith.addi %a, %a : tensor<8xi32>
         cinm.yield %y : tensor<8xi32>
@@ -134,7 +134,7 @@ TEST(ComputeGraphs, DisconnectedComponentsAreSeparateGraphs) {
       return %r : tensor<8xi32>
     }
     func.func @g(%x: tensor<8xi32>) -> tensor<8xi32>
-        attributes {cinm.available_platforms = [#cinm.host_platform]} {
+        attributes {cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>]} {
       %r = cinm.compute_block (%a = %x : tensor<8xi32>) -> tensor<8xi32> {
         %y = arith.addi %a, %a : tensor<8xi32>
         cinm.yield %y : tensor<8xi32>

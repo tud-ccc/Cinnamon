@@ -1,4 +1,4 @@
-//#! cinm-opt --cinm-assign-platforms --cinm-isolate-compute-blocks --upmem-infer-accelerator --split-input-file
+//#! cinm-opt --cinm-attach-host-platform --cinm-assign-platforms --cinm-isolate-compute-blocks --upmem-infer-accelerator --split-input-file
 //
 // r2 = (X * W1) * W2: a two-gemm chain. The size class names the bytes of
 // each i32 weight, the prim files' convention: a weight is K x M and the

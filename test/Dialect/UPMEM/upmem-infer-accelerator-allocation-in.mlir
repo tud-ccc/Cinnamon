@@ -1,7 +1,7 @@
-// RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=fast fixed-tasklets=4 graph-allocation=1 allocation-in=%S/Inputs/allocation-in" | FileCheck %s
-// RUN: not cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=fast fixed-tasklets=4 graph-allocation=1 allocation-in=%S/Inputs/allocation-in-unlisted" 2>&1 | FileCheck %s --check-prefix=UNLISTED
-// RUN: not cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=fast fixed-tasklets=4 graph-allocation=1 allocation-in=%S/Inputs/allocation-in-mismatch" 2>&1 | FileCheck %s --check-prefix=MISMATCH
-// RUN: not cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=fast fixed-tasklets=4 allocation-in=%S/Inputs/allocation-in" 2>&1 | FileCheck %s --check-prefix=NOGRAPH
+// RUN: cinm-opt %s --cinm-attach-host-platform="%cinm_host" --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=fast fixed-tasklets=4 graph-allocation=1 allocation-in=%S/Inputs/allocation-in" | FileCheck %s
+// RUN: not cinm-opt %s --cinm-attach-host-platform="%cinm_host" --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=fast fixed-tasklets=4 graph-allocation=1 allocation-in=%S/Inputs/allocation-in-unlisted" 2>&1 | FileCheck %s --check-prefix=UNLISTED
+// RUN: not cinm-opt %s --cinm-attach-host-platform="%cinm_host" --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=fast fixed-tasklets=4 graph-allocation=1 allocation-in=%S/Inputs/allocation-in-mismatch" 2>&1 | FileCheck %s --check-prefix=MISMATCH
+// RUN: not cinm-opt %s --cinm-attach-host-platform="%cinm_host" --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=fast fixed-tasklets=4 allocation-in=%S/Inputs/allocation-in" 2>&1 | FileCheck %s --check-prefix=NOGRAPH
 
 // allocation-in commits the allocation a file gives instead of profiling and
 // solving: the first gemv runs on its group of 16 DPUs with the file's

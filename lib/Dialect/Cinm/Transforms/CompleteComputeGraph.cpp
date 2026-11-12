@@ -85,14 +85,27 @@ struct CompleteComputeGraphPass
     getOperation()->walk([&](func::FuncOp func) { funcs.push_back(func); });
 
     IRRewriter rewriter(&getContext());
+    bool failedAny = false;
     for (func::FuncOp func : funcs) {
       // Only complete a graph that exists: a function without compute ops
       // has nothing to connect.
       if (func.isExternal() || !containsComputeOp(func))
         continue;
+      // Each block this makes runs on the host in scope, so there must be
+      // one to name.
+      if (!HostPlatformAttr::getInScope(func)) {
+        func.emitError() << getArgument()
+                         << " needs a #cinm.host_platform in the function's "
+                            "cinm.available_platforms to run its host blocks "
+                            "on: run --cinm-attach-host-platform first";
+        failedAny = true;
+        continue;
+      }
       for (Block &block : func.getBody())
         completeBlock(block, rewriter);
     }
+    if (failedAny)
+      signalPassFailure();
   }
 
 private:
@@ -210,9 +223,9 @@ private:
     rewriter.setInsertionPointAfter(group.back());
     auto compute = ComputeOp::create(rewriter, group.front()->getLoc(),
                                      ValueRange(escaping).getTypes());
-    // The host in scope rather than the default one: this list shadows the
-    // cinm.available_platforms attribute of the enclosing function, which
-    // advertises the offloading platforms and may describe the host too.
+    // The host in scope (runOnOperation checked there is one): this list
+    // shadows the cinm.available_platforms attribute of the enclosing
+    // function, which advertises the offloading platforms and the host.
     auto host = HostPlatformAttr::getInScope(group.front());
     compute->setAttr(CinmDialect::AVAILABLE_PLATFORMS_NAME,
                      rewriter.getArrayAttr({host}));

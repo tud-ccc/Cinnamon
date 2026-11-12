@@ -3,7 +3,7 @@
 
 
 // CHECK-LABEL: simple
-func.func @simple(%t00: tensor<6x6xi32>, %t10 : tensor<6xf32> , %m00: memref<6xf32>) attributes{cinm.available_platforms = [#cinm.host_platform]} {
+func.func @simple(%t00: tensor<6x6xi32>, %t10 : tensor<6xf32> , %m00: memref<6xf32>) attributes{cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>]} {
 
     %d = cinm.compute_block (%t0 = %t00: tensor<6x6xi32>, %t1 = %t10 : tensor<6xf32> , %m0 = %m00: memref<6xf32>) -> tensor<6x6xi32> attributes { workgroupShape= array<i64: 2,4,4,2> } {
         %x = cinm.op.elementwise add %t0, %t0: tensor<6x6xi32>
@@ -49,7 +49,7 @@ func.func @simple(%t00: tensor<6x6xi32>, %t10 : tensor<6xf32> , %m00: memref<6xf
     }
 
     // different forms for compute
-    cinm.compute_block () attributes { cinm.available_platforms = [#cinm.host_platform] } {
+    cinm.compute_block () attributes { cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>] } {
         cinm.yield
     }
     cinm.compute_block() attributes { maxDpuBufferSize = 64 } {

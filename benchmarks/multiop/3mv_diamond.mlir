@@ -1,4 +1,4 @@
-//#! cinm-opt --cinm-assign-platforms --cinm-isolate-compute-blocks --upmem-infer-accelerator --split-input-file
+//#! cinm-opt --cinm-attach-host-platform --cinm-assign-platforms --cinm-isolate-compute-blocks --upmem-infer-accelerator --split-input-file
 //
 // j = (W1 * x) * (W2 * x), elementwise: the diamond -- two independent
 // gemvs joining in a third op. This is llama's SwiGLU gate, where the gate

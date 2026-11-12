@@ -38,6 +38,7 @@
 #include <llvm/Support/LogicalResult.h>
 #include <llvm/Support/raw_ostream.h>
 
+#include <llvm/ADT/SmallPtrSet.h>
 #include <mlir/Conversion/AffineToStandard/AffineToStandard.h>
 #include <mlir/Dialect/Affine/IR/AffineOps.h>
 #include <mlir/Dialect/Affine/Transforms/Passes.h>
@@ -65,6 +66,7 @@
 #include <mlir/IR/PatternMatch.h>
 #include <mlir/IR/SymbolTable.h>
 #include <mlir/IR/ValueRange.h>
+#include <mlir/Interfaces/FunctionInterfaces.h>
 #include <mlir/Interfaces/TilingInterface.h>
 #include <mlir/Pass/Pass.h>
 #include <mlir/Pass/PassManager.h>
@@ -1529,6 +1531,32 @@ struct UpmemInferAcceleratorPass
                        "set graph-allocation=true");
       return signalPassFailure();
     }
+
+    // Every search prices the host code around a block, and graph allocation
+    // the host's side of each decision, against the host in scope: one must
+    // be listed, not assumed.
+    bool hostMissing = false;
+    llvm::SmallPtrSet<Operation *, 4> reported;
+    module.walk([&](cinm::ComputeBlockOp block) {
+      if (cinm::HostPlatformAttr::getInScope(block))
+        return;
+      hostMissing = true;
+      Operation *func = block->getParentOfType<FunctionOpInterface>();
+      Operation *at = func ? func : block.getOperation();
+      if (reported.insert(at).second)
+        at->emitError() << getArgument()
+                        << " prices host code against the #cinm.host_platform "
+                           "in scope, and none is listed: add one to the "
+                           "function's cinm.available_platforms, or run "
+                           "--cinm-attach-host-platform first";
+    });
+    if (hostMissing)
+      return signalPassFailure();
+    if (graphAllocation && !hostAchievedFraction.hasValue())
+      module.emitWarning()
+          << getArgument() << ": host-achieved-fraction left at its default ("
+          << static_cast<double>(hostAchievedFraction)
+          << "); pass the fraction the host was calibrated at explicitly";
 
     // Stamp mode builds every block's search space on the block itself, so
     // the whole module has to be in the converted (linalg) form the space is

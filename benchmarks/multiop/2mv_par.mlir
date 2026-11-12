@@ -1,4 +1,4 @@
-//#! cinm-opt --cinm-assign-platforms --cinm-isolate-compute-blocks --upmem-infer-accelerator --split-input-file
+//#! cinm-opt --cinm-attach-host-platform --cinm-assign-platforms --cinm-isolate-compute-blocks --upmem-infer-accelerator --split-input-file
 //
 // (y1, y2) = (W1 * x, W2 * x): two independent gemvs sharing the activation
 // -- llama's QKV projections. Size class = bytes of each M x K i32 weight

@@ -5,12 +5,21 @@
 include "CinmBase.td"
 include "CinmPlatformAttrInterface.td"
 
+// A host rate or cost: an integer or a float literal, positive (the
+// attribute's verifier checks that). Stored as an APFloat (in double
+// semantics) because attribute storage hashes its parameters, and a double
+// has no llvm::hash_value; getModel() reads them back as doubles.
+class Cinm_HostParameter<string desc> : AttrParameter<"::llvm::APFloat", desc> {
+  let parser = "::mlir::cinm::parseHostParameter($_parser)";
+}
+
 def CinmHostPlatformAttr: Cinm_Attr<"HostPlatform", [
     CinmPlatformAttrInterface
   ]> {
   let summary = "Host platform description";
-  let hasCustomAssemblyFormat = 1;
   let mnemonic = "host_platform";
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
   let description = [{
     The host the accelerators hang off, and what it costs to run code on it.
     Two consumers read it: the offload roofline (--cinm-assign-platforms),
@@ -18,82 +27,65 @@ def CinmHostPlatformAttr: Cinm_Attr<"HostPlatform", [
     and the cost model, which prices the host code around each offloaded
     block -- repacks of operands, and the loops that combine partial results.
 
-    Every parameter is optional and defaults to the bench machine, an Intel
-    R2312WFTZSR holding 2x Xeon Silver 4216 (16 Cascade Lake cores each at
-    2.1 GHz) alongside 20 PIM modules; `#cinm.host_platform` alone is that
-    machine, and parameters that differ from it are given by key:
+    Every parameter is required, in any order, and printed, so that IR
+    states the machine it is priced against rather than leaving it to
+    whichever defaults the reader was built with:
 
     ```mlir
-    #cinm.host_platform<ops_per_second = 8.6e12>
+    #cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9,
+                        scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64,
+                        stream_bytes_per_second = 10.8e9,
+                        copy_bytes_per_second = 0.63e9>
     ```
 
-    Every parameter is printed, defaults included, so that printed IR states
-    the machine it is priced against.
+    A program rarely writes one: --cinm-attach-host-platform adds it to every
+    function's `cinm.available_platforms` from its pass options, whose
+    defaults are the bench machine and whose description says where each
+    number comes from.
 
     The host description a piece of IR is priced against is the nearest one
     in a `cinm.available_platforms` list of the op or an enclosing op
-    (`getInScope`), or the default when none is listed. Listing it is how a
-    program states that it runs on a different machine.
+    (`getInScope`). There is none when no list in scope names a host, and a
+    pass that has host code to price then fails rather than guess.
 
     Parameters:
 
     - `ops_per_second` (roofline): arithmetic throughput summed over every
-      core, a multiply-add counting as two ops. The default is the int32
-      peak, 2.1e12: an int32 multiply-add uses 16 AVX-512 lanes. It also
-      serves int8 when the host code widens int8 to i32, as TVM does without
-      VNNI; AVX512-VNNI's vpdpbusd does 64 int8 multiply-accumulates in one
-      instruction (~8.6e12 ops/s), and a host that runs int8 on it states
-      that figure instead.
-    - `dram_bytes_per_second` (roofline): DRAM bandwidth to those cores. The
-      PIM modules occupy DIMM slots: 4x 64 GB DDR4 populate 2 slots per
-      socket, so 4 of the 12 channels carry host DRAM, and the 4216 caps
-      DDR4 at 2400 MT/s -- 76.8 GB/s of peak against the ~230 GB/s the same
-      sockets reach fully populated. The default is a STREAM triad
-      (two reads and a write, the mix this term's byte count implies)
-      measured under the performance governor with each thread reading
-      pages it faulted itself: 23 GB/s, saturating from 16 threads on. A
-      pure read reaches 30-32. The figure matters: the gate offloads `va`
-      below 20 GB/s and rejects it above, which is where the 15 GB/s
-      cpu_baseline.py quotes used to put it.
+      core, a multiply-add counting as two ops, at the width the host code
+      computes in: a host that widens int8 to i32 states its int32 rate.
+    - `dram_bytes_per_second` (roofline): DRAM bandwidth to those cores, for
+      the mix of two reads and a write this term's byte count implies.
     - `scalar_op_ns`: one scalar integer add in straight-line host code.
-      Between 1.6 and 10 ns on the bench machine, lower the more iterations
-      of the enclosing loop amortize it.
     - `vector_op_ns`, `vector_bytes`: one vector instruction, and the width
       it operates on. A host loop nest is priced as vectorized: an op on a
       `b`-byte element costs `vector_op_ns * b / vector_bytes`. The width is
       the one the host pipeline generates, not the one the machine could
-      run -- `--affine-super-vectorize` picks the element count and `llc`'s
-      `-mcpu` decides what that legalises to (HOST_VECTOR_SIZE and
-      HOST_MCPU in the experiments Makefile). At 16 elements on
-      `cascadelake` an i32 loop emits zmm, so 64 bytes; the same pass at 8
-      elements with llc's default `generic` emitted xmm, 16 bytes.
+      run.
     - `stream_bytes_per_second`: what one core streams through a host loop
-      nest. A loop nest costs the larger of its arithmetic and its memory
-      traffic at this rate. The partial-sum loops that follow a split
-      reduction are bound by the latter; walked in the contiguous order the
-      lowering emits, they measure 10.8-11.3 GB/s on one core (0.35 ns per
-      i32 add), against 7.7 for a bare streaming read and 9.6 for a triad.
-      Walked across the partials instead the same loop costs 1.3-3.0 ns per
-      add, since each access lands on a different page and the trip count
-      outruns the 64-entry L1 dTLB -- the knee is at the 4 KiB stride, not
-      at any cache size. This rate describes the contiguous case only.
+      nest walked in contiguous order. A loop nest costs the larger of its
+      arithmetic and its memory traffic at this rate.
     - `copy_bytes_per_second`: the rate of the repacks between a host
       buffer's layout and a transfer's (cnm.compact_buffer, its inverse
-      cnm.expand_buffer, and memref.copy). These are strided permutations,
-      an order of magnitude slower than streaming: over the 41k repacks the
-      bench sample measured, time is linear in bytes (exponent 0.98) at a
-      median 0.63 GB/s, with the layout moving it between 0.23 and 2.0 GB/s
-      (10th to 90th percentile).
+      cnm.expand_buffer, and memref.copy).
   }];
 
-  // One struct rather than a parameter per number, so that the roofline and
-  // the cost model take the same value, and its member defaults are the one
-  // place the bench machine is written down.
-  let parameters = (ins "::mlir::cinm::HostModel":$model);
+  let parameters = (ins
+    Cinm_HostParameter<"arithmetic throughput, ops/s">:$ops_per_second,
+    Cinm_HostParameter<"DRAM bandwidth, bytes/s">:$dram_bytes_per_second,
+    Cinm_HostParameter<"scalar add, ns">:$scalar_op_ns,
+    Cinm_HostParameter<"vector instruction, ns">:$vector_op_ns,
+    Cinm_HostParameter<"vector width, bytes">:$vector_bytes,
+    Cinm_HostParameter<"one core's streaming rate, bytes/s">:$stream_bytes_per_second,
+    Cinm_HostParameter<"strided repack rate, bytes/s">:$copy_bytes_per_second
+  );
 
   let builders = [
-    AttrBuilder<(ins), [{
-      return $_get($_ctxt, ::mlir::cinm::HostModel{});
+    AttrBuilder<(ins "const ::mlir::cinm::HostModel &":$model), [{
+      auto f = [](double v) { return ::llvm::APFloat(v); };
+      return $_get($_ctxt, f(model.opsPerSecond), f(model.dramBytesPerSecond),
+                   f(model.scalarOpNs), f(model.vectorOpNs),
+                   f(model.vectorBytes), f(model.streamBytesPerSecond),
+                   f(model.copyBytesPerSecond));
     }]>
   ];
 
@@ -101,13 +93,17 @@ def CinmHostPlatformAttr: Cinm_Attr<"HostPlatform", [
     llvm::StringRef getName() const {
       return "host";
     }
+
+    /// The parameters as one struct, which the roofline and the cost model
+    /// take, so that both read the same values.
+    ::mlir::cinm::HostModel getModel() const;
     llvm::ArrayRef<cinm::CinmLevelDefAttr> getLevels() const {
       return {};
     }
 
     /// The host description `op` is priced against: the nearest one listed
-    /// in a `cinm.available_platforms` of `op` or an enclosing op, or the
-    /// default machine when none is. Unlike accelerator lookup, a list that
+    /// in a `cinm.available_platforms` of `op` or an enclosing op, or null
+    /// when none is. Unlike accelerator lookup, a list that
     /// names no host does not stop the search -- the host is the machine the
     /// whole program runs on, so a block that lists only its accelerator
     /// still runs on the host its function declared.

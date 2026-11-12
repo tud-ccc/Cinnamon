@@ -369,11 +369,20 @@ struct OpCountSimulator : UpmemSimulator {
   }
 };
 
-/// The host `region` runs on, as the nearest #cinm.host_platform around it
-/// declares it.
-static cinm::HostModel hostOf(Region &region) {
+/// The #cinm.host_platform around `region`, or null when none is in scope.
+static cinm::HostPlatformAttr hostAttrOf(Region &region) {
   if (Operation *parent = region.getParentOp())
-    return cinm::HostPlatformAttr::getInScope(parent).getModel();
+    return cinm::HostPlatformAttr::getInScope(parent);
+  return {};
+}
+
+/// The host `region` runs on, as the nearest #cinm.host_platform around it
+/// declares it. Without one the model is NaN throughout: host code then
+/// prices to no cost at all, which simulateHostRegionOrFail refuses, while
+/// a DPU program -- which prices nothing against the host -- is unaffected.
+static cinm::HostModel hostOf(Region &region) {
+  if (auto host = hostAttrOf(region))
+    return host.getModel();
   return cinm::HostModel{};
 }
 
@@ -406,6 +415,14 @@ simulateHostRegionOrFail(Region &region, bool annotate,
         os << " = " << value;
       });
   Operation *parent = region.getParentOp();
+  if (!hostAttrOf(region))
+    return mlir::emitSilenceableFailure(
+               parent ? parent->getLoc() : UnknownLoc::get(region.getContext()))
+           << "no #cinm.host_platform in scope to price the host code "
+              "against ("
+           << offenders
+           << "): list one in the function's cinm.available_platforms, as "
+              "--cinm-attach-host-platform does";
   return mlir::emitSilenceableFailure(
              parent ? parent->getLoc() : UnknownLoc::get(region.getContext()))
          << "cost model produced a non-finite cost (" << offenders

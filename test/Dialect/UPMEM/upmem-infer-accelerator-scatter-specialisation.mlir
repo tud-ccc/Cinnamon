@@ -1,7 +1,7 @@
-// RUN: cinm-opt %s --cinm-isolate-compute-blocks \
+// RUN: cinm-opt %s --cinm-attach-host-platform="%cinm_host" --cinm-isolate-compute-blocks \
 // RUN:   --upmem-infer-accelerator="simulator=op-count eval-solution=dpus=2048,tasklets=8,gemv.M.mram=8,gemv.K.mram=128,gemv.M.wram=8,gemv.K.wram=64,gemv.order[0]=2,gemv.order[1]=1" \
 // RUN: | FileCheck %s --check-prefix=SPEC
-// RUN: cinm-opt %s --cinm-isolate-compute-blocks \
+// RUN: cinm-opt %s --cinm-attach-host-platform="%cinm_host" --cinm-isolate-compute-blocks \
 // RUN:   --upmem-infer-accelerator="enable-scatter-specialisation=false simulator=op-count eval-solution=dpus=2048,tasklets=8,gemv.M.mram=8,gemv.K.mram=128,gemv.M.wram=8,gemv.K.wram=64,gemv.order[0]=2,gemv.order[1]=1" \
 // RUN: | FileCheck %s --check-prefix=NOSPEC
 

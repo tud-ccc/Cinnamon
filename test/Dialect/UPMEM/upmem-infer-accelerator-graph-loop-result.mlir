@@ -1,5 +1,5 @@
 // RUN: rm -rf %t && mkdir -p %t
-// RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=fast fixed-tasklets=4 graph-allocation=1 allocation-in=%S/Inputs/graph-loop-result allocation-report=%t" -o /dev/null
+// RUN: cinm-opt %s --cinm-attach-host-platform="%cinm_host" --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=fast fixed-tasklets=4 graph-allocation=1 allocation-in=%S/Inputs/graph-loop-result allocation-report=%t" -o /dev/null
 // RUN: FileCheck %s < %t/infer_looped.json
 
 // A loop carries a value from a block before it to a block after it. The

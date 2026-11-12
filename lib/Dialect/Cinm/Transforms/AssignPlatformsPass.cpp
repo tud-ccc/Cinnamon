@@ -161,15 +161,23 @@ struct CinmAssignPlatformsPass
       opsToWrap.push_back(op);
     });
 
-    cinm::HostModel host = HostPlatformAttr::getInScope(func).getModel();
-    if (hostOpsPerSecond > 0)
-      host.opsPerSecond = hostOpsPerSecond;
-    if (hostDramBytesPerSecond > 0)
-      host.dramBytesPerSecond = hostDramBytesPerSecond;
-
     // The verdict is computed whenever it is either enforced or recorded, so
-    // an ungated run can still be dumped.
+    // an ungated run can still be dumped. Either way it is priced against
+    // the host in scope, which has to be there.
     const bool dumping = !dumpDecisions.empty();
+    cinm::HostModel host;
+    if (requireProfitable || dumping) {
+      auto hostAttr = HostPlatformAttr::getInScope(func);
+      if (!hostAttr) {
+        func.emitError() << getArgument()
+                         << " prices each op against the host, and no "
+                            "#cinm.host_platform is in scope: list one in the "
+                            "function's cinm.available_platforms, or run "
+                            "--cinm-attach-host-platform first";
+        return signalPassFailure();
+      }
+      host = hostAttr.getModel();
+    }
     SmallVector<std::string> decisions;
 
     for (Operation *op : opsToWrap) {
@@ -221,18 +229,6 @@ struct CinmAssignPlatformsPass
       computeOp->setAttr(CinmDialect::AVAILABLE_PLATFORMS_NAME,
                          ArrayAttr::get(func->getContext(), interested));
     }
-
-    // The host the verdicts were priced against, overrides included, is
-    // written onto the function, replacing any it listed: every later pass
-    // that prices host code (the menu screen, the allocation's host point,
-    // the cost model) reads the host in scope, and must read this machine.
-    SmallVector<Attribute> listed{
-        HostPlatformAttr::get(func->getContext(), host)};
-    for (Attribute attr : platformsAttr)
-      if (!llvm::isa<HostPlatformAttr>(attr))
-        listed.push_back(attr);
-    func->setAttr(CinmDialect::AVAILABLE_PLATFORMS_NAME,
-                  ArrayAttr::get(func->getContext(), listed));
 
     if (dumping && failed(appendDecisions(dumpDecisions, decisions))) {
       func.emitError() << "cannot write offload decisions to '" << dumpDecisions

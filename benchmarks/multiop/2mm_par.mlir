@@ -1,4 +1,4 @@
-//#! cinm-opt --cinm-assign-platforms --cinm-isolate-compute-blocks --upmem-infer-accelerator --split-input-file
+//#! cinm-opt --cinm-attach-host-platform --cinm-assign-platforms --cinm-isolate-compute-blocks --upmem-infer-accelerator --split-input-file
 //
 // (r1, r2) = (X * W1, X * W2): two independent gemms sharing the activation
 // X -- the QKV pattern. Size class = bytes of each K x M i32 weight (see

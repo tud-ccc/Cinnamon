@@ -53,20 +53,21 @@ $(OUT)/$(NAME)_linalg.mlir: $(OUT)/$(NAME)_unrolled.mlir $(MK)
 # against every DPU count the block admits. The verdicts are still dumped
 # here, as what the whole-array model would have said.
 #
-# The host is the default #cinm.host_platform unless ASSIGN_OPTS overrides
-# it (the evaluation passes host-ops-per-second and
-# host-dram-bytes-per-second from its options). Its ops_per_second is the
-# int32 peak, and int32 is the width the host computes these int8 models in:
-# the TVM kernels that run the host side use no VNNI, and sign-extend to i32.
-# The pass writes the host it priced against onto each function, so the
-# allocation's screen and host point read the same machine.
+# The host every function is priced against is listed on it by
+# --cinm-attach-host-platform, from HOST_OPTS (the evaluation passes its
+# options' host_platform); left empty, the pass uses the bench machine and
+# warns. Its ops-per-second is the int32 peak, and int32 is the width the
+# host computes these int8 models in: the TVM kernels that run the host side
+# use no VNNI, and sign-extend to i32. The host stays on each function, so
+# the allocation's screen and host point read the same machine.
+HOST_OPTS ?=
 ASSIGN_OPTS ?=
 # Every verdict the gate took, with its roofline terms, as JSON lines: the
 # input of the evaluation's roofline figure.
 DECISIONS = $(OUT)/$(NAME)_offload_decisions.jsonl
 
 $(OUT)/$(NAME)_with_compute.mlir: $(OUT)/$(NAME)_linalg.mlir $(MK)
-	$(CINM_OPT) $< "--cinm-assign-platforms=$(ASSIGN_OPTS) dump-decisions=$(DECISIONS)" \
+	$(CINM_OPT) $< "--cinm-attach-host-platform=$(HOST_OPTS)" "--cinm-assign-platforms=$(ASSIGN_OPTS) dump-decisions=$(DECISIONS)" \
 	--cinm-isolate-compute-blocks --cinm-expand-compute-scope --cinm-complete-compute-graph --cinm-annotate-operand-reuse --cinm-absorb-static-slices \
    > $@
 

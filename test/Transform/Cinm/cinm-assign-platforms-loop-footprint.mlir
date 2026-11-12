@@ -1,4 +1,4 @@
-// RUN: cinm-opt %s --split-input-file "--cinm-assign-platforms=dump-decisions=%t.jsonl" -o /dev/null
+// RUN: cinm-opt %s --cinm-attach-host-platform="%cinm_host" --split-input-file "--cinm-assign-platforms=dump-decisions=%t.jsonl" -o /dev/null
 // RUN: FileCheck %s < %t.jsonl
 
 // A loop in a linalg body is counted once per trip. Its bounds may reach the

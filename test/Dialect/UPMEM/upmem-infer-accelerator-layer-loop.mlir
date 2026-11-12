@@ -1,4 +1,4 @@
-// RUN: cinm-opt %s --split-input-file --cinm-isolate-compute-blocks --cinm-absorb-static-slices --upmem-infer-accelerator="simulator=op-count max-evals=4 n-init=4 fixed-tasklets=4 graph-allocation=1 screen-menu=0 allow-host-placement=0 allocation-granularity=4 latency-objective=1" | FileCheck %s
+// RUN: cinm-opt %s --cinm-attach-host-platform="%cinm_host" --split-input-file --cinm-isolate-compute-blocks --cinm-absorb-static-slices --upmem-infer-accelerator="simulator=op-count max-evals=4 n-init=4 fixed-tasklets=4 graph-allocation=1 screen-menu=0 allow-host-placement=0 allocation-granularity=4 latency-objective=1" | FileCheck %s
 // Both halves of the placement decision are off here (screen-menu=0,
 // allow-host-placement=0): these toy blocks are far too small to beat the
 // host on any DPU count, and what this test pins is what the search, the

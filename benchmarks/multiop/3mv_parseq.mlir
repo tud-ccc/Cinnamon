@@ -1,4 +1,4 @@
-//#! cinm-opt --cinm-assign-platforms --cinm-isolate-compute-blocks --upmem-infer-accelerator --split-input-file
+//#! cinm-opt --cinm-attach-host-platform --cinm-assign-platforms --cinm-isolate-compute-blocks --upmem-infer-accelerator --split-input-file
 //
 // (z, t) = (W2 * (W1 * x), W3 * x): a two-gemv chain plus one gemv parallel
 // to it, sharing the activation. Size class = bytes of each i32 weight (see

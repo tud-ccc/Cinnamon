@@ -604,8 +604,10 @@ struct InferenceOptions {
   /// The share of its roofline the host is taken to achieve. Every host cost
   /// the graph allocation uses -- the menu screen, the host profile point and
   /// the screen after profiling -- is the roofline divided by it
-  /// (cinm::hostSeconds).
-  double hostAchievedFraction = 0.64;
+  /// (cinm::hostSeconds). No value of its own: the pass option
+  /// (host-achieved-fraction) holds the calibrated default, and a caller
+  /// that builds these options states the fraction it means.
+  double hostAchievedFraction = std::numeric_limits<double>::quiet_NaN();
 
   /// Graph allocation only, latency objective only: offer every class the
   /// option of staying on the host, as a profile point costed by the host

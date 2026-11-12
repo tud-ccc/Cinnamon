@@ -1,4 +1,4 @@
-// RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=2 n-init=2 fixed-dpus=16 fixed-tasklets=4" | FileCheck %s
+// RUN: cinm-opt %s --cinm-attach-host-platform="%cinm_host" --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=2 n-init=2 fixed-dpus=16 fixed-tasklets=4" | FileCheck %s
 
 // Inference is driven over every compute block the platform owns, not over one
 // per function: the unit the driver walks is a connected component of the
@@ -59,7 +59,7 @@ func.func @shared_input(%A: tensor<256x256xi32>, %x: tensor<256xi32>, %y: tensor
 func.func @host_only(%A: tensor<256x256xi32>, %x: tensor<256xi32>) -> tensor<256xi32> {
   // CHECK-NOT: on accelerator
   // CHECK: cinm.op.gemv
-  %r = cinm.compute -> tensor<256xi32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+  %r = cinm.compute -> tensor<256xi32> attributes {cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>]} {
     %g = cinm.op.gemv %A, %x : tensor<256x256xi32>, tensor<256xi32> -> tensor<256xi32>
     cinm.yield %g : tensor<256xi32>
   }

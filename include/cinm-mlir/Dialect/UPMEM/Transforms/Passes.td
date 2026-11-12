@@ -457,7 +457,7 @@ def UpmemInferAcceleratorPass : Pass<"upmem-infer-accelerator", "ModuleOp"> {
            "profile point that stays there. A block then falls back when the "
            "DPUs it would take are worth more elsewhere, which a screen in "
            "front of the solve cannot know">,
-    Option<"hostAchievedFraction", "host-achieved-fraction", "double", "0.64",
+    Option<"hostAchievedFraction", "host-achieved-fraction", "double", "0.73",
            "Graph allocation only: the share of its roofline the host is "
            "taken to achieve. Every host cost the allocation uses is the "
            "roofline divided by it">,

@@ -1,4 +1,4 @@
-//#! cinm-opt --cinm-assign-platforms --cinm-isolate-compute-blocks --upmem-infer-accelerator --split-input-file
+//#! cinm-opt --cinm-attach-host-platform --cinm-assign-platforms --cinm-isolate-compute-blocks --upmem-infer-accelerator --split-input-file
 //
 // z = W2 * (W1 * x): a two-gemv chain, llama's FFN shape. The mv suite is
 // the mm suite at one activation row, written as the matrix-vector op the

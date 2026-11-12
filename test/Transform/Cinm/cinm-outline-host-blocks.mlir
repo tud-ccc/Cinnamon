@@ -47,7 +47,7 @@ func.func @bridge(%a: tensor<8x8xi32>, %x: tensor<8xi32>) -> tensor<8xi32> {
     cinm.yield %g : tensor<8xi32>
   }
   %e = tensor.empty() : tensor<8xi32>
-  %h = cinm.compute -> tensor<8xi32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+  %h = cinm.compute -> tensor<8xi32> attributes {cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>]} {
     %m = linalg.generic {indexing_maps = [#id, #id], iterator_types = ["parallel"]}
         ins(%v : tensor<8xi32>) outs(%e : tensor<8xi32>) {
     ^bb0(%in: i32, %out: i32):
@@ -81,7 +81,7 @@ func.func @in_loop(%x0: tensor<4xi32>) -> tensor<4xi32> {
   %c1 = arith.constant 1 : index
   %c4 = arith.constant 4 : index
   %r = scf.for %i = %c0 to %c4 step %c1 iter_args(%x = %x0) -> (tensor<4xi32>) {
-    %y = cinm.compute -> tensor<4xi32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+    %y = cinm.compute -> tensor<4xi32> attributes {cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>]} {
       %ii = arith.index_cast %i : index to i32
       %s = tensor.insert %ii into %x[%i] : tensor<4xi32>
       cinm.yield %s : tensor<4xi32>
@@ -113,7 +113,7 @@ func.func private @double(%t: tensor<4xi32>) -> tensor<4xi32> {
   return %s : tensor<4xi32>
 }
 func.func @isolated(%x: tensor<4xi32>) -> tensor<4xi32> {
-  %y = cinm.compute_block (%b = %x : tensor<4xi32>) -> tensor<4xi32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+  %y = cinm.compute_block (%b = %x : tensor<4xi32>) -> tensor<4xi32> attributes {cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>]} {
     %d = func.call @double(%b) : (tensor<4xi32>) -> tensor<4xi32>
     cinm.yield %d : tensor<4xi32>
   }
@@ -131,7 +131,7 @@ func.func @isolated(%x: tensor<4xi32>) -> tensor<4xi32> {
 // CHECK-NOT:       bufferization.materialize_in_destination
 // CHECK:           return %[[S]]
 func.func @pinned(%x: tensor<4xi32>, %d: tensor<4xi32>) -> tensor<4xi32> {
-  %y = cinm.compute -> tensor<4xi32> attributes {cinm.available_platforms = [#cinm.host_platform]} {
+  %y = cinm.compute -> tensor<4xi32> attributes {cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 10.8e9, copy_bytes_per_second = 0.63e9>]} {
     %p = bufferization.materialize_in_destination %x in %d : (tensor<4xi32>, tensor<4xi32>) -> tensor<4xi32>
     cinm.yield %p : tensor<4xi32>
   }

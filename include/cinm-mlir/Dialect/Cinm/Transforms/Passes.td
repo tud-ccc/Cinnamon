@@ -240,6 +240,81 @@ def CinmMemoryCleanupPass
   ];
 }
 
+def CinmAttachHostPlatformPass : Pass<"cinm-attach-host-platform", "mlir::ModuleOp"> {
+  let summary = "List the host every function runs on in its cinm.available_platforms";
+  let description = [{
+    Adds a `#cinm.host_platform` built from the options below to every
+    function's `cinm.available_platforms` that names no host yet, and gives
+    one holding only the host to a function that has no list but offloads:
+    one that holds a compute op, or an op with a list. A function with
+    neither offloads nothing and is left alone, and one that already names a
+    host keeps it: the program stated its machine. Compute ops
+    inside a function find the host through it (HostPlatformAttr::getInScope),
+    so their own lists -- where a host entry means a host block -- are not
+    touched.
+
+    This is the one place host numbers are written down. Each option's
+    default is the bench machine, an Intel R2312WFTZSR holding 2x Xeon Silver
+    4216 (16 Cascade Lake cores each at 2.1 GHz) alongside 20 PIM modules,
+    but a run that leaves any option at its default warns, naming them: a
+    host model is a measurement of a machine, and a pipeline should state
+    the one it means.
+
+    Where the defaults come from:
+
+    - `ops-per-second`: the int32 peak, 32 cores x 2.1 GHz x 16 AVX-512
+      lanes x 2 ops per multiply-add. It also serves int8 when the host code
+      widens int8 to i32, as TVM does without VNNI; AVX512-VNNI's vpdpbusd
+      does 64 int8 multiply-accumulates in one instruction (~8.6e12 ops/s),
+      and a host that runs int8 on it states that figure instead.
+    - `dram-bytes-per-second`: a STREAM triad measured under the performance
+      governor with each thread reading pages it faulted itself. The PIM
+      modules occupy DIMM slots: 4x 64 GB DDR4 populate 2 slots per socket,
+      so 4 of the 12 channels carry host DRAM, and the 4216 caps DDR4 at
+      2400 MT/s -- 76.8 GB/s of peak against the ~230 GB/s the same sockets
+      reach fully populated. A pure read reaches 30-32 GB/s. The figure
+      matters: the gate offloads `va` below 20 GB/s and rejects it above.
+    - `scalar-op-ns`: one scalar integer add in straight-line host code,
+      between 1.6 and 10 ns on the bench machine, lower the more iterations
+      of the enclosing loop amortize it.
+    - `vector-op-ns`, `vector-bytes`: the host pipeline vectorizes at 16
+      elements (`--affine-super-vectorize`, HOST_VECTOR_SIZE) and `llc`
+      targets `cascadelake` (HOST_MCPU), so an i32 loop emits zmm: 64 bytes.
+      The same pass at 8 elements with llc's default `generic` emitted xmm,
+      16 bytes.
+    - `stream-bytes-per-second`: the partial-sum loops that follow a split
+      reduction, walked in the contiguous order the lowering emits, measure
+      10.8-11.3 GB/s on one core (0.35 ns per i32 add), against 7.7 for a
+      bare streaming read and 9.6 for a triad. Walked across the partials
+      instead the same loop costs 1.3-3.0 ns per add, since each access lands
+      on a different page and the trip count outruns the 64-entry L1 dTLB;
+      this rate describes the contiguous case only.
+    - `copy-bytes-per-second`: over the 41k repacks the bench sample
+      measured, time is linear in bytes (exponent 0.98) at a median
+      0.63 GB/s, with the layout moving it between 0.23 and 2.0 GB/s (10th to
+      90th percentile).
+  }];
+
+  let options = [
+    Option<"opsPerSecond", "ops-per-second", "double", "2.1e12",
+           "The host's arithmetic throughput, ops/s">,
+    Option<"dramBytesPerSecond", "dram-bytes-per-second", "double", "21.7e9",
+           "The host's DRAM bandwidth, bytes/s">,
+    Option<"scalarOpNs", "scalar-op-ns", "double", "3.0",
+           "One scalar add in host code, ns">,
+    Option<"vectorOpNs", "vector-op-ns", "double", "0.5",
+           "One vector instruction in host code, ns">,
+    Option<"vectorBytes", "vector-bytes", "double", "64.0",
+           "The width a host vector instruction operates on, bytes">,
+    Option<"streamBytesPerSecond", "stream-bytes-per-second", "double", "10.8e9",
+           "What one core streams through a host loop nest, bytes/s">,
+    Option<"copyBytesPerSecond", "copy-bytes-per-second", "double", "0.63e9",
+           "The rate of a strided repack between two layouts, bytes/s">
+  ];
+
+  let dependentDialects = ["mlir::cinm::CinmDialect"];
+}
+
 def CinmAssignPlatformsPass : Pass<"cinm-assign-platforms", "mlir::func::FuncOp"> {
   let summary = "Wrap cinm.op.* operations in cinm.compute based on platform interest";
   let description = [{
@@ -250,8 +325,9 @@ def CinmAssignPlatformsPass : Pass<"cinm-assign-platforms", "mlir::func::FuncOp"
 
     `require-profitable` adds a second question. isOffloadingTarget asks only
     whether a platform *can* run the op; with this on, a platform that can
-    must also say it *should*, through its roofline (evaluateOffload). The
-    host numbers the roofline compares against are the two options below.
+    must also say it *should*, through its roofline (evaluateOffload),
+    against the `#cinm.host_platform` in scope (--cinm-attach-host-platform
+    lists one). Without one, a gated or dumped run fails.
 
     It is off by default because it is a real filter: an op with no static
     operand has nothing to amortize and is rejected, which for the PrIM
@@ -276,10 +352,6 @@ def CinmAssignPlatformsPass : Pass<"cinm-assign-platforms", "mlir::func::FuncOp"
   let options = [
     Option<"requireProfitable", "require-profitable", "bool", "false",
            "Also require the platform's roofline to predict a win over the host">,
-    Option<"hostOpsPerSecond", "host-ops-per-second", "double", "0",
-           "Override the host platform's ops_per_second (0: take it from the #cinm.host_platform in scope)">,
-    Option<"hostDramBytesPerSecond", "host-dram-bytes-per-second", "double", "0",
-           "Override the host platform's dram_bytes_per_second (0: take it from the #cinm.host_platform in scope)">,
     Option<"dumpDecisions", "dump-decisions", "std::string", "\"\"",
            "Write every offload decision, with the roofline terms behind it, to this file as JSON lines (one object per op and capable platform)">
   ];

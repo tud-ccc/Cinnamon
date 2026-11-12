@@ -1,4 +1,4 @@
-// RUN: cinm-opt "--upmem-annotate-costs=costs-csv=%t.csv" %s -o /dev/null
+// RUN: cinm-opt --cinm-attach-host-platform="%cinm_host" "--upmem-annotate-costs=costs-csv=%t.csv" %s -o /dev/null
 // RUN: FileCheck %s < %t.csv
 
 // The host code around an offloaded block, priced from the host platform in
@@ -45,7 +45,7 @@ module {
   }
 
   func.func @declared_host(%packed: memref<4x1024xi32>, %partials: memref<4x1024xi32>, %out: memref<1024xi32>)
-      attributes {cinm.available_platforms = [#cinm.host_platform<stream_bytes_per_second = 1.0e9, copy_bytes_per_second = 1.0e9>, #upmem]} {
+      attributes {cinm.available_platforms = [#cinm.host_platform<ops_per_second = 2.1e12, dram_bytes_per_second = 21.7e9, scalar_op_ns = 3.0, vector_op_ns = 0.5, vector_bytes = 64, stream_bytes_per_second = 1.0e9, copy_bytes_per_second = 1.0e9>, #upmem]} {
     cinm.compute_block on accelerator #upmem.array<128x4, <type = v1A, dpus = 512, tasklets = 8>> (%p = %packed : memref<4x1024xi32>, %q = %partials : memref<4x1024xi32>, %o = %out : memref<1024xi32>) attributes {cinm.available_platforms = [#upmem]} {
       %c0_i32 = arith.constant 0 : i32
       cnm.expand_buffer %p into %q[affine_map<(d0, d1) -> (d0, d1)>] : memref<4x1024xi32> into memref<4x1024xi32>

@@ -2,6 +2,7 @@ add_mlir_dialect_library(CinmTransforms
     AbsorbStaticSlices.cpp
     AnnotateOperandReuse.cpp
     AssignPlatformsPass.cpp
+    AttachHostPlatform.cpp
     InferTileSizesPass.cpp
     BufferizeCinm.cpp
     CinmTransformsUtils.cpp

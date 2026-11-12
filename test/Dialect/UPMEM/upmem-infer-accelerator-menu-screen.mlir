@@ -1,6 +1,6 @@
-// RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=fast max-evals=2 n-init=2 graph-allocation=true allocation-report=%t gate-dry-run=true" -o /dev/null
+// RUN: cinm-opt %s --cinm-attach-host-platform="%cinm_host" --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=fast max-evals=2 n-init=2 graph-allocation=true allocation-report=%t gate-dry-run=true" -o /dev/null
 // RUN: FileCheck %s --input-file=%t/infer_gemv.json --check-prefix=REPORT
-// RUN: cinm-opt %s --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=2 n-init=2 graph-allocation=true screen-menu=true" 2>&1 | FileCheck %s --check-prefix=SCREEN
+// RUN: cinm-opt %s --cinm-attach-host-platform="%cinm_host" --cinm-isolate-compute-blocks --upmem-infer-accelerator="simulator=op-count max-evals=2 n-init=2 graph-allocation=true screen-menu=true" 2>&1 | FileCheck %s --check-prefix=SCREEN
 
 // The menu screen prices this block's roofline at every DPU count the block
 // admits and keeps only the counts that beat the host. This gemv streams a
@@ -23,7 +23,7 @@
 // REPORT-NOT: "screen": "kept"
 // REPORT-NOT: "selected": true
 // REPORT: "graph": "infer_gemv"
-// REPORT: "achieved_fraction": {{0\.64[0-9]*}}
+// REPORT: "achieved_fraction": {{0\.7(3|29+)[0-9]*}}
 
 // SCREEN: no resource value beats the host on this block
 // SCREEN-NOT: cinm.compute_block on accelerator #upmem.array

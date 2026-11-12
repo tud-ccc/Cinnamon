@@ -52,6 +52,18 @@ config.excludes = ["Inputs", "CMakeLists.txt", "README.md", "LICENSE", "lit.cfg.
 config.substitutions.append(("%PATH%", config.environment["PATH"]))
 config.substitutions.append(("%shlibext", config.llvm_shlib_ext))
 
+# The host every test that needs one is priced against, as the options of
+# --cinm-attach-host-platform: the bench machine, stated rather than left to
+# the pass's defaults (which warn).
+config.substitutions.append(
+    (
+        "%cinm_host",
+        "ops-per-second=2.1e12 dram-bytes-per-second=21.7e9 scalar-op-ns=3.0"
+        " vector-op-ns=0.5 vector-bytes=64 stream-bytes-per-second=10.8e9"
+        " copy-bytes-per-second=0.63e9",
+    )
+)
+
 llvm_config.with_system_environment(["HOME", "INCLUDE", "LIB", "TMP", "TEMP"])
 
 # The dialect runtimes the python backend dlopens are built against the C++

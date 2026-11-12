@@ -1,5 +1,5 @@
-// RUN: cinm-opt %s --cinm-isolate-compute-blocks --cinm-complete-compute-graph --split-input-file --verify-diagnostics | FileCheck %s
-// RUN: cinm-opt %s --cinm-isolate-compute-blocks --cinm-complete-compute-graph=demote-nested-compute --split-input-file 2>/dev/null | FileCheck %s --check-prefix=DEMOTE
+// RUN: cinm-opt %s --cinm-attach-host-platform="%cinm_host" --cinm-isolate-compute-blocks --cinm-complete-compute-graph --split-input-file --verify-diagnostics | FileCheck %s
+// RUN: cinm-opt %s --cinm-attach-host-platform="%cinm_host" --cinm-isolate-compute-blocks --cinm-complete-compute-graph=demote-nested-compute --split-input-file 2>/dev/null | FileCheck %s --check-prefix=DEMOTE
 
 // The host ops between the two compute blocks become a single host block,
 // isolated like the others. Its results are the values that escape the
@@ -39,6 +39,7 @@ func.func @bridge(%a: tensor<8x8xf32>, %x: tensor<8xf32>) -> (f32, tensor<8xf32>
 // nothing but views separates two compute ops.
 
 // CHECK-LABEL: func @views_are_edges
+// CHECK-SAME:  cinm.available_platforms = [#cinm.host_platform
 // CHECK-NOT:   #cinm.host_platform
 // CHECK:       %[[V:.*]] = cinm.compute_block
 // CHECK:       %[[S:.*]] = tensor.insert_slice %[[V]]
@@ -100,6 +101,7 @@ func.func @absorb_loop(%t: tensor<8xf32>) -> tensor<8xf32> {
 // becomes a single host block.
 
 // CHECK-LABEL: func @barrier
+// CHECK-SAME:  cinm.available_platforms = [#cinm.host_platform
 // CHECK-NOT:   #cinm.host_platform
 // CHECK:       scf.for
 // CHECK:         cinm.compute_block
