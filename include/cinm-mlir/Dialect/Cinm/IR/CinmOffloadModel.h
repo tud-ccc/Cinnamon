@@ -32,7 +32,28 @@ class ComputeBlockOp;
 struct HostModel {
   // The offload roofline.
 
-  /// Arithmetic throughput summed over every core, in ops per second.
+  /// Arithmetic throughput summed over every core, in ops per second (a
+  /// multiply-add counts as two ops, as in the footprint's work_ops).
+  ///
+  /// TODO(host-rate-per-width): replace this single number with a rate per
+  /// multiply element type, looked up with the footprint's mul_dtype. The
+  /// default is the int32 peak (32 cores x 2.1 GHz x 16 lanes x 2), but the
+  /// e2e models are int8, and the int8 rate depends on the code the host
+  /// actually runs:
+  ///   - AVX512-VNNI vpdpbusd peaks at ~8.6e12, but only for u8 x i8 with
+  ///     the weight packed in 16x4 tiles. The e2e CPU bar
+  ///     (cpu_baseline_models.py, Relay's quantizer) gets it; the per-kernel
+  ///     TVM in isca-artifact gate/tvm_kernels.py (the gate's validation,
+  ///     and the hybrid arms' host nodes) never does: none of its tuning
+  ///     records use dot_16x4_vnni, since its kernels are i8 x i8 on the
+  ///     plain layout.
+  ///   - That per-kernel TVM reaches ~0.77e12 on RoBERTa's compute-bound
+  ///     gemms (arithmetic intensity 100-170, cache-hot), below this default
+  ///     even after hostAchievedFraction (0.64), so for compute-bound int8
+  ///     ops the default overstates the host's speed (1.34e12 effective).
+  /// The e2e evaluation should also state the host it is priced against
+  /// rather than inherit this default: the model makefiles' ASSIGN_OPTS is
+  /// empty, and the pass exposes only this field and dramBytesPerSecond.
   double opsPerSecond = 2.1e12;
   /// Bandwidth from DRAM to those cores, in bytes per second.
   double dramBytesPerSecond = 23.0e9;
