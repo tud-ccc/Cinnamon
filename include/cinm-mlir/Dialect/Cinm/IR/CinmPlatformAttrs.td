@@ -38,11 +38,12 @@ def CinmHostPlatformAttr: Cinm_Attr<"HostPlatform", [
     Parameters:
 
     - `ops_per_second` (roofline): arithmetic throughput summed over every
-      core. It depends on the element type, by a factor of four: an int32
-      multiply-add uses 16 AVX-512 lanes, while AVX512-VNNI's vpdpbusd does
-      64 int8 multiply-accumulates in one instruction, so the machine
-      sustains ~2.1e12 int32 ops/s but ~8.6e12 int8 ops/s. The default is
-      the int32 figure; an int8 program has to state the other one.
+      core, a multiply-add counting as two ops. The default is the int32
+      peak, 2.1e12: an int32 multiply-add uses 16 AVX-512 lanes. It also
+      serves int8 when the host code widens int8 to i32, as TVM does without
+      VNNI; AVX512-VNNI's vpdpbusd does 64 int8 multiply-accumulates in one
+      instruction (~8.6e12 ops/s), and a host that runs int8 on it states
+      that figure instead.
     - `dram_bytes_per_second` (roofline): DRAM bandwidth to those cores. The
       PIM modules occupy DIMM slots: 4x 64 GB DDR4 populate 2 slots per
       socket, so 4 of the 12 channels carry host DRAM, and the 4216 caps

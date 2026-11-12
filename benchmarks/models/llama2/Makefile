@@ -37,14 +37,13 @@ endif
 # against every DPU count the block admits. The verdicts are still dumped
 # here, as what the whole-array model would have said.
 #
-# The host is the default #cinm.host_platform, whose ops_per_second is the
-# int32 rate (2.1e12 ops/s), although these models run int8, where Cascade
-# Lake's VNNI sustains ~8.6e12. The lower figure underprices the host's
-# arithmetic, which errs toward offloading -- the side the screen is meant
-# to err on. The pass writes the host it priced against onto each function,
-# so the allocation's screen and host point read the same machine; whether
-# the int8 figure is the right one is what measuring the host against tuned
-# TVM settles.
+# The host is the default #cinm.host_platform unless ASSIGN_OPTS overrides
+# it (the evaluation passes host-ops-per-second and
+# host-dram-bytes-per-second from its options). Its ops_per_second is the
+# int32 peak, and int32 is the width the host computes these int8 models in:
+# the TVM kernels that run the host side use no VNNI, and sign-extend to i32.
+# The pass writes the host it priced against onto each function, so the
+# allocation's screen and host point read the same machine.
 ASSIGN_OPTS ?=
 # Every verdict the gate took, with its roofline terms, as JSON lines: the
 # input of the evaluation's roofline figure. Written for the ungated models

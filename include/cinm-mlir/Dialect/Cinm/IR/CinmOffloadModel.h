@@ -36,24 +36,18 @@ struct HostModel {
   /// multiply-add counts as two ops, as in the footprint's work_ops).
   ///
   /// TODO(host-rate-per-width): replace this single number with a rate per
-  /// multiply element type, looked up with the footprint's mul_dtype. The
-  /// default is the int32 peak (32 cores x 2.1 GHz x 16 lanes x 2), but the
-  /// e2e models are int8, and the int8 rate depends on the code the host
-  /// actually runs:
-  ///   - AVX512-VNNI vpdpbusd peaks at ~8.6e12, but only for u8 x i8 with
-  ///     the weight packed in 16x4 tiles. The e2e CPU bar
-  ///     (cpu_baseline_models.py, Relay's quantizer) gets it; the per-kernel
-  ///     TVM in isca-artifact gate/tvm_kernels.py (the gate's validation,
-  ///     and the hybrid arms' host nodes) never does: none of its tuning
-  ///     records use dot_16x4_vnni, since its kernels are i8 x i8 on the
-  ///     plain layout.
-  ///   - That per-kernel TVM reaches ~0.77e12 on RoBERTa's compute-bound
-  ///     gemms (arithmetic intensity 100-170, cache-hot), below this default
-  ///     even after hostAchievedFraction (0.64), so for compute-bound int8
-  ///     ops the default overstates the host's speed (1.34e12 effective).
-  /// The e2e evaluation should also state the host it is priced against
-  /// rather than inherit this default: the model makefiles' ASSIGN_OPTS is
-  /// empty, and the pass exposes only this field and dramBytesPerSecond.
+  /// multiply element type, looked up with the footprint's mul_dtype. Today
+  /// one int32 rate serves every width, which is right for the host code the
+  /// evaluation runs: TVM (isca-artifact gate/tvm_kernels.py) sign-extends an
+  /// int8 contraction to i32 and runs vpmulld + vpaddd on zmm. A host
+  /// compiler that used AVX512-VNNI on int8 (vpdpbusd, u8 x i8 with packed
+  /// weights, ~8.6e12 peak) would want its own rate.
+  ///
+  /// The default is the nominal int32 peak (32 cores x 2.1 GHz x 16 lanes x
+  /// 2): a roofline, of which the host code achieves the share the graph
+  /// allocation's hostAchievedFraction states. That share is calibrated on
+  /// the memory-bound kernels (0.64); the tuned TVM achieves 0.2-0.26 of
+  /// this peak on compute-bound gemms with their weights in DRAM.
   double opsPerSecond = 2.1e12;
   /// Bandwidth from DRAM to those cores, in bytes per second.
   double dramBytesPerSecond = 23.0e9;
