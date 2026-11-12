@@ -32,11 +32,15 @@ import re
 import subprocess
 
 from . import paths
-from .cinmopt import _infer_opts_str
+from .cinmopt import _infer_opts_str, host_pass
 
 PRE_PASSES = ["--cinm-assign-platforms"]
 
-_AVAILABLE_PLATFORMS_RE = re.compile(r"cinm\.available_platforms\s*=\s*\[(#\w+)")
+# A platform list, and the entries in it. The host (#cinm.host_platform<...>)
+# is listed beside the offloading platform on every function, and is not a
+# candidate to pin.
+_AVAILABLE_PLATFORMS_RE = re.compile(r"cinm\.available_platforms\s*=\s*\[([^\]]*)\]")
+_PLATFORM_ENTRY_RE = re.compile(r"#[\w.]+")
 _COMPUTE_RE = re.compile(r"\bcinm\.compute\b")
 
 
@@ -45,11 +49,19 @@ def to_cinm1_accelerator(text: str, dpus: int, tasklets: int) -> str:
     output -- a list of candidates, not a committed platform/accelerator)
     with a fixed CINM 1.0 accelerator attribute directly on the op:
     `cinm.compute on accelerator #upmem.array<DxT, #foo>`. Assumes a single
-    candidate platform, which always holds in this codebase."""
-    m = _AVAILABLE_PLATFORMS_RE.search(text)
-    if not m:
-        raise RuntimeError("no cinm.available_platforms attribute found")
-    platform = m.group(1)
+    candidate platform besides the host, which always holds in this
+    codebase."""
+    platform = next(
+        (
+            entry
+            for listed in _AVAILABLE_PLATFORMS_RE.finditer(text)
+            for entry in _PLATFORM_ENTRY_RE.findall(listed.group(1))
+            if not entry.startswith("#cinm.")
+        ),
+        None,
+    )
+    if platform is None:
+        raise RuntimeError("no offloading platform in any cinm.available_platforms")
     accel = f"on accelerator #upmem.array<{dpus}x{tasklets}, {platform}>"
     replaced, n = _COMPUTE_RE.subn(f"cinm.compute {accel}", text)
     if n == 0:
@@ -181,6 +193,7 @@ def compile_cinm1(
     tasklets: int,
     out_file: pathlib.Path,
     *,
+    host: dict,
     work_dir: pathlib.Path,
     cinm_opt: pathlib.Path | None = None,
     log_file: pathlib.Path | None = None,
@@ -190,7 +203,9 @@ def compile_cinm1(
     split_source.split_source) as CINM 1.0 would for the fixed (dpus,
     tasklets) working group -- no search. Intermediate stage files are kept
     in work_dir for debugging (mirrors benchmarks/cinm1/Makefile's own
-    $(IR_PREFIX).N.*.mlir convention)."""
+    $(IR_PREFIX).N.*.mlir convention). `host` is listed on the function first
+    (cinmopt.host_pass): nothing here prices host code, but the cost
+    annotation of the lowered module that follows does."""
     # None means "whichever build the environment holds", resolved here rather
     # than in the signature: a default argument is evaluated when the module is
     # imported, and importing this must not require an installed compiler.
@@ -201,7 +216,9 @@ def compile_cinm1(
 
     with open(log_file, "w") as log:
         assigned = work_dir / "0.assigned.mlir"
-        r = _run_stage(cinm_opt, fn_module, PRE_PASSES, assigned, log)
+        r = _run_stage(
+            cinm_opt, fn_module, [host_pass(host), *PRE_PASSES], assigned, log
+        )
         if r.returncode != 0:
             return r
 
@@ -220,7 +237,7 @@ def compile_cinm1(
     return r
 
 
-def lowerer(*, cinm_opt: pathlib.Path | None = None, **kwargs):
+def lowerer(*, host: dict, cinm_opt: pathlib.Path | None = None, **kwargs):
     """A (fn_module, out_file, log_file) -> CompletedProcess callable, for use
     as compile_run.Config.lower -- compiles CINM 1.0's program for this fixed
     (dpus, tasklets) working group."""
@@ -239,6 +256,7 @@ def lowerer(*, cinm_opt: pathlib.Path | None = None, **kwargs):
             dpus,
             tasklets,
             out_file,
+            host=host,
             work_dir=pathlib.Path(out_file).parent / "cinm1_stages",
             cinm_opt=cinm_opt,
             log_file=log_file,

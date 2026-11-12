@@ -61,13 +61,12 @@ $(OUT)/$(NAME)_linalg.mlir: $(OUT)/$(NAME)_unrolled.mlir $(MK)
 # use no VNNI, and sign-extend to i32. The host stays on each function, so
 # the allocation's screen and host point read the same machine.
 HOST_OPTS ?=
-ASSIGN_OPTS ?=
 # Every verdict the gate took, with its roofline terms, as JSON lines: the
 # input of the evaluation's roofline figure.
 DECISIONS = $(OUT)/$(NAME)_offload_decisions.jsonl
 
 $(OUT)/$(NAME)_with_compute.mlir: $(OUT)/$(NAME)_linalg.mlir $(MK)
-	$(CINM_OPT) $< "--cinm-attach-host-platform=$(HOST_OPTS)" "--cinm-assign-platforms=$(ASSIGN_OPTS) dump-decisions=$(DECISIONS)" \
+	$(CINM_OPT) $< "--cinm-attach-host-platform=$(HOST_OPTS)" "--cinm-assign-platforms=dump-decisions=$(DECISIONS)" \
 	--cinm-isolate-compute-blocks --cinm-expand-compute-scope --cinm-complete-compute-graph --cinm-annotate-operand-reuse --cinm-absorb-static-slices \
    > $@
 

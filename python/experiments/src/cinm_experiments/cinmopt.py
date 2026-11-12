@@ -4,6 +4,12 @@ These are thin subprocess wrappers -- cinm-opt is a C++ binary, so it can't be
 called in-process -- but they turn "build a shell command line" into ordinary
 function calls with real arguments, so experiment scripts never construct
 --upmem-infer-accelerator option strings by hand.
+
+Every invocation that searches or lowers starts with
+--cinm-attach-host-platform, from the `host` each wrapper requires
+(host_pass): the passes after it price host code against the host listed on
+each function, and fail when none is. annotate_costs takes none -- it runs
+on a lowered module, which keeps the host its lowering listed.
 """
 
 from __future__ import annotations
@@ -16,6 +22,19 @@ from . import paths
 
 PRE_PASSES = ["--cinm-assign-platforms", "--cinm-isolate-compute-blocks"]
 
+# The options of --cinm-attach-host-platform, every one of which a caller
+# states: the host a module is priced against is a measurement of a machine,
+# and the pass's own defaults (which warn) are not a choice anyone made.
+HOST_KEYS = (
+    "ops-per-second",
+    "dram-bytes-per-second",
+    "scalar-op-ns",
+    "vector-op-ns",
+    "vector-bytes",
+    "stream-bytes-per-second",
+    "copy-bytes-per-second",
+)
+
 
 def _opt_value(v) -> str:
     if isinstance(v, bool):
@@ -27,10 +46,31 @@ def _infer_opts_str(opts: dict) -> str:
     return " ".join(f"{k}={_opt_value(v)}" for k, v in opts.items())
 
 
+def host_opts(host: dict) -> str:
+    """`host` as --cinm-attach-host-platform's option string. It must name
+    every HOST_KEYS option and nothing else."""
+    if set(host) != set(HOST_KEYS):
+        missing = sorted(set(HOST_KEYS) - set(host))
+        unknown = sorted(set(host) - set(HOST_KEYS))
+        raise ValueError(
+            f"host platform: missing {missing}, unknown {unknown}; "
+            f"expected exactly {list(HOST_KEYS)}"
+        )
+    return _infer_opts_str(host)
+
+
+def host_pass(host: dict) -> str:
+    """--cinm-attach-host-platform with `host` (host_opts). It lists the host
+    on every function that offloads and names none yet; a module that
+    already does keeps its own."""
+    return f"--cinm-attach-host-platform={host_opts(host)}"
+
+
 def _run(
     src: pathlib.Path,
     infer_opts: dict,
     *,
+    host: dict,
     out_file: pathlib.Path,
     cinm_opt: pathlib.Path | None,
     log_file: pathlib.Path,
@@ -48,6 +88,7 @@ def _run(
         str(cinm_opt),
         str(src),
         "--split-input-file",
+        host_pass(host),
         *pre_passes,
         "--debug-only=cinm-inference",
         f"--upmem-infer-accelerator={_infer_opts_str(infer_opts)}",
@@ -78,6 +119,7 @@ def exhaustive_search(
     src: pathlib.Path,
     out_dir: pathlib.Path,
     *,
+    host: dict,
     workers: int | None = None,
     infer_opts: dict | None = None,
     nice: bool = True,
@@ -107,6 +149,7 @@ def exhaustive_search(
     r = _run(
         src,
         opts,
+        host=host,
         out_file=out_file,
         cinm_opt=cinm_opt,
         log_file=log_file,
@@ -121,6 +164,7 @@ def dump_space(
     src: pathlib.Path,
     out_dir: pathlib.Path,
     *,
+    host: dict,
     infer_opts: dict | None = None,
     out_file: pathlib.Path | None = None,
     log_file: pathlib.Path | None = None,
@@ -147,6 +191,7 @@ def dump_space(
     r = _run(
         src,
         opts,
+        host=host,
         out_file=out_file,
         cinm_opt=cinm_opt,
         log_file=log_file,
@@ -160,6 +205,7 @@ def random_sample(
     src: pathlib.Path,
     out_dir: pathlib.Path,
     *,
+    host: dict,
     n_samples: int,
     workers: int | None = None,
     infer_opts: dict | None = None,
@@ -196,6 +242,7 @@ def random_sample(
     }
     r = _run(
         src,
+        host=host,
         infer_opts=opts,
         out_file=out_file,
         cinm_opt=cinm_opt,
@@ -211,6 +258,7 @@ def graph_allocation(
     src: pathlib.Path,
     out_dir: pathlib.Path,
     *,
+    host: dict,
     workers: int | None = None,
     infer_opts: dict | None = None,
     nice: bool = True,
@@ -252,6 +300,7 @@ def graph_allocation(
     r = _run(
         src,
         opts,
+        host=host,
         out_file=out_file,
         cinm_opt=cinm_opt,
         log_file=log_file,
@@ -267,6 +316,7 @@ def bo_multiseed(
     src: pathlib.Path,
     out_dir: pathlib.Path,
     *,
+    host: dict,
     n_seeds: int = 32,
     offset: int = 67,
     workers: int | None = None,
@@ -306,6 +356,7 @@ def bo_multiseed(
     r = _run(
         src,
         opts,
+        host=host,
         out_file=out_file,
         cinm_opt=cinm_opt,
         log_file=log_file,
@@ -322,6 +373,7 @@ def eval_solution(
     src: pathlib.Path,
     params: dict,
     *,
+    host: dict,
     out_file: pathlib.Path,
     extra_infer_opts: dict = {},
     cinm_opt: pathlib.Path | None = None,
@@ -337,6 +389,7 @@ def eval_solution(
     log_file = log_file or (pathlib.Path(out_file).parent / "cinm-opt.log")
     return _run(
         src,
+        host=host,
         infer_opts={"eval-solution": solution_str, **extra_infer_opts},
         out_file=out_file,
         cinm_opt=cinm_opt,
@@ -356,6 +409,7 @@ def probe_solution(
     src: pathlib.Path,
     params: dict,
     *,
+    host: dict,
     log_file: pathlib.Path,
     cinm_opt: pathlib.Path | None = None,
     nice: bool = True,
@@ -378,6 +432,7 @@ def probe_solution(
     result = eval_solution(
         src,
         params,
+        host=host,
         out_file=pathlib.Path("/dev/null"),
         extra_infer_opts={
             "eval-solution-force": True,
@@ -395,6 +450,7 @@ def probe_solution(
 
 def search_lowerer(
     *,
+    host: dict,
     max_evals: int = 64,
     n_init: int | None = None,
     dir_name: str = "search",
@@ -433,6 +489,7 @@ def search_lowerer(
         return _run(
             fn_module,
             opts,
+            host=host,
             out_file=out_file,
             cinm_opt=cinm_opt,
             log_file=log_file,
@@ -528,7 +585,10 @@ def with_program_dump(
 
 
 def eval_solution_lowerer(
-    *, cinm_opt: pathlib.Path | None = None, extra_infer_opts: dict = {}
+    *,
+    host: dict,
+    cinm_opt: pathlib.Path | None = None,
+    extra_infer_opts: dict = {},
 ):
     """A (fn_module, out_file, log_file) -> CompletedProcess callable, for use
     as compile_run.Config.lower -- compiles CINM 2.0's chosen `params` with no
@@ -543,6 +603,7 @@ def eval_solution_lowerer(
         return eval_solution(
             fn_module,
             params,
+            host=host,
             out_file=out_file,
             cinm_opt=cinm_opt,
             log_file=log_file,
@@ -554,6 +615,7 @@ def eval_solution_lowerer(
 
 def stamped_lowerer(
     *,
+    host: dict,
     infer_opts: dict,
     cinm_opt: pathlib.Path | None = None,
     pre_passes: list | None = None,
@@ -573,7 +635,7 @@ def stamped_lowerer(
     table can be assembled from the same artifact that was measured.
 
     `pre_passes` replaces the default --cinm-assign-platforms
-    --cinm-isolate-compute-blocks prefix. A module that has already been
+    --cinm-isolate-compute-blocks prefix (the host is attached before either). A module that has already been
     through a front end which decided what to offload (the whole-program
     models, whose makefile runs the roofline gate) must not have that
     decision remade here: the default assign-platforms is ungated and would
@@ -587,6 +649,7 @@ def stamped_lowerer(
     ) -> subprocess.CompletedProcess:
         return _run(
             fn_module,
+            host=host,
             infer_opts={
                 "stamp-configs": True,
                 "dump-dir": str(pathlib.Path(out_file).parent / "dump"),

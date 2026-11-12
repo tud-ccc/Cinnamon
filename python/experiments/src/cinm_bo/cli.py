@@ -46,6 +46,12 @@ def _infer_opts(args: argparse.Namespace) -> dict:
     return dict(args.opt or [])
 
 
+def _host(args: argparse.Namespace) -> dict:
+    """The --cinm-attach-host-platform options, every one of them given
+    (cinmopt.host_pass says which are missing)."""
+    return dict(args.host or [])
+
+
 def _module_cmd(module: str, *rest: str) -> list[str]:
     """Run a sibling module as its own process.
 
@@ -78,7 +84,11 @@ def _run_dirs(dump: pathlib.Path) -> list[pathlib.Path]:
 
 def cmd_space(args: argparse.Namespace) -> int:
     cinmopt.dump_space(
-        args.src, args.out, infer_opts=_infer_opts(args), cinm_opt=args.cinm_opt
+        args.src,
+        args.out,
+        host=_host(args),
+        infer_opts=_infer_opts(args),
+        cinm_opt=args.cinm_opt,
     )
     print(f"[space] {args.out}")
     return 0
@@ -91,6 +101,7 @@ def cmd_search(args: argparse.Namespace) -> int:
         n_seeds=args.seeds,
         offset=args.offset,
         workers=args.workers,
+        host=_host(args),
         infer_opts=_infer_opts(args),
         cinm_opt=args.cinm_opt,
         debug=args.debug,
@@ -106,6 +117,7 @@ def cmd_sample(args: argparse.Namespace) -> int:
         n_samples=args.n,
         seed=args.seed,
         workers=args.workers,
+        host=_host(args),
         infer_opts=_infer_opts(args),
         cinm_opt=args.cinm_opt,
     )
@@ -118,6 +130,7 @@ def cmd_exhaustive(args: argparse.Namespace) -> int:
         args.src,
         args.out,
         workers=args.workers,
+        host=_host(args),
         infer_opts=_infer_opts(args),
         cinm_opt=args.cinm_opt,
     )
@@ -240,6 +253,17 @@ def _add_compile_args(p: argparse.ArgumentParser) -> None:
         action="append",
         metavar="KEY=VALUE",
         help="an --upmem-infer-accelerator option; repeatable",
+    )
+    p.add_argument(
+        "-H",
+        "--host",
+        type=_opt_pair,
+        action="append",
+        required=True,
+        metavar="KEY=VALUE",
+        help="a --cinm-attach-host-platform option (the host the module is "
+        "priced against); every one is required, e.g. -H ops-per-second=2.1e12 "
+        "-H dram-bytes-per-second=21.7e9 ...",
     )
     # No default: None reaches cinmopt, which resolves whichever build the
     # environment holds. Resolving it here would need an installed compiler

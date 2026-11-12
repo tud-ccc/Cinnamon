@@ -45,12 +45,11 @@ endif
 # use no VNNI, and sign-extend to i32. The host stays on each function, so
 # the allocation's screen and host point read the same machine.
 HOST_OPTS ?=
-ASSIGN_OPTS ?=
 # Every verdict the gate took, with its roofline terms, as JSON lines: the
 # input of the evaluation's roofline figure. Written for the ungated models
 # too, where it records what the gate would have said.
 DECISIONS = $(OUT)/$(NAME)_offload_decisions.jsonl
-ASSIGN_PASS = --cinm-assign-platforms=$(strip $(ASSIGN_OPTS) dump-decisions=$(DECISIONS))
+ASSIGN_PASS = --cinm-assign-platforms=dump-decisions=$(DECISIONS)
 
 # A cinm-opt that dies mid-module still leaves the redirect's truncated
 # output behind, and make would take that stub as up to date.
