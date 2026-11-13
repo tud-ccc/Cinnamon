@@ -151,6 +151,45 @@ def UpmemAlignLocalTransfersPass: Pass<"upmem-align-local-transfers"> {
   ];
 }
 
+def UpmemSplitLocalTransfersPass: Pass<"upmem-split-local-transfers"> {
+  let summary = "Split MRAM transfers into DMAs of at most max-dma-bytes";
+  let description = [{
+    Rewrites a `upmem.local_transfer` between MRAM and WRAM that moves more
+    than `max-dma-bytes` into consecutive transfers of at most that many
+    bytes, so that every transfer after this pass is one DMA: the cost model
+    prices each one, and the C translator emits each as one `mram_read` or
+    `mram_write` (it rejects a transfer over the DMA engine's 2048 bytes).
+
+    A tasklet blocks on its DMA for the whole length, and while the tasklets
+    of a DPU wait in the shared queue the pipeline runs short of ready ones,
+    although above 1 KB the queue moves a byte no faster. Measured on one DPU
+    against ATiM's code on its own schedule (median of 7): TTV at 512 MB
+    stages a 2 KB tile of A per step and runs at 1.14x ATiM's cycles moving
+    it whole, 1.06x in 512-byte DMAs. How much a split saves also depends on
+    how the identical tasklets' DMAs line up in the queue, which this pass
+    does not control: MMTV at 512 MB, whose 1 KB tile splits in two, runs at
+    1.12x either way as split here, and at 1.06x when the same two DMAs are
+    issued from a loop.
+
+    Each chunk addresses both ends as a view of the collapsed buffer at the
+    transfer's linear offset plus the chunk's, the form the translator and
+    --upmem-align-local-transfers already use. A transfer whose ends are not
+    a buffer or one contiguous subview of one, or whose length is not whole
+    8-byte granules, is left as it is -- an error when it is over 2048
+    bytes, since the translator could not emit it either.
+  }];
+  let dependentDialects = [
+    "::mlir::upmem::UPMEMDialect",
+    "mlir::arith::ArithDialect",
+    "mlir::memref::MemRefDialect"
+  ];
+  let options = [
+    Option<"maxDmaBytes", "max-dma-bytes", "int64_t", "512",
+           "The largest DMA to leave whole, in bytes: a multiple of 8, at "
+           "most 2048.">
+  ];
+}
+
 def UpmemTileMRAMBuffersPass: Pass<"upmem-tile-mram-buffers"> {
   let summary = "Stage a launch body's non-leaf buffers down to the leaf memory level";
   let description = [{

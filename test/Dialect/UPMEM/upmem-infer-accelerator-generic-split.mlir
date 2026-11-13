@@ -58,8 +58,10 @@ func.func @gemv_64MB(%A: tensor<4096x4096xi32>, %x: tensor<4096xi32>) -> tensor<
   // CHECK-NOT: upmem.local_transfer %{{.*}} into %[[WY]]
   // CHECK: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %{{.*}} {
   // One chunk per trip, and it is contiguous in MRAM -- which is the point of
-  // the layout: upmem.local_transfer is a DMA of a single run.
-  // CHECK: upmem.local_transfer %{{.*}} into %{{.*}} : memref<1x8x1x64xi32, strided<[512, 64, 64, 1], offset: ?>, #upmem.mram> to memref<1x8x1x64xi32, #upmem.wram>
+  // the layout: a DMA moves a single run. Its 2 KB move as four DMAs of 512
+  // bytes (--upmem-split-local-transfers), each from the next 128 elements.
+  // CHECK: memref.collapse_shape %{{.*}} : memref<8x2x8x1x64xi32, #upmem.mram> into memref<8192xi32, #upmem.mram>
+  // CHECK-COUNT-4: upmem.local_transfer %{{.*}} into %{{.*}} : memref<128xi32, strided<[1], offset: ?>, #upmem.mram> to memref<128xi32, strided<[1]{{.*}}>, #upmem.wram>
   // CHECK: }
   // CHECK: upmem.local_transfer %[[WY]] into
   // CHECK: upmem.return

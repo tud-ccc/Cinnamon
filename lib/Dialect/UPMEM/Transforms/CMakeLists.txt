@@ -12,6 +12,7 @@ add_mlir_dialect_library(UPMEMTransforms
     UpmemOpCountSimulator.cpp
     UpmemPythonSimulator.cpp
     UpmemRegisterTileLoops.cpp
+    UpmemSplitLocalTransfers.cpp
     UpmemTileMRAMBuffers.cpp
     SpecializeTransfers.cpp
 

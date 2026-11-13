@@ -757,6 +757,11 @@ struct UpmemInferencePlugin : cinm::InferencePlugin {
     // subview; with nothing after it that would fold the aligned offset's
     // arithmetic into a form the translator cannot prove aligned.
     pm->addPass(createUpmemAlignLocalTransfersPass());
+    // After the alignment, whose granule rewrites it splits like any other
+    // transfer, and before the cost model and the occupancy check: every
+    // transfer from here on is one DMA, which the cost model prices and the
+    // C translator emits as is.
+    pm->addPass(createUpmemSplitLocalTransfersPass());
     // Last, deliberately: what a configuration occupies is a property of the
     // program every pass above has finished optimizing, not of the
     // configuration itself. A trial that does not fit fails here

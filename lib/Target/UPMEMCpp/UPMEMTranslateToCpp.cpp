@@ -661,6 +661,9 @@ static LogicalResult getBasePtrAndOffset(CppEmitter &emitter, Value v,
 /// MRAM address, the WRAM address and the length to all be multiples of this.
 static constexpr int64_t kDmaAlignBytes = 8;
 
+/// The longest MRAM DMA, in bytes: what one `mram_read`/`mram_write` moves.
+static constexpr int64_t kMaxDmaBytes = 2048;
+
 /// Rejects a transfer endpoint whose address is not provably DMA-aligned.
 ///
 /// A tile smaller than the DMA granule is the usual way to get here: the
@@ -794,29 +797,20 @@ static LogicalResult printLocalTransfer(CppEmitter &emitter,
       failed(checkDmaAlignment(memcpyOp, "target", toAlign, toOffset)))
     return failure();
 
-  size_t offsetBytes = 0;
-  while (remainingBytes > 0) {
-    int64_t chunkSizeBytes = std::min(2048l, remainingBytes);
-    // Chunks stay whole granules, so `offsetBytes` keeps both addresses
-    // aligned across the loop. A tail shorter than one granule can only be
-    // the permitted short read, which rounds up: there is nothing to round
-    // down to, and rounding down would not terminate.
-    chunkSizeBytes = chunkSizeBytes >= kDmaAlignBytes
-                         ? llvm::alignDown(chunkSizeBytes, kDmaAlignBytes)
-                         : llvm::alignTo(chunkSizeBytes, kDmaAlignBytes);
+  // One transfer is one DMA, and the engine moves at most this many bytes at
+  // once. Splitting is --upmem-split-local-transfers' job, not this one's:
+  // the cost model prices the transfers it is given, so a split made here
+  // would run DMAs it never saw.
+  if (remainingBytes > kMaxDmaBytes)
+    return memcpyOp->emitOpError("moves ")
+           << remainingBytes << " bytes, more than one DMA's " << kMaxDmaBytes
+           << ": run --upmem-split-local-transfers before translating";
 
-    if (printMRAMCopyBytes(emitter, fromSpace, fromBase, toBase, chunkSizeBytes,
-                           fromOffset, toOffset, offsetBytes)
-            .failed()) {
-      return failure();
-    }
-    offsetBytes += chunkSizeBytes;
-    remainingBytes -= std::min(remainingBytes, chunkSizeBytes);
-    if (remainingBytes > 0) {
-      os << ";\n";
-    }
-  }
-  return success();
+  // The only length that is not whole granules here is the permitted short
+  // read, which rounds up into the destination buffer's padding.
+  return printMRAMCopyBytes(emitter, fromSpace, fromBase, toBase,
+                            llvm::alignTo(remainingBytes, kDmaAlignBytes),
+                            fromOffset, toOffset, /*offsetBytes=*/0);
 }
 
 static LogicalResult printOperation(CppEmitter &emitter,
