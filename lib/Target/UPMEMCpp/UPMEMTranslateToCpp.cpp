@@ -325,20 +325,53 @@ static LogicalResult printOperation(CppEmitter &emitter,
   return success();
 }
 
-/// Emits the `[...]` subscript for a memref access as a single linearized
-/// element index, `i0*s0 + i1*s1 + ...` over the memref's own strides.
+/// The constant `index` adds to a value, peeled off an `arith.addi` chain:
+/// `index` is `*base + returned`. An unrolled loop body indexes its copies as
+/// `iv + 1`, `iv + 2`, ...; peeling the constants lets every copy share one
+/// address and differ only by an offset.
+static int64_t peelConstantAdd(Value index, Value *base) {
+  int64_t constant = 0;
+  *base = index;
+  while (auto add = base->getDefiningOp<arith::AddIOp>()) {
+    std::optional<int64_t> c;
+    Value rest;
+    for (auto [mine, other] : {std::pair{add.getLhs(), add.getRhs()},
+                               std::pair{add.getRhs(), add.getLhs()}}) {
+      if (auto cst = mine.getDefiningOp<arith::ConstantOp>())
+        if (auto intAttr = dyn_cast<IntegerAttr>(cst.getValue())) {
+          c = intAttr.getInt();
+          rest = other;
+          break;
+        }
+    }
+    if (!c)
+      break;
+    constant += *c;
+    *base = rest;
+  }
+  return constant;
+}
+
+/// Emits a memref element access: `name[i0*s0 + i1*s1 + ...]`, one linearized
+/// element index over the memref's own strides, or
+/// `(&name[i0*s0 + ...])[c]` when the indices add constants to values.
 ///
 /// Every DPU buffer is declared as a flat array (see the memref::AllocaOp and
-/// StaticAllocOp emitters), so a rank-N access has to be flattened.
+/// StaticAllocOp emitters), so a rank-N access has to be flattened. The
+/// constants an index adds (`iv + k`, from unrolling) go outside the
+/// subscript, as an offset from the address of the rest. Inside it, LLVM
+/// sees `(row * 32) + iv + k` with `iv` a multiple of 16 and `k` below it,
+/// proves the bits disjoint and turns the additions into `or`s, which the DPU
+/// backend cannot fold into a load's immediate offset: every unrolled access
+/// would recompute its address (4 instructions in a 9-instruction
+/// multiply-accumulate). Outside, the copies share one base address and each
+/// load carries its `k` as an immediate.
 ///
 /// An access whose layout has no static strides is an error rather
 /// than a guess -- there is no correct flat subscript to emit for it.
-static LogicalResult printLinearSubscript(CppEmitter &emitter, Operation *op,
-                                          MemRefType type,
-                                          Operation::operand_range indices) {
-  raw_ostream &os = emitter.ostream();
-  os << "[";
-
+static LogicalResult printElementAccess(CppEmitter &emitter, Operation *op,
+                                        Value memref, MemRefType type,
+                                        Operation::operand_range indices) {
   SmallVector<int64_t> strides;
   int64_t offset = 0;
   if (!indices.empty()) {
@@ -350,6 +383,23 @@ static LogicalResult printLinearSubscript(CppEmitter &emitter, Operation *op,
       return op->emitError("cannot emit C for this access: memref has dynamic "
                            "strides or offset");
   }
+
+  // The constants peeled off the indices, in elements.
+  int64_t peeled = 0;
+  SmallVector<std::pair<Value, int64_t>> terms;
+  for (auto [index, stride] : llvm::zip_equal(indices, strides)) {
+    if (stride == 0)
+      continue;
+    Value base;
+    int64_t constant = peelConstantAdd(index, &base);
+    peeled += constant * stride;
+    terms.emplace_back(base, stride);
+  }
+
+  raw_ostream &os = emitter.ostream();
+  if (peeled != 0)
+    os << "(&";
+  os << emitter.getOrCreateName(memref) << "[";
 
   bool empty = true;
   auto separate = [&] {
@@ -363,10 +413,8 @@ static LogicalResult printLinearSubscript(CppEmitter &emitter, Operation *op,
     os << offset;
   }
 
-  for (auto [index, stride] : llvm::zip_equal(indices, strides)) {
-    if (stride == 0)
-      continue;
-    // A constant-zero index contributes nothing whatever the stride.
+  for (auto [index, stride] : terms) {
+    // A constant index contributes its product, and a zero one nothing.
     if (auto cst = index.getDefiningOp<arith::ConstantOp>())
       if (auto intAttr = dyn_cast<IntegerAttr>(cst.getValue())) {
         if (intAttr.getInt() == 0)
@@ -387,6 +435,8 @@ static LogicalResult printLinearSubscript(CppEmitter &emitter, Operation *op,
   if (empty)
     os << "0";
   os << "]";
+  if (peeled != 0)
+    os << ")[" << peeled << "]";
   return success();
 }
 
@@ -406,15 +456,13 @@ static LogicalResult verifyDirectAccess(Operation *op, MemRefType type) {
 
 static LogicalResult printOperation(CppEmitter &emitter,
                                     memref::LoadOp loadOp) {
-  raw_ostream &os = emitter.ostream();
   if (failed(verifyDirectAccess(loadOp, loadOp.getMemRefType())))
     return failure();
   if (failed(emitter.emitAssignPrefix(*loadOp)))
     return failure();
 
-  os << emitter.getOrCreateName(loadOp.getMemRef());
-  return printLinearSubscript(emitter, loadOp, loadOp.getMemRefType(),
-                              loadOp.getIndices());
+  return printElementAccess(emitter, loadOp, loadOp.getMemRef(),
+                            loadOp.getMemRefType(), loadOp.getIndices());
 }
 
 static LogicalResult printOperation(CppEmitter &emitter,
@@ -422,9 +470,8 @@ static LogicalResult printOperation(CppEmitter &emitter,
   raw_ostream &os = emitter.ostream();
   if (failed(verifyDirectAccess(storeOp, storeOp.getMemRefType())))
     return failure();
-  os << emitter.getOrCreateName(storeOp.getMemRef());
-  if (failed(printLinearSubscript(emitter, storeOp, storeOp.getMemRefType(),
-                                  storeOp.getIndices())))
+  if (failed(printElementAccess(emitter, storeOp, storeOp.getMemRef(),
+                                storeOp.getMemRefType(), storeOp.getIndices())))
     return failure();
   os << " = ";
 
