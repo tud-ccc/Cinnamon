@@ -74,8 +74,11 @@ for word in $(echo "$rest" | tr ';' ' '); do
         bin_name="${BASH_REMATCH[4]}"
         bin_path=$(realpath "$OUTPATH/$bin_name")
 
+        # -O2: the level ATiM's codegen compiles its kernels at
+        # (DPUClangCompile), so that the two compare as code generators
+        # rather than as optimization levels.
         link() {
-            command="'$dpuCompiler' -DSTACK_SIZE_DEFAULT=$1 -DNR_TASKLETS=$threads -D$var '$PROG' -o '$bin_path' -O3 -Wall -Wextra -Werror -Wno-unused-variable"
+            command="'$dpuCompiler' -DSTACK_SIZE_DEFAULT=$1 -DNR_TASKLETS=$threads -D$var '$PROG' -o '$bin_path' -O2 -Wall -Wextra -Werror -Wno-unused-variable"
             echo "$command"
             eval "$command"
         }
